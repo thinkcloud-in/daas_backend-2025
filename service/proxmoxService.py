@@ -1,0 +1,671 @@
+import asyncio
+from asyncio.log import logger
+from datetime import datetime
+import time 
+from http.client import HTTPException
+from typing import Dict, List, Optional
+from fastapi.encoders import jsonable_encoder
+import requests
+import urllib3
+from models.proxmox_model import Proxmox
+from sqlalchemy.orm import Session
+from models.models import Cluster, CreateClusterBase
+from service.clusterService import get_all_nodes
+from service import controllers
+from db_configuration.config import SessionLocal, get_db
+import re
+from time import sleep
+from service.gucamoleService import connectionWithClient
+from service.temporalResource.workers import worker_proxmox
+from service.temporalResource.workflows import workflows_proxmox
+from service.clusterService import getting_Proxmox_host,get_api_token
+from models.proxmox_model import MetricServer, MetricServerBase
+from models.models import Pool
+from models.models import Machine
+from models.IPs_model import IPEntry, IPSModel
+from service.temporalResource.activity.activities_proxmox import netmask_to_cidr
+import os
+  
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+VERIFY_SSL = False  # Set to True if you want to verify SSL certificates
+ 
+def get_all_proxmox_users(db):
+    data=db.query(Proxmox).all()
+    # for obj in data:
+    #     print(obj.api_token)
+    return data
+ 
+def is_valid_ip(ip):
+    # Simple check for non-empty, not just 0 or .
+    return ip and ip.strip() not in {'0', '.', ''}
+
+def get_cluster_nodes(cluster_data):
+    print("Getting cluster nodes for:", cluster_data)
+    api_token = get_api_token(next(get_db()), cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}",
+        "Content-Type": "application/json"
+    }
+ 
+    # If IPs are stored as a comma-separated string, split them:
+    if isinstance(cluster_data.ip, str):
+        ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if is_valid_ip(ip.strip())]
+    else:
+        ip_list = [ip for ip in cluster_data.ip if is_valid_ip(ip)]
+ 
+    if not ip_list:
+        raise RuntimeError("No valid IPs found for cluster.")
+ 
+    last_exception = None
+    for ip in ip_list:
+        PROXMOX_HOST = f"https://{ip}:{cluster_data.port}"
+        url = f"{PROXMOX_HOST}/api2/json/cluster/status"
+        try:
+            response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+            response.raise_for_status()
+            data = response.json()
+            nodes = [
+                {
+                    "name": node["name"],
+                    "ip": node["ip"],
+                    "status": "online"
+                }
+                for node in data["data"]
+                if node.get("type") == "node" and node.get("online", 0) == 1
+            ]
+            return nodes
+        except Exception as e:
+            print(f"Failed to connect to {ip}: {e}")
+            last_exception = e
+            continue
+    raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
+
+def update_cluster_nodes(db: Session) -> Dict[str, List[str]]:
+    clusters = db.query(Cluster).all()
+    updated_clusters = {}
+ 
+    for cluster in clusters:
+        if not cluster.type or cluster.type.lower() != "proxmox":
+            continue  # Skip non-proxmox clusters
+ 
+        try:
+            ip_list = cluster.ip.split(",") if isinstance(cluster.ip, str) else cluster.ip
+            cluster_data = CreateClusterBase(
+                type=cluster.type,
+                name=cluster.name,
+                ip=ip_list,
+                port=cluster.port,
+                username=cluster.username,
+                password=cluster.password,
+                tls=cluster.tls,
+            )
+            nodes = get_all_nodes(cluster_data)
+            # Get all node IPs regardless of status
+            all_ips = [node["ip"] for node in nodes]
+            cluster.ip = ",".join(all_ips)
+            db.add(cluster)
+            updated_clusters[cluster.name] = all_ips
+        except Exception as e:
+            updated_clusters[cluster.name] = f"Failed to update: {e}"
+ 
+    db.commit()
+    return updated_clusters
+ 
+def get_all_cluster_vms(db,cluster_data):
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}"
+    }
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not PROXMOX_HOST:
+        raise RuntimeError("No reachable Proxmox host found for the cluster.")
+    url = f"{PROXMOX_HOST}/api2/json/cluster/resources"
+    response = requests.get(url, headers=headers, verify=False)
+    response.raise_for_status()
+    data = response.json()["data"]
+    return data
+
+import requests
+
+
+
+
+
+def get_templates(db,cluster_data):
+    all_vms = get_all_cluster_vms(db, cluster_data)
+    templates = [
+        {
+            "name": vm["name"],
+            "vmid": vm["vmid"],
+            "status": vm["status"],
+        }
+        for vm in all_vms
+        if vm.get("template") == 1
+    ]
+    return templates
+
+def generate_machine_name(template: str, existing_names: list[str], count: int) -> list[str]:
+    
+    match = re.match(r"(.*)\{n:fixed=(\d+)\}(.*)", template)
+    if not match:
+        raise ValueError("Invalid template format. Expected pattern like 'amber-{n:fixed=3}'")
+
+    prefix, width, suffix = match.groups()
+    width = int(width)
+
+    # Extract used numbers from existing names
+    used_numbers = set()
+    for name in existing_names:
+        if name.startswith(prefix) and name.endswith(suffix):
+            middle = name[len(prefix):-len(suffix) if suffix else None]
+            if middle.isdigit():
+                used_numbers.add(int(middle))
+
+    # Generate the next 'count' unused numbers
+    new_names = []
+    i = 1
+    while len(new_names) < count:
+        if i not in used_numbers:
+            formatted_number = str(i).zfill(width)
+            new_names.append(f"{prefix}{formatted_number}{suffix}")
+        i += 1
+
+    return new_names
+
+def unique_id():
+    unique_id = datetime.now()
+    logger.info(f"Generated unique ID - {unique_id}")
+    return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
+
+# database_url=f"postgresql://{os.getenv('USER_NAME')}:{os.getenv('PASSWORD')}@{os.getenv('HOST_NAME')}/thinkclouddb"
+
+_worker_started = False
+
+async def clone_vm(clone_payload: dict):
+    global _worker_started
+    if not _worker_started:
+        asyncio.create_task(worker_proxmox.clone_vm_worker())
+        _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"clonevms-{uniqueId}"
+    # clone_payload["workflowId"] = workflow_id
+
+    try:
+        clone_payload["workflowId"] = workflow_id
+        print("Starting Clone VM workflow with payload:", clone_payload)
+        handle = await client.start_workflow(
+            workflows_proxmox.CloneVMWorkflow.run,
+            clone_payload,
+            id=workflow_id,
+            task_queue="clonevm-task-queue",
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"Clone VM workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return result 
+    except Exception as e:
+        return {"error": str(e)}
+    
+
+def delete_proxmox_vm(vmid: int, cluster_data):
+    db: Session = next(get_db())
+    if not Cluster:
+        raise HTTPException(status_code=404, detail="No Proxmox cluster found in the database.")
+
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {"Authorization": f"PVEAPIToken={api_token}"}
+    nodes = get_all_nodes(cluster_data)
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not nodes:
+        raise RuntimeError("No reachable Proxmox nodes found for the cluster.")
+
+    for node in nodes:
+        vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
+        try:
+            resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
+            if resp.status_code == 200:
+                vm_status = resp.json()["data"].get("status")
+                # If running, stop the VM first
+                if vm_status == "running":
+                    stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/stop"
+                    stop_resp = requests.post(stop_url, headers=headers, verify=False, timeout=10)
+                    stop_resp.raise_for_status()
+                    # Optional: Wait until stopped (polling)
+                    import time
+                    for _ in range(12):  # Wait max ~60s
+                        status_check = requests.get(vm_url, headers=headers, verify=False, timeout=5)
+                        new_status = status_check.json()["data"].get("status")
+                        if new_status != "running":
+                            break
+                        time.sleep(5)
+                # Now delete the VM
+                delete_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}"
+                delete_resp = requests.delete(delete_url, headers=headers, verify=False, timeout=10)
+                delete_resp.raise_for_status()
+                return {"message": f"VM with VMID {vmid} stopped (if running) and deleted successfully on node {node['name']}."}
+        except requests.RequestException:
+            continue  # Try next node
+
+    raise HTTPException(status_code=404, detail=f"VMID {vmid} not found on any node. Consider deleting the pool.")
+ 
+async def update_metric_server_token(cluster_id: int, new_token: str):
+    db: Optional[Session] = None
+    try:
+        db = SessionLocal()
+        ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
+        if ms:
+            ms.token = new_token
+            db.commit()
+            print(f"Updated MetricServer token for cluster_id={cluster_id}")
+        else:
+            print(f"No MetricServer found for cluster_id={cluster_id}")
+    except Exception as e:
+        print(f"Error updating MetricServer token for cluster_id={cluster_id}: {e}")
+    finally:
+        if db:
+            db.close()
+ 
+
+async def migrate_bucket_all_data(migration_payload: dict):
+    print("Starting migration with payload:", migration_payload)
+    global _worker_started
+    if not _worker_started:
+        # Start your worker (if you have a worker runner, or omit if static process)
+        asyncio.create_task(worker_proxmox.migrate_worker())
+        _worker_started = True
+
+    uniqueId = unique_id()  # Or use any unique ID generator you have
+    client = await connectionWithClient()  # Or Client.connect("localhost:7233") directly
+    workflow_id = f"Migration-{uniqueId}"
+    SRC_BUCKET = migration_payload.get("src_bucket")
+    DST_BUCKET = migration_payload.get("dst_bucket")
+    userName = migration_payload.get("email", "unknown_user")
+    print(f"Starting migration for bucket: {SRC_BUCKET} by user: {userName}")
+
+    try:
+        handle = await client.start_workflow(
+            workflows_proxmox.LiveMigrateWorkflow.run,
+            migration_payload,
+            id=workflow_id,
+            task_queue="migration-task-queue",
+            search_attributes={
+            "Entity": [f"({SRC_BUCKET}) --> ({DST_BUCKET})"],
+            "Action": ["DB Migration"],
+            "UserName": [userName]
+        },
+        )
+        # Do NOT wait for result; just return workflow info
+        print(f"Migration workflow started: workflow_id={handle.id}, run_id={handle.run_id}")
+        return {
+            "status": "Migration workflow started.",
+            "workflow_id": handle.id,
+            "run_id": handle.run_id,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    
+
+def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
+    db: Optional[Session] = None
+    try:
+        db = SessionLocal()
+        ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
+        return ms
+    except Exception as e:
+        print(f"Error fetching MetricServer for cluster_id={cluster_id}: {e}")
+        return None
+    finally:
+        if db:
+            db.close()
+
+
+#---------------------------proxmox power state operations---------------------------
+
+def collect_proxmox_details(vmid, pool_id, db):
+    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    if not machine:
+        return {"status": "error", "error": f"Machine with vm_id {vmid} not found in DB."}
+    if not machine.pool_id:
+        return {"status": "error", "error": f"Machine {vmid} has no associated pool."}
+    pool = db.query(Pool).filter(Pool.id == pool_id).first()
+    if not pool or not pool.pool_template_vm_id:
+        return {"status": "error", "error": f"Pool {machine.pool_id} not found or has no templateid."}
+ 
+    cluster_id = pool.cluster_id.split("_")[1]
+    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster_data:
+        return {"status": "error", "error": f"Cluster not found for pool {pool.id}."}
+ 
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not PROXMOX_HOST:
+        return {"status": "error", "error": "No reachable Proxmox host found for the cluster."}
+    # Get all VMs in the cluster
+    all_vms = get_all_cluster_vms(db, cluster_data)
+    node = None
+    for vm in all_vms:
+        if str(vm.get("vmid")) == str(vmid):
+            node = vm.get("node")
+            vm_status = vm.get("status")
+            break
+    if not node:
+        return {"status": "error", "error": f"VM {vmid} not found in cluster."}
+    return {
+        "status": "success",
+        "PROXMOX_HOST": PROXMOX_HOST,
+        "node": node,
+        "vmid": vmid,
+        "headers": headers
+    }
+ 
+
+def vm_start(PROXMOX_HOST, node, vmid, headers):
+    start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/start"
+    resp = requests.post(start_url, headers=headers, verify=False)
+    if resp.status_code not in (200, 202):
+        print(f"Failed to start VM {vmid} on node {node}.")
+        return False
+    return True
+def vm_stop(PROXMOX_HOST, node, vmid, headers):
+    stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop"
+    resp = requests.post(stop_url, headers=headers, verify=False)
+    if resp.status_code not in (200, 202):
+        print(f"Failed to stop VM {vmid} on node {node}.")
+        return False
+    return True
+def vm_reboot(PROXMOX_HOST, node, vmid, headers):
+    reboot_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/reboot"
+    resp = requests.post(reboot_url, headers=headers, verify=False)
+    if resp.status_code not in (200, 202):
+        print(f"Failed to reboot VM {vmid} on node {node}.")
+        return {"error": f"HTTP {resp.status_code}, {resp.text}"}
+    return {"status": "success"}
+
+def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
+    shutdown_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/shutdown"
+    resp = requests.post(shutdown_url, headers=headers, verify=False)
+    if resp.status_code not in (200, 202):
+        print(f"Failed to shutdown VM {vmid} on node {node}.")
+        return False
+    return True
+
+#----------------------temporal conversion  ----------------------
+
+
+
+async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
+    # global _worker_started
+    # if not _worker_started:
+    #     asyncio.create_task(worker_proxmox.start_vm_proxmox_worker())
+    #     _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"start_vm_proxmox-{uniqueId}"
+    # clone_payload["workflowId"] = workflow_id
+
+    try:
+        # clone_payload["workflowId"] = workflow_id
+        # print("Starting Clone VM workflow with payload:", clone_payload)
+        handle = await client.start_workflow(
+            workflows_proxmox.StartVMProxmoxWorkflow.run,
+            args=[vmid, pool_id,email],
+            id=workflow_id,
+            task_queue="vmpower-task-queue",
+            search_attributes={
+                "Entity": [str(vmid)],
+                "Action": ["start_vm_proxmox"],
+                "UserName": [email]
+            }
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"Start VM workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return result 
+    except Exception as e:
+        return {"error": str(e)}
+
+
+
+async def stop_vm_proxmox(vmid: int, pool_id: str,email: str):
+    # global _worker_started
+    # if not _worker_started:
+    #     asyncio.create_task(worker_proxmox.stop_vm_proxmox_worker())
+    #     _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"stop_vm_proxmox-{uniqueId}"
+    # clone_payload["workflowId"] = workflow_id
+
+    try:
+        # clone_payload["workflowId"] = workflow_id
+        # print("Starting Clone VM workflow with payload:", clone_payload)
+        handle = await client.start_workflow(
+            workflows_proxmox.StopVMProxmoxWorkflow.run,
+            args=[vmid, pool_id,email],
+            id=workflow_id,
+            task_queue="vmpower-task-queue",
+            search_attributes={
+                "Entity": [str(vmid)],
+                "Action": ["stop_vm_proxmox"],
+                "UserName": [email]
+            }
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"Start VM workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return result 
+    except Exception as e:
+        return {"error": str(e)}
+    
+    
+async def reboot_vm_proxmox(vmid: int, pool_id: str,email: str):
+    # global _worker_started
+    # if not _worker_started:
+    #     asyncio.create_task(worker_proxmox.reboot_vm_proxmox_worker())
+    #     _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"reboot_vm_proxmox-{uniqueId}"
+    # clone_payload["workflowId"] = workflow_id
+
+    try:
+        # clone_payload["workflowId"] = workflow_id
+        # print("Starting Clone VM workflow with payload:", clone_payload)
+        handle = await client.start_workflow(
+            workflows_proxmox.RebootVMProxmoxWorkflow.run,
+            args=[vmid, pool_id,email],
+            id=workflow_id,
+            task_queue="vmpower-task-queue",
+            search_attributes={
+                "Entity": [str(vmid)],
+                "Action": ["reboot_vm_proxmox"],
+                "UserName": [email]
+            }
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"Start VM workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return result 
+    except Exception as e:
+        return {"error": str(e)}
+    
+
+async def shutdown_vm_proxmox(vmid: int, pool_id: str, email: str):
+    # global _worker_started
+    # if not _worker_started:
+    #     asyncio.create_task(worker_proxmox.shutdown_vm_proxmox_worker())
+    #     _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"shutdown_vm_proxmox-{uniqueId}"
+    # clone_payload["workflowId"] = workflow_id
+
+    try:
+        # clone_payload["workflowId"] = workflow_id
+        # print("Starting Clone VM workflow with payload:", clone_payload)
+        handle = await client.start_workflow(
+            workflows_proxmox.ShutdownVMProxmoxWorkflow.run,
+            args=[vmid, pool_id,email],
+            id=workflow_id,
+            task_queue="vmpower-task-queue",
+            search_attributes={
+                "Entity": [str(vmid)],
+                "Action": ["shutdown_vm_proxmox"],
+                "UserName": [email]
+            }
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"Start VM workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+        return result 
+    except Exception as e:
+        return {"error": str(e)}
+    
+
+def wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120):
+    status_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current"
+    waited = 0
+    while waited < timeout:
+        resp = requests.get(status_url, headers=headers, verify=False)
+        if resp.status_code == 200:
+            status = resp.json().get("data", {}).get("status")
+            if status == "stopped":
+                return True
+        time.sleep(5)
+        waited += 5
+    return False
+
+async def vm_rebuild(vmid: int, pool_id: str):
+    db = next(get_db())  # or however you get a session
+    global _worker_started
+    if not _worker_started:
+        asyncio.create_task(worker_proxmox.vm_rebuild_worker())
+        _worker_started = True
+
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    workflow_id = f"vmrebuild-{uniqueId}"
+    try:
+        # Start the VM rebuild workflow
+        handle = await client.start_workflow(
+            workflows_proxmox.VmRebuildWorkflow.run,
+            args=[vmid, pool_id],
+            id=workflow_id,
+            task_queue="vm-rebuild-task-queue",
+        )
+        result = await handle.result()  # Now gets actual workflow result
+        print(f"VM Rebuild workflow completed with result: {result}")
+        if isinstance(result, dict) and "error" in result:
+            return result
+
+        # Store the workflow_id in the machine's workflowId field (append)
+        machine_data = db.query(Machine).filter(Machine.id == vmid).first()
+        if machine_data:
+            current_ids = machine_data.workflowId or []
+            if workflow_id not in current_ids:
+                current_ids.append(workflow_id)
+                machine_data.workflowId = current_ids
+                db.commit()
+        return result
+    except Exception as e:
+        db.rollback()
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
+
+def get_vm_config(db, cluster_data, node, vmid):
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}"
+    }
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config"
+    response = requests.get(url, headers=headers, verify=False)
+    response.raise_for_status()
+    return response.json()["data"]
+
+def get_vm_datastores_from_config(config):
+    datastores = []
+    for key, value in config.items():
+        # if key.startswith(("scsi", "ide", "sata", "virtio")) and isinstance(value, str):
+        if key.startswith(("ide")) and isinstance(value, str):
+            datastore = value.split(":")[0]
+            datastores.append(datastore)
+    return list(set(datastores))
+
+def get_vm_ip_addresses(db, cluster_data, node, vmid):
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}"
+    }
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces"
+    try:
+        response = requests.get(url, headers=headers, verify=False, timeout=5)
+        response.raise_for_status()
+        data = response.json().get("data", {})
+        # Defensive: Only proceed if data is a dict and contains "result"
+        if not isinstance(data, dict) or "result" not in data:
+            return []
+        interfaces = data["result"]
+        ip_addresses = []
+        for iface in interfaces:
+            # Only get eth0 IPv4 addresses
+            if iface.get("name") == "eth0":
+                for ip in iface.get("ip-addresses", []):
+                    if ip.get("ip-address-type") == "ipv4":
+                        ip_addr = ip.get("ip-address")
+                        if ip_addr:
+                            ip_addresses.append(ip_addr)
+        return ip_addresses
+    except requests.RequestException:
+        return []
+    except Exception:
+        return []
+
+def get_all_vm_details(db, cluster_data):
+    vms = get_all_cluster_vms(db, cluster_data)
+    vm_info_list = []
+    for vm in vms:
+        if vm['type'] == 'qemu':
+            node = vm['node']
+            vmid = vm['vmid']
+            try:
+                config = get_vm_config(db, cluster_data, node, vmid)
+                datastores = get_vm_datastores_from_config(config)
+                agent_enabled = bool(config.get("agent", 0))
+                ip_addresses = get_vm_ip_addresses(db, cluster_data, node, vmid) if agent_enabled else []
+                vm_info_list.append({
+                    "vmid": vmid,
+                    "node": node,
+                    "datastores": datastores,
+                    "agent_enabled": agent_enabled,
+                    "ip_addresses": ip_addresses
+                })
+            except Exception as e:
+                vm_info_list.append({
+                    "vmid": vmid,
+                    "node": node,
+                    "datastores": [],
+                    "agent_enabled": False,
+                    "ip_addresses": [],
+                    "error": str(e)
+                })
+    return vm_info_list
