@@ -1,4 +1,4 @@
-from fastapi import Depends, APIRouter
+from fastapi import Depends, APIRouter, Query
 from sqlalchemy.orm import Session
 from models.schedule_model import Schedule_report
 from db_configuration.config import get_db
@@ -27,8 +27,8 @@ async def get_item_id(item_id: int ,db: Session = Depends(get_db)):
 
 
 @router.get("/get_schedules_report/{report}")
-async def get_item_report(report: str, db: Session = Depends(get_db)):
-    return await service.get_data_report(report, db)
+async def get_item_report(report: str, limit: int , offset: int , db: Session = Depends(get_db)):
+    return await service.get_data_report(report, limit, offset, db)
 
 
 # Update an item
@@ -43,7 +43,6 @@ async def delete_item(item_id: int, db: Session = Depends(get_db)):
 
 @router.get("/get_schedule_status/{schedule_id}")
 async def get_status(schedule_id: str):
-    
     return  await service.get_temporal_status(schedule_id)
 
 

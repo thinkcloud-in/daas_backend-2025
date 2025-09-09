@@ -1,4 +1,4 @@
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 from temporalio import activity
 from sqlalchemy.orm import Session
 
@@ -34,14 +34,22 @@ async def get_schedule_data_by_id_activity(item_id: int):
 
 
 @activity.defn()
-async def get_schedule_along_report_activity(report:str):
+async def get_schedule_along_report_activity(report:str, limit: int , offset: int):
     db: Session = next(get_db())
     try:
-        items = db.query(Schdeule).filter(Schdeule.report == report).all()
+        query = db.query(Schdeule).filter(Schdeule.report == report)
+        total_count = query.count()
+        items = query.offset(offset).limit(limit).all()
         if items is None:
             raise HTTPException(status_code=404, detail="Schedule report not found")
         items_json = jsonable_encoder(items)
-        return {"msg":"getting schedule reports data successfully", "items": items_json}
+        return {
+            "msg": "Getting schedule reports data successfully",
+            "items": items_json,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")

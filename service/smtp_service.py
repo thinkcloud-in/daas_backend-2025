@@ -4,9 +4,12 @@ from fastapi import HTTPException
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-
+ 
 def smtp_post(item, db):
     try:
+        existing = db.query(SMTP).first()  # or filter by user if multi-user
+        if existing:
+            raise HTTPException(status_code=400, detail="SMTP config already exists")
         db_item = SMTP(
             smtpStatus = item.smtpStatus,
             serverIP = item.serverIP,
@@ -33,27 +36,63 @@ def smtp_get(db):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching SMTPs: {str(e)}")
-    
+ 
+ 
 def smtp_update_data(item, db):
     try:
         db_item = db.query(SMTP).first()
         if db_item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-        db_item.smtpStatus = item.smtpStatus
-        db_item.serverIP = item.serverIP
-        db_item.serverPort = item.serverPort
-        db_item.userName = item.userName
-        db_item.password = item.password
-        db_item.email = item.email
-        db_item.receiverMail = item.receiverMail
-        db_item.connOption = item.connOption
-        db_item.userAuthentication = item.userAuthentication
+            # Create new if not exists
+            db_item = SMTP(
+                smtpStatus = item.smtpStatus,
+                serverIP = item.serverIP,
+                serverPort = item.serverPort,
+                userName = item.userName,
+                password = item.password,
+                email = item.email,
+                receiverMail = item.receiverMail,
+                connOption = item.connOption,
+                userAuthentication = item.userAuthentication
+            )
+            db.add(db_item)
+        else:
+            # Update existing
+            db_item.smtpStatus = item.smtpStatus
+            db_item.serverIP = item.serverIP
+            db_item.serverPort = item.serverPort
+            db_item.userName = item.userName
+            db_item.password = item.password
+            db_item.email = item.email
+            db_item.receiverMail = item.receiverMail
+            db_item.connOption = item.connOption
+            db_item.userAuthentication = item.userAuthentication
         db.commit()
         db.refresh(db_item)
         return db_item
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=f"Error while updating SMTP: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error while updating/creating SMTP: {str(e)}")
+    
+# def smtp_update_data(item, db):
+#     try:
+#         db_item = db.query(SMTP).first()
+#         if db_item is None:
+#             raise HTTPException(status_code=404, detail="Item not found")
+#         db_item.smtpStatus = item.smtpStatus
+#         db_item.serverIP = item.serverIP
+#         db_item.serverPort = item.serverPort
+#         db_item.userName = item.userName
+#         db_item.password = item.password
+#         db_item.email = item.email
+#         db_item.receiverMail = item.receiverMail
+#         db_item.connOption = item.connOption
+#         db_item.userAuthentication = item.userAuthentication
+#         db.commit()
+#         db.refresh(db_item)
+#         return db_item
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=f"Error while updating SMTP: {str(e)}")
     
 def smtp_status_update(smtpStatus:bool,db):
     try:
@@ -77,7 +116,7 @@ def smtp_test_mail(data,db):
         smtp_port = data.serverPort
         smtp_mail = data.email
         smtp_username = data.userName
-        smtp_password = data.password 
+        smtp_password = data.password
         smtp_connOptions = data.connOption
         smtp_receiverMail = data.receiverMail
  
@@ -100,5 +139,4 @@ def smtp_test_mail(data,db):
             return {"message": "Test email sent successfully"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error while sending test email: {str(e)}")
-
-    
+ 
