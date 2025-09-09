@@ -284,7 +284,7 @@ async def delete_role_from_user_activity(request: dict):
         return {
             "status": "Ok",
             "code": 200,
-            "message": f"Role '{request.get("role")}' successfully removed from user '{request.get("username")[0]}'"
+            "message": f"""Role '{request.get("role")}' successfully removed from user '{request.get("username")[0]}'"""
         }
     except Exception as e:
         db.rollback()

@@ -1106,7 +1106,7 @@ async def get_guacamole_ActiveSessions_activity():
                     raise Exception(f"Failed to load connections: {resp_conn.status}")
 
             # 2. Get active sessions
-            active_url = f"{base_url}/api/session/data/{datasource}/activeConnections?token={guacamole_login}"
+            active_url = f"{base_url}/api/session/data/{datasource}/activeConnections?token={guacamole_login}" 
             async with session.get(active_url, headers=headers) as resp_active:
                 if resp_active.status == 200:
                     active_data = await resp_active.json()
@@ -1122,7 +1122,7 @@ async def get_guacamole_ActiveSessions_activity():
             connection_uuid = conn_info["identifier"] if conn_info and "identifier" in conn_info else uuid
 
             # Compose Guacamole client URL (adjust as needed)
-            guac_client_url = f"{base_url}/#/client/activeConnections/{datasource}/{session['identifier']}"
+            guac_client_url = f"{base_url}/#/client/activeConnections/{datasource}/{session['identifier']}?token={guacamole_login}"
             print(f"Guacamole Client URL: {guac_client_url}")
             results.append({
                 "username": session.get("username"),
