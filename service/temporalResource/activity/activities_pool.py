@@ -3,7 +3,7 @@ from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db  
 from models.models import CreateMachineBase, Machine, Pool ,Cluster,CreatePoolBase,UpdateMachineBase
-from fastapi import HTTPException
+from fastapi import HTTPException, logger
 from service.gucamoleService import delete_connection
 from fastapi.encoders import jsonable_encoder
 from service import controllers
@@ -245,6 +245,7 @@ def machinedata(email,machine, db_pool):
         "status": machine.status,
         "error_message": machine.error_message,
         "workflow_status": machine.workflow_status,
+        "workflowId": machine.workflowId,
         "pool_id": db_pool.id,
         "port": db_pool.pool_port,
         "protocol": db_pool.pool_protocol,
@@ -334,7 +335,7 @@ def machinedata(email,machine, db_pool):
         "args": db_pool.pool_args,
         "is_custom_machine": False,
         "email": email,
-                      
+       
         }
     return machine_data
 
@@ -405,6 +406,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             try:
                 response = await clone_vm(clone_payload_dict)
+                print("DEBUG: clone_vm response in update_pool_activity:", response)
                 if isinstance(response, dict) and "error" in response:
                     err_msg = response["error"]
                     if "Template VM" in err_msg and "not found in cluster" in err_msg:
@@ -441,7 +443,9 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         # Assign IPs and create machines for scaled VMs
         if is_automated and added_count > 0 and vms:
+            print("debug:vms to add machines for:", vms)
             for vm in vms:
+                print("debug:processing vm:", vm)
                 name = vm["name"]
                 vmid = vm["vmid"]
                 ip = vm["ip"]
@@ -459,6 +463,10 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     db.rollback()
 
                 try:
+                    # collect both workflow IDs
+                    workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
+                    workflow_ids = [wid for wid in workflow_ids if wid]  # Filter out None
+                    print(f"Workflow IDs for VM {name}: {workflow_ids}")
                     machine_data = {
                         "vm_id": int(vmid),
                         "name": name,
@@ -551,6 +559,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                         "args": db_pool.pool_args,
                         "is_custom_machine": False,
                         "email": email,
+                        "clone_workflow_id": workflow_ids,
                     }
 
                     machine_data_obj = CreateMachineBase(**machine_data)

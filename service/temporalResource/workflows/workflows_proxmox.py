@@ -264,7 +264,7 @@ class ShutdownVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class VmRebuildWorkflow:
     @workflow.run
-    async def run(self, vmid: int, pool_id: str):
+    async def run(self, vmid: int, pool_id: str, email: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -275,7 +275,7 @@ class VmRebuildWorkflow:
         # Step 1: Rebuild the VM
         result = await workflow.execute_activity(
             activities_proxmox.vm_rebuild_activity,
-            args=[vmid, pool_id],
+            args=[vmid, pool_id, email],
             retry_policy=retry_policy,
             start_to_close_timeout=timedelta(seconds=120),
         )

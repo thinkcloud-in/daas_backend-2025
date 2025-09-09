@@ -162,54 +162,118 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
 
 
-async def create_machine(machine_data: "CreateMachineBase"):
+# async def create_machine(machine_data: "CreateMachineBase"):
+#     uniqueId = unique_id()
+#     client = await connectionWithClient()
+#     machine_name = machine_data.name
+#     userName = machine_data.email
+ 
+#     # Generate the create-machine workflow ID
+#     create_machine_wfid = f"{machine_name}create-{uniqueId}"
+ 
+#     # Merge IDs: always start with the create-machine ID
+#     workflowId_list = [create_machine_wfid]
+ 
+#     # Merge in clone_workflow_id if present
+#     clone_wfid = getattr(machine_data, "clone_workflow_id", None)
+#     if clone_wfid:
+#         if isinstance(clone_wfid, list):
+#             workflowId_list.extend(clone_wfid)
+#         else:
+#             workflowId_list.append(str(clone_wfid))
+ 
+#     # Optionally, merge any already-passed workflowId (avoid duplicates)
+#     existing_wfids = getattr(machine_data, "workflowId", None)
+#     if existing_wfids:
+#         if isinstance(existing_wfids, list):
+#             for wf in existing_wfids:
+#                 if wf not in workflowId_list:
+#                     workflowId_list.append(wf)
+#         elif existing_wfids not in workflowId_list:
+#             workflowId_list.append(str(existing_wfids))
+ 
+#     print("Final merged workflowId_list:", workflowId_list)
+ 
+#     # ---- NEW: Initialize workflow_status for all workflow IDs ----
+#     workflow_status_map = {wfid: {"status": "running", "error": None} for wfid in workflowId_list}
+ 
+#     try:
+#         # Start the worker if needed
+#         asyncio.create_task(workers_machine.create_machine_worker())
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
+ 
+#     try:
+#         # Prepare data for the workflow/activity
+#         machine_data_dict = machine_data.dict() if hasattr(machine_data, "dict") else dict(machine_data)
+#         machine_data_dict["workflowId"] = workflowId_list
+#         machine_data_dict["workflow_status"] = workflow_status_map  # <-- <--- THIS LINE ADDED
+#         machine_data_dict.pop("clone_workflow_id", None)  # Remove helper field before storing
+ 
+#         handle = await client.start_workflow(
+#             workflows_machine.CreateMachineWorkflow.run,
+#             machine_data_dict,
+#             id=create_machine_wfid,
+#             task_queue="create-machine-task-queue",
+#             search_attributes={
+#                 "Entity": [machine_name],
+#                 "Action": ["Machine-Creation"],
+#                 "UserName": [userName]
+#             }
+#         )
+#         result = await handle.result()
+#         return result
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=f"An error occurred during machine creation: {str(e)}")
+from db_configuration.config import SessionLocal, get_db
+db=SessionLocal() 
+ 
+async def create_machine(machine_data: CreateMachineBase):
+    logger.info(f"Received machine_data for creation: {machine_data}")
     uniqueId = unique_id()
     client = await connectionWithClient()
     machine_name = machine_data.name
     userName = machine_data.email
- 
-    # Generate the create-machine workflow ID
+    Pool_data = db.query(Pool).filter(Pool.id == machine_data.pool_id).first()
+
     create_machine_wfid = f"{machine_name}create-{uniqueId}"
- 
-    # Merge IDs: always start with the create-machine ID
     workflowId_list = [create_machine_wfid]
- 
-    # Merge in clone_workflow_id if present
-    clone_wfid = getattr(machine_data, "clone_workflow_id", None)
-    if clone_wfid:
-        if isinstance(clone_wfid, list):
-            workflowId_list.extend(clone_wfid)
-        else:
-            workflowId_list.append(str(clone_wfid))
- 
-    # Optionally, merge any already-passed workflowId (avoid duplicates)
-    existing_wfids = getattr(machine_data, "workflowId", None)
-    if existing_wfids:
-        if isinstance(existing_wfids, list):
-            for wf in existing_wfids:
-                if wf not in workflowId_list:
-                    workflowId_list.append(wf)
-        elif existing_wfids not in workflowId_list:
-            workflowId_list.append(str(existing_wfids))
- 
-    print("Final merged workflowId_list:", workflowId_list)
- 
-    # ---- NEW: Initialize workflow_status for all workflow IDs ----
-    workflow_status_map = {wfid: {"status": "running", "error": None} for wfid in workflowId_list}
- 
+
+    # If Automated, merge in other workflow IDs
+    if Pool_data.pool_type == "Automated":
+        logger.info("Pool type is Automated, processing workflow IDs.")
+        clone_wfid = getattr(machine_data, "clone_workflow_id", None)
+        if clone_wfid:
+            if isinstance(clone_wfid, list):
+                workflowId_list.extend(clone_wfid)
+            else:
+                workflowId_list.append(str(clone_wfid))
+        existing_wfids = getattr(machine_data, "workflowId", None)
+        if existing_wfids:
+            if isinstance(existing_wfids, list):
+                for wf in existing_wfids:
+                    if wf not in workflowId_list:
+                        workflowId_list.append(wf)
+            elif existing_wfids not in workflowId_list:
+                workflowId_list.append(str(existing_wfids))
+        workflow_status_map = {wfid: {"status": "running", "error": None} for wfid in workflowId_list}
+        
+    else:
+        logger.info("Pool type is Manual, skipping additional workflow IDs.")
+        workflow_status_map = None
     try:
-        # Start the worker if needed
         asyncio.create_task(workers_machine.create_machine_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
- 
+    # Prepare data for workflow/activity
+    machine_data_dict = machine_data.dict() if hasattr(machine_data, "dict") else dict(machine_data)
+    machine_data_dict["workflowId"] = workflowId_list
+    machine_data_dict.pop("clone_workflow_id", None)
+    if workflow_status_map is not None:
+        machine_data_dict["workflow_status"] = workflow_status_map
+
     try:
-        # Prepare data for the workflow/activity
-        machine_data_dict = machine_data.dict() if hasattr(machine_data, "dict") else dict(machine_data)
-        machine_data_dict["workflowId"] = workflowId_list
-        machine_data_dict["workflow_status"] = workflow_status_map  # <-- <--- THIS LINE ADDED
-        machine_data_dict.pop("clone_workflow_id", None)  # Remove helper field before storing
- 
+        logger.info(f"Starting workflow for machine creation: {machine_data_dict}")
         handle = await client.start_workflow(
             workflows_machine.CreateMachineWorkflow.run,
             machine_data_dict,
@@ -220,15 +284,12 @@ async def create_machine(machine_data: "CreateMachineBase"):
                 "Action": ["Machine-Creation"],
                 "UserName": [userName]
             }
-        )
+        )   
         result = await handle.result()
+        logger.info(f"Machine creation workflow completed with result")
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred during machine creation: {str(e)}")
- 
- 
- 
-
 
 # async def create_machine(machine_data: "CreateMachineBase"):
 #     uniqueId = unique_id()

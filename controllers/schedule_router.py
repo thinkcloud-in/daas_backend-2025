@@ -27,8 +27,8 @@ async def get_item_id(item_id: int ,db: Session = Depends(get_db)):
 
 
 @router.get("/get_schedules_report/{report}")
-async def get_item_report(report: str, db: Session = Depends(get_db)):
-    return await service.get_data_report(report, db)
+async def get_item_report(report: str, limit: int , offset: int , db: Session = Depends(get_db)):
+    return await service.get_data_report(report, limit, offset, db)
 
 
 # Update an item

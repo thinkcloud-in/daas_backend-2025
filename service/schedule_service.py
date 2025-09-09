@@ -153,7 +153,7 @@ async def get_data_id(item_id:int):
     return result
 
 
-async def get_data_report(report:str,db):
+async def get_data_report(report:str, limit: int, offset: int,db):
     uniqueID = unique_id()
     client = await connectionWithClient()
     print("Retrieving pool data with temporal server...")
@@ -164,7 +164,7 @@ async def get_data_report(report:str,db):
         raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_along_report_workflow.run,
-        report,
+        args=[report, limit, offset],
         id=f"Retrieving-schedule-data-{report}-{uniqueID}",
         task_queue="GetScheduleDataAlongReport-task-queue",
     )
