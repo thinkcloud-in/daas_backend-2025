@@ -53,6 +53,8 @@ async def get_schedule_along_report_activity(report:str, limit: int , offset: in
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")
+   
+ 
     
 
 

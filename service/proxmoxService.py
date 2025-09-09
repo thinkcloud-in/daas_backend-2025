@@ -1,5 +1,6 @@
 import asyncio
 from asyncio.log import logger
+from collections import OrderedDict
 from datetime import datetime
 import time 
 from http.client import HTTPException
@@ -25,6 +26,7 @@ from models.models import Machine
 from models.IPs_model import IPEntry, IPSModel
 from service.temporalResource.activity.activities_proxmox import netmask_to_cidr
 import os
+from service.pollingStatus import update_workflow_status
   
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VERIFY_SSL = False  # Set to True if you want to verify SSL certificates
@@ -179,7 +181,10 @@ def unique_id():
 
 # database_url=f"postgresql://{os.getenv('USER_NAME')}:{os.getenv('PASSWORD')}@{os.getenv('HOST_NAME')}/thinkclouddb"
 
+
+# Worker started flags
 _worker_started = False
+_vm_rebuild_worker_started = False
 
 async def clone_vm(clone_payload: dict):
     global _worker_started
@@ -549,9 +554,57 @@ def wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120):
         time.sleep(5)
         waited += 5
     return False
+def update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id):
+    """
+    Update the workflowId list:
+    - Replace the 2nd element with new_rebuild_id
+    - Replace the 3rd element with new_assign_ip_id
+    - If list is too short, pad with None
+    """
+    updated_ids = current_ids.copy()
+    while len(updated_ids) < 3:
+        updated_ids.append(None)
+    if new_rebuild_id:
+        updated_ids[1] = new_rebuild_id
+    if new_assign_ip_id:
+        updated_ids[2] = new_assign_ip_id
+    return updated_ids
+def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign_ip_id, rebuild_status, rebuild_error, assign_ip_status, assign_ip_error):
+    """
+    Replace the 2nd and 3rd items in workflow_status dict with new workflow IDs and their status/error.
+    Preserves order for the first and other items.
+    """
+    ordered_status = OrderedDict(workflow_status_dict)
+    keys = list(ordered_status.keys())
 
-async def vm_rebuild(vmid: int, pool_id: str):
-    db = next(get_db())  # or however you get a session
+    # Replace 2nd entry with new_rebuild_id
+    if len(keys) >= 2:
+        keys[1] = new_rebuild_id
+    elif len(keys) == 1:
+        keys.append(new_rebuild_id)
+    else:
+        keys.extend([None, new_rebuild_id])
+
+    # Replace 3rd entry with new_assign_ip_id
+    if len(keys) >= 3:
+        keys[2] = new_assign_ip_id
+    elif len(keys) == 2:
+        keys.append(new_assign_ip_id)
+    else:
+        keys.extend([None, None, new_assign_ip_id])
+
+    new_status = OrderedDict()
+    for i, k in enumerate(keys):
+        if i == 1 and new_rebuild_id:
+            new_status[new_rebuild_id] = {"status": rebuild_status, "error": rebuild_error}
+        elif i == 2 and new_assign_ip_id:
+            new_status[new_assign_ip_id] = {"status": assign_ip_status, "error": assign_ip_error}
+        else:
+            new_status[k] = workflow_status_dict.get(k, {"status": None, "error": None})
+    return dict(new_status)
+
+async def vm_rebuild(vmid: int, pool_id: str,email: str):
+    db = next(get_db())
     global _worker_started
     if not _worker_started:
         asyncio.create_task(worker_proxmox.vm_rebuild_worker())
@@ -564,26 +617,101 @@ async def vm_rebuild(vmid: int, pool_id: str):
         # Start the VM rebuild workflow
         handle = await client.start_workflow(
             workflows_proxmox.VmRebuildWorkflow.run,
-            args=[vmid, pool_id],
+            args=[vmid, pool_id,email],
             id=workflow_id,
             task_queue="vm-rebuild-task-queue",
         )
-        result = await handle.result()  # Now gets actual workflow result
-        print(f"VM Rebuild workflow completed with result: {result}")
-        if isinstance(result, dict) and "error" in result:
-            return result
 
-        # Store the workflow_id in the machine's workflowId field (append)
-        machine_data = db.query(Machine).filter(Machine.id == vmid).first()
+        # Set status to RUNNING as soon as workflow is started
+        machine_data = db.query(Machine).filter(Machine.vm_id == vmid).first()
         if machine_data:
             current_ids = machine_data.workflowId or []
-            if workflow_id not in current_ids:
-                current_ids.append(workflow_id)
-                machine_data.workflowId = current_ids
-                db.commit()
+            new_rebuild_id = workflow_id
+            new_assign_ip_id = None
+            updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
+            machine_data.workflowId = updated_ids
+
+            current_status = machine_data.workflow_status or {}
+            updated_status = update_workflow_status_dict(
+                current_status,
+                new_rebuild_id,
+                new_assign_ip_id,
+                "RUNNING",
+                "",
+                "RUNNING",
+                ""
+            )
+            machine_data.workflow_status = updated_status
+            db.commit()
+            db.refresh(machine_data)
+
+            # Also call update_workflow_status for rebuild workflow RUNNING
+            update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status="RUNNING", error="")
+
+        result = await handle.result()  # Should contain child workflow id
+        logger.info(f"VM Rebuild workflow completed with result: {result}")
+
+        # Update with child workflow id after result
+        if machine_data:
+            new_assign_ip_id = result.get("wait_and_assign_result")
+
+            # Update workflowId with child workflow
+            current_ids = machine_data.workflowId or []
+            updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
+            machine_data.workflowId = updated_ids
+
+            # Determine statuses
+            if isinstance(result, dict) and "error" in result:
+                rebuild_status = "FAILED"
+                rebuild_error = result["error"]
+                assign_ip_status = machine_data.workflow_status.get(new_assign_ip_id, {}).get("status", "RUNNING")
+                assign_ip_error = machine_data.workflow_status.get(new_assign_ip_id, {}).get("error", "")
+            else:
+                rebuild_status = "COMPLETED"
+                rebuild_error = ""
+                assign_ip_status = "RUNNING" if new_assign_ip_id else None
+                assign_ip_error = ""
+
+            # Update workflow_status dict for 2nd and 3rd entries
+            current_status = machine_data.workflow_status or {}
+            updated_status = update_workflow_status_dict(
+                current_status,
+                new_rebuild_id,
+                new_assign_ip_id,
+                rebuild_status,
+                rebuild_error,
+                assign_ip_status,
+                assign_ip_error
+            )
+            machine_data.workflow_status = updated_status
+            db.commit()
+            db.refresh(machine_data)
+
+            # Now call update_workflow_status for both main and child workflows
+            update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status=rebuild_status, error=rebuild_error, vm_status="")
+            if new_assign_ip_id and assign_ip_status:
+                update_workflow_status(db, machine_id=machine_data.id, wfid=new_assign_ip_id, status=assign_ip_status, error=assign_ip_error)
         return result
     except Exception as e:
+        print(f"Exception during workflow: {str(e)}")
         db.rollback()
+        machine_data = db.query(Machine).filter(Machine.vm_id == vmid).first()
+        if machine_data:
+            # On error, update workflow_status for rebuild workflow
+            current_status = machine_data.workflow_status or {}
+            updated_status = update_workflow_status_dict(
+                current_status,
+                workflow_id,
+                None,
+                "FAILED",
+                str(e),
+                None,
+                None
+            )
+            machine_data.workflow_status = updated_status
+            db.commit()
+            db.refresh(machine_data)
+            update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status="FAILED", error=str(e))
         return {"error": str(e)}
     finally:
         db.close()

@@ -444,7 +444,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
     return {"vm_status": vm_status, "msg": msg}
 
 @activity.defn
-async def vm_rebuild_activity(vmid: int, pool_id: str = None):
+async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None):
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
@@ -492,14 +492,14 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None):
             if status_resp.status_code == 200:
                 running = status_resp.json().get("data", {}).get("status") == "running"
             if running:
-                print(f"VM {vmid} is running, stopping and shutting down...")
+                
                 proxmoxService.vm_stop(PROXMOX_HOST, node, vmid, headers)
                 proxmoxService.vm_shutdown(PROXMOX_HOST, node, vmid, headers)
                 proxmoxService.wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120)
-            print(f"Deleting VM {vmid} on node {node} ...")
+           
             del_resp = requests.delete(delete_url, headers=headers, verify=False)
             del_resp.raise_for_status()
-            time.sleep(5)  # Poll for deletion
+            await asyncio.sleep(5)  # Poll for deletion
 
         # --- Template node selection ---
         template_node = None

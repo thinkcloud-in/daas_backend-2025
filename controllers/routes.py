@@ -187,6 +187,7 @@ async def get_pool_details_route(pool_id: int, db: Session = Depends(get_db)):
  
 @router.post('/create_machine')
 async def create_machine_endpoint(machine_data: models.CreateMachineBase):
+
     # print(f"machine data {machine_data}")
     return await controller.create_machine( machine_data)
 

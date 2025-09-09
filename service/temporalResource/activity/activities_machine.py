@@ -68,84 +68,173 @@ async def get_machine_name(machine_data):
 
 
 from service.pollingStatus import ensure_status_poller_running
+# @activity.defn
+# async def create_machine_activity(machine_data: dict):
+#     db: Session = next(get_db())
+#     machine_identifier = None   # For cleanup in case of error
+#     try:
+#         # Extract workflow_id (should be a list of workflow IDs)
+#         workflow_ids = machine_data.get("workflowId")
+#         if not workflow_ids or not isinstance(workflow_ids, list):
+#             raise ValueError("workflowId (list) is required to track Temporal workflow status for this machine.")
+ 
+#         # Extract email (optional validation)
+#         email = machine_data.get("email")
+#         if not email:
+#             raise ValueError("Email is required for creating the machine.")
+ 
+#         # Optionally, check for machine name uniqueness (if needed)
+#         response = await get_machine_name(machine_data)
+#         if response == 'Machine Already Existed':
+#             return {"msg": "Machine already exists"}
+ 
+#         # Create the machine in Guacamole first (external system)
+#         guaca_machine_response = await gucamoleService.creating_connection(machine_data)
+#         machine_identifier = guaca_machine_response.get('identifier')
+#         machine_data['identifier'] = machine_identifier
+ 
+#         # Initialize workflow_status for all workflow IDs as 'running'
+#         workflow_status_map = {wfid: {"status": "RUNNING", "error": None} for wfid in workflow_ids}
+ 
+#         # Build the Machine DB object (excluding email and clone_workflow_id from DB if not needed)
+#         with db.no_autoflush:
+#             machine_db_kwargs = {key: value for key, value in machine_data.items() if key not in ('email', 'clone_workflow_id')}
+#             machine_db_kwargs['workflowId'] = workflow_ids
+#             machine_db_kwargs['workflow_status'] = workflow_status_map
+#             machine = model.Machine(**machine_db_kwargs)
+#             db.add(machine)
+ 
+#             # Also update the Pool's pool_machines field (assuming it's a list of identifiers)
+#             pool = db.query(model.Pool).filter(model.Pool.id == machine_data['pool_id']).first()
+#             if pool:
+#                 if pool.pool_machines is None:
+#                     pool.pool_machines = []
+#                 pool.pool_machines = pool.pool_machines + [machine.identifier]
+ 
+#         db.commit()
+#         db.refresh(machine)
+        
+#         # ===== NEW: Ensure status poller cron workflow is running =====
+#         try:
+#             print(f"Ensuring status poller is running for machine {machine.id}...")
+#             poller_result = await ensure_status_poller_running()
+#             print(f"Status poller result: {poller_result}")
+#         except Exception as e:
+#             print(f"Warning: Could not ensure status poller: {e}")
+#             # Don't fail machine creation if status poller fails to start
+#         # ============================================================
+
+#         # Update the workflow_status for this workflow ID to 'COMPLETED'
+#         # update_workflow_status(db, machine.id, workflow_ids[0], "COMPLETED", None)
+ 
+#         serialized_machine = jsonable_encoder(machine)
+#         serialized_pools = jsonable_encoder(db.query(model.Pool).all())
+ 
+#         return {
+#             "msg": "Machine created successfully",
+#             "machine": serialized_machine,
+#             "pools": serialized_pools,
+#         }
+ 
+#     except Exception as e:
+#         db.rollback()
+#         # If machine was created, update workflow_status as failed
+#         try:
+#             if 'machine' in locals():
+#                 # update_workflow_status(db, machine.id, workflow_ids[0], "FAILED", str(e))
+#                 update_workflow_status(db, machine.id, workflow_ids[0], "FAILED", str(e))
+#         except Exception:
+#             pass
+#         # Cleanup: if Guacamole connection was created but DB failed, delete Guacamole entry
+#         if machine_identifier:
+#             try:
+#                 await gucamoleService.delete_connection(machine_identifier)
+#             except Exception:
+#                 pass
+#         raise Exception("An error occurred while creating the machine: " + str(e))
+#     finally:
+#         db.close()
+
+# Activity: Create the machine
 @activity.defn
 async def create_machine_activity(machine_data: dict):
     db: Session = next(get_db())
-    machine_identifier = None   # For cleanup in case of error
+    machine_identifier = None
     try:
-        # Extract workflow_id (should be a list of workflow IDs)
-        workflow_ids = machine_data.get("workflowId")
-        if not workflow_ids or not isinstance(workflow_ids, list):
-            raise ValueError("workflowId (list) is required to track Temporal workflow status for this machine.")
- 
-        # Extract email (optional validation)
+        pool = db.query(model.Pool).filter(model.Pool.id == machine_data['pool_id']).first()
+        is_automated = pool.pool_type == "Automated"
+
+        # For Automated pools, get workflow IDs and status map
+        if is_automated:
+            workflow_ids = machine_data.get("workflowId")
+            if not workflow_ids or not isinstance(workflow_ids, list):
+                raise ValueError("workflowId (list) is required to track Temporal workflow status for this machine.")
+            workflow_status_map = machine_data.get("workflow_status") \
+                or {wfid: {"status": "RUNNING", "error": None} for wfid in workflow_ids}
+        else:
+            workflow_ids = machine_data.get("workflowId", [])
+            workflow_status_map = None
+
         email = machine_data.get("email")
         if not email:
             raise ValueError("Email is required for creating the machine.")
- 
-        # Optionally, check for machine name uniqueness (if needed)
+
         response = await get_machine_name(machine_data)
         if response == 'Machine Already Existed':
             return {"msg": "Machine already exists"}
- 
+        logger.info("Machine name is unique, proceeding with creation.")
         # Create the machine in Guacamole first (external system)
         guaca_machine_response = await gucamoleService.creating_connection(machine_data)
+        logger.info(f"Guacamole service response: {guaca_machine_response}")
         machine_identifier = guaca_machine_response.get('identifier')
         machine_data['identifier'] = machine_identifier
- 
-        # Initialize workflow_status for all workflow IDs as 'running'
-        workflow_status_map = {wfid: {"status": "RUNNING", "error": None} for wfid in workflow_ids}
- 
-        # Build the Machine DB object (excluding email and clone_workflow_id from DB if not needed)
+
+        # Build Machine DB object
         with db.no_autoflush:
-            machine_db_kwargs = {key: value for key, value in machine_data.items() if key not in ('email', 'clone_workflow_id')}
-            machine_db_kwargs['workflowId'] = workflow_ids
-            machine_db_kwargs['workflow_status'] = workflow_status_map
+            if is_automated:
+                machine_db_kwargs = {key: value for key, value in machine_data.items() if key not in ('email', 'clone_workflow_id')}
+                machine_db_kwargs['workflowId'] = workflow_ids
+                machine_db_kwargs['workflow_status'] = workflow_status_map
+            else:
+                machine_db_kwargs = {key: value for key, value in machine_data.items() if key not in ('email', 'clone_workflow_id')}
+                machine_db_kwargs['workflowId'] = workflow_ids
+
             machine = model.Machine(**machine_db_kwargs)
             db.add(machine)
- 
-            # Also update the Pool's pool_machines field (assuming it's a list of identifiers)
-            pool = db.query(model.Pool).filter(model.Pool.id == machine_data['pool_id']).first()
+
             if pool:
                 if pool.pool_machines is None:
                     pool.pool_machines = []
                 pool.pool_machines = pool.pool_machines + [machine.identifier]
- 
+
         db.commit()
         db.refresh(machine)
-        
-        # ===== NEW: Ensure status poller cron workflow is running =====
-        try:
-            print(f"Ensuring status poller is running for machine {machine.id}...")
-            poller_result = await ensure_status_poller_running()
-            print(f"Status poller result: {poller_result}")
-        except Exception as e:
-            print(f"Warning: Could not ensure status poller: {e}")
-            # Don't fail machine creation if status poller fails to start
-        # ============================================================
 
-        # Update the workflow_status for this workflow ID to 'COMPLETED'
-        # update_workflow_status(db, machine.id, workflow_ids[0], "COMPLETED", None)
- 
+        # Ensure status poller cron workflow is running
+        try:
+            logger.info(f"Ensuring status poller is running for machine {machine.id}...")
+            poller_result = await ensure_status_poller_running()
+            logger.info(f"Status poller result: {poller_result}")
+        except Exception as e:
+            logger.warning(f"Could not ensure status poller: {e}")
+
         serialized_machine = jsonable_encoder(machine)
         serialized_pools = jsonable_encoder(db.query(model.Pool).all())
- 
+
         return {
             "msg": "Machine created successfully",
             "machine": serialized_machine,
             "pools": serialized_pools,
         }
- 
+
     except Exception as e:
         db.rollback()
-        # If machine was created, update workflow_status as failed
         try:
-            if 'machine' in locals():
-                # update_workflow_status(db, machine.id, workflow_ids[0], "FAILED", str(e))
+            # Only update workflow status for automated pools
+            if 'machine' in locals() and pool and pool.pool_type == "Automated":
                 update_workflow_status(db, machine.id, workflow_ids[0], "FAILED", str(e))
         except Exception:
             pass
-        # Cleanup: if Guacamole connection was created but DB failed, delete Guacamole entry
         if machine_identifier:
             try:
                 await gucamoleService.delete_connection(machine_identifier)
@@ -154,8 +243,6 @@ async def create_machine_activity(machine_data: dict):
         raise Exception("An error occurred while creating the machine: " + str(e))
     finally:
         db.close()
-
-
 
 @activity.defn
 async def delete_machine_activity(machine_identifier: str):
