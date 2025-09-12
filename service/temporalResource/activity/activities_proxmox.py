@@ -440,7 +440,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
         msg = f"Shutdown failed: {vm_status['error']}"
    
     db.commit()
-    print("VM Status:", vm_status)
+    
     return {"vm_status": vm_status, "msg": msg}
 
 @activity.defn
@@ -530,7 +530,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
      
             return {"status": "success", "upid": upid, "node": node, "cluster_id": cluster_id,"machine_name": machine.name,"ip_address": machine.hostname}
         except Exception as e:
-            return {"status": "error", "error": str(e)}
+            return {"status": "error", "error": "Cloning failed" }
     finally:
         db.close()
 

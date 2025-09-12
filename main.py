@@ -166,6 +166,7 @@ async def startup_event():
     asyncio.create_task(workers_cluster.combined_worker())
     asyncio.create_task(worker_pollingStatus.status_poller_worker())
     asyncio.create_task(worker_proxmox.vm_power_worker())
+    asyncio.create_task(worker_proxmox.vm_rebuild_worker())
 #     
 # for route in app.router.routes:
 #     print(route.path, route.name)
