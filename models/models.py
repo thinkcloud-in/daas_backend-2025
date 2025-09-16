@@ -19,6 +19,8 @@ class Pool(Base):
     entitled = Column(Integer)
     pool_name = Column(String) # pool name
     pool_machines=Column(ARRAY(String))
+    pool_os_type=Column(String,nullable=True)
+
     # -------------------------
     # disable_audio = Column(Boolean, nullable=True)
     pool_guacd_encryption = Column(String, nullable=False)
@@ -177,7 +179,8 @@ class CreatePoolBase(BaseModel):
     # name: str
     pool_name: Optional[str] = None
     pool_machines: Optional[List[str]] = None  # <--- add this line!
-    # ---------------------------------------
+    pool_os_type: Optional[str] = None
+   
     pool_disable_audio:Optional[bool] = None
     pool_guacd_port:Optional[int] = None
     pool_guacd_encryption: Optional[str] = None
@@ -320,6 +323,8 @@ class UpdatePoolBase(BaseModel):
     pool_type: Optional[str] = None
     # name: str
     pool_name: Optional[str] = None
+    pool_machines: Optional[List[str]] = None  # <--- add this line!
+    pool_os_type: Optional[str] = None
     # ---------------------------------------
     pool_disable_audio:Optional[bool] = None
     pool_guacd_port:Optional[int] = None
@@ -468,6 +473,7 @@ class Machine(Base):
     vm_id = Column(Integer, nullable=True)
     # General fields
     # disable_audio = Column(Boolean, nullable=True)
+    os_type = Column(String, nullable=True)
     guacd_port = Column(Integer, nullable=True)
     guacd_encryption = Column(String, nullable=False)
     guacd_hostname = Column(String, nullable=False)
@@ -621,6 +627,7 @@ class Machine(Base):
 #pydantic model for creating machine
 class CreateMachineBase(BaseModel):
     vm_id: Optional[int] = None
+    os_type: Optional[str] = None
     email: Optional[str] = None
     disable_audio:Optional[bool] = None
     guacd_port:Optional[int]=None
@@ -762,6 +769,7 @@ class CreateMachineBase(BaseModel):
 class UpdateMachineBase(BaseModel):
     vm_id: Optional[int] = None
     email: Optional[str] = None
+    os_type: Optional[str] = None
     disable_audio:Optional[bool] = None
     guacd_port:Optional[int] = None
     guacd_encryption:str
