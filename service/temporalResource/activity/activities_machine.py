@@ -254,55 +254,49 @@ async def delete_machine_activity(machine_identifier: str):
         if not machine:
             logger.warning("Machine does not exist in the database.")
             return {"msg": "Machine does not exist"}
-
-        # Delete the VM in Proxmox
-        vmid = machine.vm_id
         pool = db.query(model.Pool).filter(model.Pool.id == machine.pool_id).first()
-        if pool is None:
-            logger.warning("Pool not found for the machine.")
-            return {"msg": "Pool not found for the machine"}
-        cluster_pool_id = pool.cluster_id
+        if pool and pool.pool_type == "Automated":
+            # Delete the VM in Proxmox
+            vmid = machine.vm_id
         
-        id_cluster = cluster_pool_id.split("_")[1]
-        cluster_data = db.query(model.Cluster).filter(model.Cluster.id == id_cluster).first()
-        try:
-            # If your delete_proxmox_vm is async, use await; otherwise, use run_in_executor
-            await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
-            logger.info(f"VM with VMID {vmid} deleted from Proxmox.")
-        except Exception as e:
-            logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")
-         
-            # Optionally, you could return a failure here, or continue
+            if pool is None:
+                logger.warning("Pool not found for the machine.")
+                return {"msg": "Pool not found for the machine"}
+            cluster_pool_id = pool.cluster_id
+            
+            id_cluster = cluster_pool_id.split("_")[1]
+            cluster_data = db.query(model.Cluster).filter(model.Cluster.id == id_cluster).first()
+            try:
+                # If your delete_proxmox_vm is async, use await; otherwise, use run_in_executor
+                await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
+                logger.info(f"VM with VMID {vmid} deleted from Proxmox.")
+            except Exception as e:
+                logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")
+               # Free the IP assigned to this VM
+            ip_entry = db.query(IPEntry).filter(IPEntry.vm_id == vmid, IPEntry.status == "used").first()
+            if ip_entry:
+                ip_entry.status = "unused"
+                ip_entry.vm_id = None
+                db.commit()
+            # Remove vmid from pool.pool_vmids
+            if pool and pool.pool_vmids and vmid in pool.pool_vmids:
+                pool.pool_vmids = [v for v in pool.pool_vmids if v != vmid]
+                number_of_vmids = len(pool.pool_vmids) if pool.pool_vmids else 0
+                pool.pool_number_of_vms = number_of_vmids
+                db.commit()
+                db.refresh(pool)
+                logger.info(f"Updated pool_vmids list: {pool.pool_vmids}")
+                    # Optionally, you could return a failure here, or continue
 
         # Proceed to delete the machine from DB
         db.delete(machine)
         db.commit()
-
-         # Free the IP assigned to this VM
-        ip_entry = db.query(IPEntry).filter(IPEntry.vm_id == vmid, IPEntry.status == "used").first()
-        if ip_entry:
-            ip_entry.status = "unused"
-            ip_entry.vm_id = None
-            db.commit()
-
         # Remove machine_identifier from pool.pool_machines
         if pool and pool.pool_machines and machine_identifier in pool.pool_machines:
             pool.pool_machines = [m for m in pool.pool_machines if m != machine_identifier]
             db.commit()
             db.refresh(pool)
             logger.info(f"Updated pool_machines list: {pool.pool_machines}")
-
-        # Remove vmid from pool.pool_vmids
-        if pool and pool.pool_vmids and vmid in pool.pool_vmids:
-            pool.pool_vmids = [v for v in pool.pool_vmids if v != vmid]
-            number_of_vmids = len(pool.pool_vmids) if pool.pool_vmids else 0
-            pool.pool_number_of_vms = number_of_vmids
-            db.commit()
-            db.refresh(pool)
-            logger.info(f"Updated pool_vmids list: {pool.pool_vmids}")
-
-
-
         # Get machines in pool (after deletion)
         machines_in_pool = jsonable_encoder(db.query(model.Machine).filter(model.Machine.pool_id == pool.id).all())
         all_pools = jsonable_encoder(db.query(model.Pool).all())
