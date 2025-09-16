@@ -783,6 +783,7 @@ def get_all_vm_details(db, cluster_data):
                 vm_info_list.append({
                     "vmid": vmid,
                     "node": node,
+                    "name": vm.get("name", ""),  # <-- Add this line
                     "datastores": datastores,
                     "agent_enabled": agent_enabled,
                     "ip_addresses": ip_addresses
@@ -791,6 +792,7 @@ def get_all_vm_details(db, cluster_data):
                 vm_info_list.append({
                     "vmid": vmid,
                     "node": node,
+                    "name": vm.get("name", ""),  # <-- Add this line
                     "datastores": [],
                     "agent_enabled": False,
                     "ip_addresses": [],
