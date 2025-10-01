@@ -2,6 +2,7 @@ import asyncio
 from asyncio.log import logger
 from collections import OrderedDict
 from datetime import datetime
+import ipaddress
 import time 
 from http.client import HTTPException
 from typing import Dict, List, Optional
@@ -738,6 +739,37 @@ def get_vm_datastores_from_config(config):
             datastores.append(datastore)
     return list(set(datastores))
 
+# def get_vm_ip_addresses(db, cluster_data, node, vmid):
+#     api_token = get_api_token(db, cluster_data.name)
+#     headers = {
+#         "Authorization": f"PVEAPIToken={api_token}"
+#     }
+#     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+#     url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces"
+#     try:
+#         response = requests.get(url, headers=headers, verify=False, timeout=5)
+#         response.raise_for_status()
+#         data = response.json().get("data", {})
+#         # Defensive: Only proceed if data is a dict and contains "result"
+#         if not isinstance(data, dict) or "result" not in data:
+#             return []
+#         interfaces = data["result"]
+#         ip_addresses = []
+#         for iface in interfaces:
+#             # Only get eth0 IPv4 addresses
+#             # if iface.get("name") == "eth0":
+#             for ip in iface.get("ip-addresses", []):
+#                 if ip.get("ip-address-type") == "ipv4":
+#                     ip_addr = ip.get("ip-address")
+#                     if ip_addr:
+#                         ip_addresses.append(ip_addr)
+#         return ip_addresses
+#     except requests.RequestException:
+#         return []
+#     except Exception:
+#         return []
+
+
 def get_vm_ip_addresses(db, cluster_data, node, vmid):
     api_token = get_api_token(db, cluster_data.name)
     headers = {
@@ -745,24 +777,35 @@ def get_vm_ip_addresses(db, cluster_data, node, vmid):
     }
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces"
+
     try:
         response = requests.get(url, headers=headers, verify=False, timeout=5)
         response.raise_for_status()
         data = response.json().get("data", {})
-        # Defensive: Only proceed if data is a dict and contains "result"
+
         if not isinstance(data, dict) or "result" not in data:
             return []
+
         interfaces = data["result"]
         ip_addresses = []
+
         for iface in interfaces:
-            # Only get eth0 IPv4 addresses
-            if iface.get("name") == "eth0":
-                for ip in iface.get("ip-addresses", []):
-                    if ip.get("ip-address-type") == "ipv4":
-                        ip_addr = ip.get("ip-address")
-                        if ip_addr:
-                            ip_addresses.append(ip_addr)
-        return ip_addresses
+            for ip in iface.get("ip-addresses", []):
+                if ip.get("ip-address-type") == "ipv4":
+                    ip_addr = ip.get("ip-address")
+                    try:
+                        ip_obj = ipaddress.ip_address(ip_addr)
+
+                        # Skip loopback, link-local, multicast
+                        if ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast:
+                            continue
+
+                        ip_addresses.append(ip_addr)
+
+                    except ValueError:
+                        continue
+        return ip_addresses 
+
     except requests.RequestException:
         return []
     except Exception:
