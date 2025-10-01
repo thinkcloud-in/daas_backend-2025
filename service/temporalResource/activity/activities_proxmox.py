@@ -14,6 +14,9 @@ from service.clusterService import get_all_nodes
 from models.IPs_model import IPEntry,IPSModel
 from service import proxmoxService
 from influxdb_client import InfluxDBClient, Point, WriteOptions
+import dotenv
+import os
+dotenv.load_dotenv()
 
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
@@ -92,7 +95,7 @@ async def clone_vm_activity(clone_payload: dict):
                 "newid": new_vmid,
                 "name": new_name,
                 "target": node,
-                "storage":"prxpool01",
+                "storage":os.getenv("PROXMOX_STORAGE"),
                 "full": 1
             }
             try:
