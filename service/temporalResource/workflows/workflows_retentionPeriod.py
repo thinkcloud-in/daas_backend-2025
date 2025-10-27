@@ -1,4 +1,4 @@
-from typing import Any, Dict, List
+from typing import Any, Dict
 from temporalio import workflow
 from service.temporalResource.activity import activities_retentionPeriod
 from temporalio.common import RetryPolicy
@@ -18,16 +18,16 @@ class GetNamespacesWorkflow:
             maximum_attempts=5,
         )
         try:
-            print('Running workflow...')
+            
             result = await workflow.execute_activity(
                 activities_retentionPeriod.list_namespaces_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -44,17 +44,17 @@ class UpdateRetentionWorkflow:
             maximum_attempts=5,
         )
         try:
-            print('Running workflow...')
+            
             result = await workflow.execute_activity(
                 activities_retentionPeriod.update_retention_activity,
                 retry_policy=retry_policy,
                 args=[namespace, retention_days],
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             action_message = f"Retention for namespace {namespace} updated to {retention_days} days."
 
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")

@@ -1,9 +1,7 @@
 import base64
 from datetime import datetime, timedelta
-import http
 from io import BytesIO
 import os
-import re
 from typing import Dict, List
 import aiohttp
 import logging  
@@ -11,14 +9,11 @@ import psycopg2
 from temporalio import  activity
 from dotenv import load_dotenv
 import service.gucamoleService as service
-
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph,Image
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-from io import BytesIO
-from fastapi.encoders import jsonable_encoder
 
 load_dotenv()
 
@@ -51,13 +46,10 @@ async def login_with_guacamole_activity():
     payload = 'username='+username+'&password='+password
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
    
-    # Using aiohttp to make an async POST request
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, data=payload) as response:
             if response.status == 200:
-                print("Token returned")
                 return await response.json()
-                
             else:
                 raise Exception(f"Failed to authenticate with Guacamole: {response.status}")
 
@@ -95,7 +87,6 @@ async def get_userlist_from_keycloak_activity():
             resp.raise_for_status()
             data = await resp.json()
             access_token = data["access_token"]
-            # Set authorization headers
             auth_headers = {
                 "Authorization": f"Bearer {access_token}",
                 "content-type": "application/json"
@@ -118,7 +109,6 @@ async def get_userlist_from_keycloak_activity():
             ]
             return list_of_users_data
     except Exception as e:
-        # Return a JSON-serializable error object
         return [{
             "error": str(e),
             "type": e.__class__.__name__
@@ -130,22 +120,17 @@ async def list_of_machine_activity():
         from ...gucamoleService import login_with_guacamole
         guacamole_login =  await login_with_guacamole()
         url = list_machines + "?token=" + guacamole_login
-        print(url)
         async with aiohttp.ClientSession() as session:
-            async with session.get(url) as response:
-                response_text = await response.text()  
-                print(f"Response text: {response_text}")
+            async with session.get(url) as response: 
                 if response.status == 200:
                     response_data = await response.json() # Await JSON response
-                    # print(response_data)
                     return response_data
                 else:
                     raise Exception("Failed to load User")
 
     except Exception as e:
-        print(f"Error occurred (list_of_machine) : {e}")
-        return [{"error":str(e)}]
-    
+        return {"msg": "Error occurred", "error": str(e)}
+
 
 @activity.defn
 async def creating_machine_activity(machine_data:dict):
@@ -155,34 +140,26 @@ async def creating_machine_activity(machine_data:dict):
 
     url = gucamole_connection_url + "?token=" + guacamole_login
 
-    # name = machine_data.name
-    # protocol = machine_data.protocol.lower()
     from ...gucamoleService import return_payload
     payload=return_payload(machine_data)
     headers = {
         'Content-Type': 'application/json'
     }  
-    # print(payload)
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, headers=headers, data=payload) as response:   
                 if response.status == 200:
-                    print("Connection created successfully.")
                     return await response.json()
                 else:
-                    print(f"Failed to create connection: {response.status} - {response.text}")
                     return await response.json()
     except Exception as e:
-        print(f"Error creating machine: {e}")
-        return {"error": str(e)}
-    
+        return {"msg": "Error occurred", "error": str(e)}
+
 @activity.defn
 async def get_session_reports_activity(start_date_str: str, end_date_str: str):
     try:
         from ...gucamoleService import login_with_guacamole
         token = await login_with_guacamole()
-        # if not token:
-        #     return {"error": "Failed to retrieve auth token"}
         from ...gucamoleService import get_users_connection_history
         users_history = await get_users_connection_history(token)
         session_reports = []
@@ -190,7 +167,6 @@ async def get_session_reports_activity(start_date_str: str, end_date_str: str):
         start_date_range = datetime.fromisoformat(start_date_str)
         end_date_range = datetime.fromisoformat(end_date_str)
         for entry in users_history:
-            # print(entry)
             if entry['startDate'] is not None:
                 start_date = datetime.fromtimestamp(entry['startDate'] / 1000)
                 end_date = datetime.fromtimestamp(entry['endDate'] / 1000) if entry['endDate'] else None
@@ -216,9 +192,8 @@ async def get_session_reports_activity(start_date_str: str, end_date_str: str):
                     })
         return session_reports
     except Exception as e:
-        print(f"Error occurred: {e}")
-        return ('---------',e)
-    
+        return {"msg": "Error occurred", "error": str(e)}
+
 
 @activity.defn
 async def get_all_users_vamanit_activity(session_reports : list):
@@ -226,8 +201,7 @@ async def get_all_users_vamanit_activity(session_reports : list):
         users = set(entry['username'] for entry in session_reports)
         return list(users)
     except Exception as e:
-        print(f"Error occurred: {e}")
-        return ('---------',e)
+        return {"msg": "Error occurred", "error": str(e)}
 
 @activity.defn
 async def get_perticular_user_session_report_activity(session_reports : list, username:str):
@@ -235,9 +209,8 @@ async def get_perticular_user_session_report_activity(session_reports : list, us
         user_sessions = [row for row in session_reports if row["username"] == username]
         return user_sessions
     except Exception as e:
-        print(f"Error occurred: {e}")
-        return ('---------',e)
-    
+        return {"msg": "Error occurred", "error": str(e)}
+
 @activity.defn
 async def get_daily_reports_activity(session_reports : list):
     day_duration = []
@@ -289,7 +262,6 @@ async def get_daily_reports_activity(session_reports : list):
                 "date": login_date
             })
 
-    # Combine entries with the same username, machine_name, and date
     combined_day_duration = {}
     for entry in day_duration:
         key = (entry["username"], entry["machine_name"], entry["date"])
@@ -300,7 +272,6 @@ async def get_daily_reports_activity(session_reports : list):
         else:
             combined_day_duration[key] = entry
 
-    # Convert combined dictionary back to list
     combined_day_duration = list(combined_day_duration.values())
     combined_day_duration.sort(key=lambda x: x['username'])
 
@@ -312,13 +283,10 @@ async def get_perticular_user_daily_report_activity(daily_reports : list, userna
         user_sessions = [row for row in daily_reports if row["username"] == username]
         return user_sessions
     except Exception as e:
-        print(f"Error occurred: {e}")
         return ('Error occured on: get_perticular_user_daily_report_activity :- ',e)
 
 @activity.defn
 async def get_companies_activity():
-    # from ..gucamoleService import get_db_connection
-
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -326,7 +294,6 @@ async def get_companies_activity():
             cursor.execute(select_query)
             companies = cursor.fetchall()
             
-            # Process results to make them JSON-serializable
             companies_data = [
                 {
                     "company_name": row[0],
@@ -338,14 +305,12 @@ async def get_companies_activity():
             
             return companies_data
     except Exception as error:
-        print("Error while fetching data:", error)
-        raise
+        return {"msg": "Error occurred", "error": str(error)}
     finally:
         db.close()
 
 @activity.defn
 async def get_companies_by_report_type_activity(report_type:str):
-    # from ..gucamoleService import get_db_connection
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -357,7 +322,6 @@ async def get_companies_by_report_type_activity(report_type:str):
                 company_name = company[0]
                 report_type = company[2]
                 company_logo_bytes = company[1]
-                # Convert bytes to base64 string
                 company_logo_base64 = base64.b64encode(company_logo_bytes).decode('utf-8')
                 companies_data.append({
                     "company_name": company_name,
@@ -367,15 +331,12 @@ async def get_companies_by_report_type_activity(report_type:str):
                 
             return companies_data
     except Exception as error:
-        print("Error while fetching data:", error)
-        raise error
+        return ('error',error)
     finally:
         db.close()
 
 @activity.defn
 async def delete_report_activity(report_type:str):
-    # from ..gucamoleService import get_db_connection
-
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -384,10 +345,9 @@ async def delete_report_activity(report_type:str):
             if cursor.rowcount == 0:
                 raise ValueError("Company not found")
             db.commit()
-            print("Record deleted successfully from reporttemplate table")
+            return ('Deleted Successfully',)
     except Exception as error:
-        print("Error while deleting data:", error)
-        raise error
+        return ('error',error)
     finally:
         db.close()
 
@@ -396,8 +356,6 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
-            # print(company_name, report_type)
-
             if report_type not in ["Session Reports", "Daily Reports","Consolidate Reports"]:
                 raise ValueError("Invalid report type")
 
@@ -406,19 +364,17 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
                 SET company_name = %s, company_logo = %s 
                 WHERE report_type = %s;
             """
-            # print(f'company logic {company_logo}')
             cursor.execute(update_query, (company_name, company_logo, report_type))
 
             if cursor.rowcount == 0:
                 from ...gucamoleService import insert_report
                 insert_report(company_name, company_logo, report_type)
-                print("No matching report found, inserting a new report")
             db.commit()
+            
 
     except Exception as error:
-        db.rollback()  # Rollback in case of error
-        print(f"Error during update: {error}")
-        raise error
+        db.rollback()
+        return ('error',error)
     finally:
         db.close()
 
@@ -438,15 +394,10 @@ async def insert_report_activity(company_name: str, company_logo: bytes, report_
 
 @activity.defn
 async def generate_report_activity(start_date: str, end_date: str, report_type: str):
-    """
-    Generate a PDF report for the specified date range and report type with proper pagination.
-    Returns the path to the generated PDF file.
-    """
+
    
    
-    # Define the PDF file path
     pdf_file = f"{report_type.lower().replace(' ', '_')}.pdf"
-    # Assuming company data retrieval logic here
     company_data = await service.get_companies_by_report_type(report_type)
   
     company_name = company_data[0].get('company_name',"unknown company name")
@@ -455,12 +406,10 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
     logo_image = None
     try:
         raw_logo = company_data[0].get('company_logo')
-    
         if raw_logo:
             if isinstance(raw_logo, str):
-                # Handle base64-encoded image (the data starts with 'iVBOR...'):
                 try:
-                    logo_bytes = base64.b64decode(raw_logo)  # Decode the base64 string to bytes
+                    logo_bytes = base64.b64decode(raw_logo)
                 except Exception as e:
                     logger.error(f"Error decoding base64 image: {e}")
                     logo_bytes = None
@@ -470,9 +419,7 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
 
             if logo_bytes:
                 try:
-                    # Create BytesIO object and verify it's a valid image
                     logo_buffer = BytesIO(logo_bytes)
-                    # Attempt to create ImageReader - this will validate the image
                     logo_image = logo_buffer
                 except Exception as img_error:
                     logger.error(f"Invalid image data: {img_error}")
@@ -481,7 +428,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         logger.error(f"Error processing logo: {e}", exc_info=True)
         logo_image = None
     
-    # Create the document
     doc = SimpleDocTemplate(
         pdf_file,
         pagesize=A4,
@@ -491,20 +437,17 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         bottomMargin=30
     )
  
-    # Prepare the story (content)
     story = []
     styles = getSampleStyleSheet()
  
-    # Add title style
     title_style = ParagraphStyle(
         'CustomTitle',
         parent=styles['Title'],
         fontSize=12,
-        alignment=1,  # Center alignment
+        alignment=1,
         spaceAfter=20
     )
  
-    # Header information
     header_data = [
         [
             Paragraph(company_name, title_style),
@@ -520,13 +463,10 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         ]
     ]
  
-    # Adjust column widths
     column_widths = [doc.width * 0.5, doc.width * 0.5]
  
-    # Create the table
     header_table = Table(header_data, column_widths)
  
-    # Apply table styles
     header_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.gray),  # Add grid lines
         ('BACKGROUND', (0, 0), (1, 0), colors.lightgrey),  # Background for header row
@@ -539,12 +479,9 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         ('BOTTOMPADDING', (0, 0), (-1, -1), 5),  # Bottom padding
     ]))
  
-    # Append table to story
     story.append(header_table)
  
-    # story.append(Spacer(1, 10))
     if  report_type =="Session Reports":
-            # Prepare table headers and data
         headers = ["Username", "Login Time", "Logout Time", "Machine Name", "Session Duration"]
         table_data = [headers]
        
@@ -563,7 +500,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
                 service.calculate_duration(report.get("sessionDuration", ""),)
             ])
        
-        # Calculate column widths proportionally
         col_widths = [
             doc.width * 0.2,  # Username
             doc.width * 0.2,  # Login Time
@@ -587,7 +523,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         story.append(main_table)
        
     elif report_type =="Daily Reports":
-        # Prepare table headers and data
         headers = ["Username", "Machine Name", "Date", "Day Session Count", "Daily Duration"]
         table_data = [headers]
        
@@ -606,7 +541,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
                 service.calculate_duration(report.get("daily_duration", ""))            
             ])
        
-        # Calculate column widths proportionally
         col_widths = [
             doc.width * 0.2,  
             doc.width * 0.2,  
@@ -615,7 +549,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
             doc.width * 0.2,  
         ]
        
-        # Create main table
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
         main_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 1, colors.gray),
@@ -629,11 +562,9 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         ]))
         story.append(main_table)
     elif report_type =="Consolidate Reports":
-        # Prepare table headers and data
         headers = ["Username", "Machine Name", "Day Session Count", "Total Duration"]
         table_data = [headers]
        
-        # Add session data
         session_reports = await service.get_session_reports(start_date, end_date)
         logger.info("successfully got session_reports")
         daily_reports = await service.get_daily_reports(session_reports)
@@ -650,7 +581,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
                
             ])
        
-        # Calculate column widths proportionally
         col_widths = [
             doc.width * 0.3,  
             doc.width * 0.2,  
@@ -659,7 +589,6 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
              
         ]
        
-        # Create main table
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
         main_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 1, colors.gray),
@@ -673,14 +602,11 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
         ]))
         story.append(main_table)
    
-    # Define footer function
     def footer(canvas, doc):
         canvas.saveState()
         canvas.setFont('Helvetica', 10)
-        # Footer text
         footer_text = "Generated By:"
         canvas.drawString(doc.leftMargin, doc.bottomMargin - 20, footer_text)
-        # Current date/time
         from datetime import datetime
         current_time = datetime.now().strftime("Date: %m/%d/%Y %I:%M:%S %p")
         canvas.drawRightString(doc.pagesize[0] - doc.rightMargin,
@@ -689,33 +615,22 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
      
         canvas.restoreState()
    
-    # Build the document with footer
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
     return pdf_file
  
 @activity.defn
-async def generate_user_based_report_activity(start_date: str, end_date: str, report_type: str,username:str):
-    """
-    Generate a PDF report for the specified date range and report type with proper pagination.
-    Returns the path to the generated PDF file.
-    """
+async def generate_user_based_report_activity(start_date: str, end_date: str, report_type: str,username:str):   
    
-   
-    # Define the PDF file path
     pdf_file = f"{report_type,username.lower().replace(' ', '_')}.pdf"
-    # Assuming company data retrieval logic here
     company_data = await service.get_companies_by_report_type(report_type)
     logger.info("Generating PDF report for company  %s", company_data )
- 
     company_name = company_data[0].get('company_name',"unknown company")
- 
     logo_image = None
     try:
         raw_logo = company_data[0].get('company_logo')
     
         if raw_logo:
             if isinstance(raw_logo, str):
-                # Handle base64-encoded image (the data starts with 'iVBOR...'):
                 try:
                     logo_bytes = base64.b64decode(raw_logo)  # Decode the base64 string to bytes
                 except Exception as e:
@@ -727,9 +642,7 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
 
             if logo_bytes:
                 try:
-                    # Create BytesIO object and verify it's a valid image
                     logo_buffer = BytesIO(logo_bytes)
-                    # Attempt to create ImageReader - this will validate the image
                     logo_image = logo_buffer
                 except Exception as img_error:
                     logger.error(f"Invalid image data: {img_error}")
@@ -740,7 +653,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
     
     
  
-    # Create the document
     doc = SimpleDocTemplate(
         pdf_file,
         pagesize=A4,
@@ -750,7 +662,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         bottomMargin=30
     )
  
-    # Prepare the story (content)
     story = []
     styles = getSampleStyleSheet()
  
@@ -759,11 +670,10 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         'CustomTitle',
         parent=styles['Title'],
         fontSize=12,
-        alignment=1,  # Center alignment
+        alignment=1,
         spaceAfter=20
     )
  
-    # Header information
     header_data = [
         [
             Paragraph(company_name, title_style),
@@ -779,13 +689,10 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         ]
     ]
  
-    # Adjust column widths
     column_widths = [doc.width * 0.5, doc.width * 0.5]
  
-    # Create the table
     header_table = Table(header_data, column_widths)
  
-    # Apply table styles
     header_table.setStyle(TableStyle([
         ('GRID', (0, 0), (-1, -1), 1, colors.gray),  # Add grid lines
         ('BACKGROUND', (0, 0), (1, 0), colors.lightgrey),  # Background for header row
@@ -798,12 +705,9 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         ('BOTTOMPADDING', (0, 0), (-1, -1), 5),  # Bottom padding
     ]))
  
-    # Append table to story
     story.append(header_table)
  
-    # story.append(Spacer(1, 10))
     if  report_type =="Session Reports":
-            # Prepare table headers and data
         headers = ["Username", "Login Time", "Logout Time", "Machine Name", "Session Duration"]
         table_data = [headers]
        
@@ -836,7 +740,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
             doc.width * 0.2,  # Session Duration
         ]
        
-        # Create main table
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
         main_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 1, colors.gray),
@@ -852,7 +755,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
    
      
     elif report_type =="Daily Reports":
-        # Prepare table headers and data
         headers = ["Username", "Machine Name", "Date", "Day Session Count", "Daily Duration"]
         table_data = [headers]
        
@@ -918,7 +820,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
             ])
        
        
-        # Calculate column widths proportionally
         col_widths = [
             doc.width * 0.3,  
             doc.width * 0.2,  
@@ -928,7 +829,6 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         ]
        
        
-        # Create main table
         main_table = Table(table_data, colWidths=col_widths, repeatRows=1)
         main_table.setStyle(TableStyle([
             ('GRID', (0, 0), (-1, -1), 1, colors.gray),
@@ -942,14 +842,11 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
         ]))
         story.append(main_table)
    
-    # Define footer function
     def footer(canvas, doc):
         canvas.saveState()
         canvas.setFont('Helvetica', 10)
-        # Footer text
         footer_text = "Generated By:"
         canvas.drawString(doc.leftMargin, doc.bottomMargin - 20, footer_text)
-        # Current date/time
         from datetime import datetime
         current_time = datetime.now().strftime("Date: %m/%d/%Y %I:%M:%S %p")
         canvas.drawRightString(doc.pagesize[0] - doc.rightMargin,
@@ -958,9 +855,7 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
      
         canvas.restoreState()
    
-    # Build the document with footer
     doc.build(story, onFirstPage=footer, onLaterPages=footer)
-    # print(pdf_file,type(pdf_file),".....................")
     return pdf_file
 
 
@@ -969,24 +864,20 @@ async def generate_user_based_report_activity(start_date: str, end_date: str, re
 async def get_users_total_duration_within_timerange_activity(day_duration: List[Dict]):
     user_sessions = []
  
-    # Iterate through each entry in day_duration
     for entry in day_duration:
         username = entry['username']
         machine_name = entry['machine_name']
         day_session_count = entry['day_session_count']
         daily_duration = entry['daily_duration']
  
-        # Check if this user and machine combination already exists
         session_found = False
         for session in user_sessions:
             if session['username'] == username and session['machine_name'] == machine_name:
-                # Update existing entry with accumulated duration and session count
                 session['day_session_count'] += day_session_count
                 session['total_duration'] += daily_duration
                 session_found = True
                 break
  
-        # If no existing entry is found, create a new one
         if not session_found:
             user_sessions.append({
                 'username': username,
@@ -1024,67 +915,10 @@ async def get_guacamole_history_activity():
                 else:
                     raise Exception(f"Failed to load User History: {response.status}")
     except Exception as e:
-        print(f"Error occurred (get_history_of_user_activity): {e}")
         return {"error": str(e)}
     
 
-# import os
-# import aiohttp
-# @activity.defn
-# async def get_guacamole_ActiveSessions_activity():
-#     try:
-#         from ...gucamoleService import login_with_guacamole
-#         guacamole_login = await login_with_guacamole()
-#         base_url = os.getenv('GUCAMOLE_BASE_URL')
-#         datasource = os.getenv('GUCAMOLE_DATASOURCE')
-
-#         headers = {
-#             "Cookie": f"GUAC_AUTH={guacamole_login}"
-#         }
-
-#         # 1. Get all connections (to map ID to name and UUID)
-#         connections_url = f"{base_url}/api/session/data/{datasource}/connections?token={guacamole_login}"
-#         async with aiohttp.ClientSession() as session:
-#             async with session.get(connections_url, headers=headers) as resp_conn:
-#                 if resp_conn.status == 200:
-#                     connections_data = await resp_conn.json()
-#                 else:
-#                     raise Exception(f"Failed to load connections: {resp_conn.status}")
-
-#             # 2. Get active sessions
-#             active_url = f"{base_url}/api/session/data/{datasource}/activeConnections?token={guacamole_login}"
-#             async with session.get(active_url, headers=headers) as resp_active:
-#                 if resp_active.status == 200:
-#                     active_data = await resp_active.json()
-#                 else:
-#                     raise Exception(f"Failed to load activeConnections: {resp_active.status}")
-
-#         # 3. Map connectionIdentifier to connection name and UUID (identifier)
-#         for uuid, session in active_data.items():
-#             conn_id = session.get("connectionIdentifier")
-#             conn_info = connections_data.get(conn_id)
-#             # If not found by key, search by "id"
-#             if not conn_info:
-#                 conn_info = next((v for v in connections_data.values() if v.get("id") == conn_id), None)
-#             session["connectionName"] = conn_info["name"] if conn_info else conn_id
-#             session["connectionUUID"] = conn_info["identifier"] if conn_info and "identifier" in conn_info else uuid
-
-#         return active_data
-
-#     except Exception as e:
-#         print(f"Error occurred (get_guacamole_ActiveSessions_activity): {e}")
-#         return {"error": str(e)}
-
-
-
-
-import os
-import aiohttp
-
 @activity.defn
-
-# GUACAMOLE_WEB_URL = os.getenv("GUACAMOLE_WEB_URL", "http://guacamole.example.com/guacamole")  # Set this in your env
-
 async def get_guacamole_ActiveSessions_activity():
     try:
         from ...gucamoleService import login_with_guacamole
@@ -1096,7 +930,6 @@ async def get_guacamole_ActiveSessions_activity():
             "Cookie": f"GUAC_AUTH={guacamole_login}"
         }
 
-        # 1. Get all connections
         connections_url = f"{base_url}/api/session/data/{datasource}/connections?token={guacamole_login}"
         async with aiohttp.ClientSession() as session:
             async with session.get(connections_url, headers=headers) as resp_conn:
@@ -1105,7 +938,6 @@ async def get_guacamole_ActiveSessions_activity():
                 else:
                     raise Exception(f"Failed to load connections: {resp_conn.status}")
 
-            # 2. Get active sessions
             active_url = f"{base_url}/api/session/data/{datasource}/activeConnections?token={guacamole_login}" 
             async with session.get(active_url, headers=headers) as resp_active:
                 if resp_active.status == 200:
@@ -1113,7 +945,6 @@ async def get_guacamole_ActiveSessions_activity():
                 else:
                     raise Exception(f"Failed to load activeConnections: {resp_active.status}")
 
-        # 3. Compose enhanced session list
         results = []
         for uuid, session in active_data.items():
             conn_id = session.get("connectionIdentifier")
@@ -1121,9 +952,7 @@ async def get_guacamole_ActiveSessions_activity():
             connection_name = conn_info["name"] if conn_info else conn_id
             connection_uuid = conn_info["identifier"] if conn_info and "identifier" in conn_info else uuid
 
-            # Compose Guacamole client URL (adjust as needed)
             guac_client_url = f"{base_url}/#/client/activeConnections/{datasource}/{session['identifier']}?token={guacamole_login}"
-            print(f"Guacamole Client URL: {guac_client_url}")
             results.append({
                 "username": session.get("username"),
                 "startDate": session.get("startDate"),
@@ -1136,5 +965,4 @@ async def get_guacamole_ActiveSessions_activity():
         return results
 
     except Exception as e:
-        print(f"Error occurred (get_guacamole_ActiveSessions_activity): {e}")
         return {"error": str(e)}

@@ -1,23 +1,18 @@
-import json
 import os
 from fastapi.encoders import jsonable_encoder
 import requests
 from temporalio import activity
-# from keycloak_configration.keycloak_config import get_LDAPs_from_keycloak, get_login_from_keycloak,get_realm_id_from_keycloak
 from models.models import LDAPCredential,LDAP_test_connection_model
 from keycloak_configration import keycloak_config
 
-from fastapi import HTTPException
-
 @activity.defn()
 async def ad_ldap_configuration_activity(Ldap: LDAPCredential):
-    from keycloak_configration.keycloak_config import get_LDAPs_from_keycloak, get_login_from_keycloak,get_realm_id_from_keycloak
+    
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components"
-      
-        headers = get_login_from_keycloak()  # Assuming you have a function to get headers
-        parentId = get_realm_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
- 
+
+        headers = keycloak_config.get_login_from_keycloak()
+        parentId = keycloak_config.get_realm_id_from_keycloak(headers)
         payload = {
             "config": {
                 "enabled": [str(Ldap.enabled).lower()],
@@ -65,18 +60,16 @@ async def ad_ldap_configuration_activity(Ldap: LDAPCredential):
         }
  
         response = requests.post(url, headers=headers, json=payload)
-        print(f'url--------{url}')
        
         response.raise_for_status() 
-        all_ldaps= await get_LDAPs_from_keycloak()
+        all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
         all_ldaps_json = jsonable_encoder(all_ldaps)
         # return response.status_code
-        return {"status_code":response.status_code,"ldaps":all_ldaps_json}
+        return {"code":response.status_code,"ldaps":all_ldaps_json}
 
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return None  
-    
+        return {"code": 500,"msg": "Error occurred", "response": str(e)}
+
 @activity.defn()
 async def get_LDAPs_from_keycloak_activity():
     from keycloak_configration.keycloak_config import get_login_from_keycloak,get_realm_id_from_keycloak
@@ -89,8 +82,7 @@ async def get_LDAPs_from_keycloak_activity():
         data = res.json()
         return data
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return e  
+        return {"msg": "Error occurred", "error": str(e)}
 
     
 @activity.defn()
@@ -98,22 +90,18 @@ async def test_ldap_connection_activity(Ldap: LDAP_test_connection_model):
     from keycloak_configration.keycloak_config import get_login_from_keycloak
     try:
         headers = get_login_from_keycloak()  # Assuming you have a function to get headers
-        # parentId = get_componeant_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
         payload={
             "action":"testConnection",
             "authType":Ldap.authType,
             "bindCredential":Ldap.bindCredential,
             "bindDn":Ldap.bindDn,
-            # "componentId":parentId,
             "connectionTimeout":Ldap.connectionTimeout,
             "connectionUrl":Ldap.connectionUrl,
             "startTls":str(Ldap.startTls).lower(),
             "useTruststoreSpi":Ldap.useTruststoreSpi
         }
-        # print(headers)
-        print(f"test connection 4")
+
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-        print(f'testLDAPConnection url------{url}')
         response = requests.post(url, headers=headers, json=payload)
         status_code = response.status_code
         try:
@@ -122,52 +110,44 @@ async def test_ldap_connection_activity(Ldap: LDAP_test_connection_model):
             response_json = response.text  
         
         if status_code == 204:
-            return {"msg": "Successfully connected to LDAP"}
-        if status_code == 400:
-            return {"msg": "Bad Request", "status_code": status_code, "response": response_json}
+            return {"code": status_code, "msg": "Successfully connected to LDAP", "response": response_json}
 
-        return {"msg": "Unexpected response", "status_code": status_code, "response": response_json}
+        return {"code": status_code, "msg": "Unexpected response", "response": response_json}
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return
-    
+        return {"code": 500,"msg": "Error occurred", "response": str(e)}
+
 @activity.defn()
 async def test_ldap_authentication_activity(Ldap: LDAP_test_connection_model):
     from keycloak_configration.keycloak_config import get_login_from_keycloak
     try:
-        headers = get_login_from_keycloak()  # Assuming you have a function to get headers
-        # parentId = get_realm_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
+        headers = get_login_from_keycloak()
      
         payload={
             "action":"testAuthentication",
             "authType":Ldap.authType,
             "bindCredential":Ldap.bindCredential,
             "bindDn":Ldap.bindDn,
-            # "componentId":parentId,
             "connectionTimeout":Ldap.connectionTimeout,
             "connectionUrl":Ldap.connectionUrl,
             "startTls":str(Ldap.startTls).lower(),
             "useTruststoreSpi":Ldap.useTruststoreSpi
         }
-        print(payload)
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-        print(f'Test LDAP Connection URL------{url}')
         res=requests.post(url, headers=headers, json=payload)
         status_code = res.status_code
+        
         try:
             response_json = res.json() 
         except requests.exceptions.JSONDecodeError:
             response_json = res.text  
         
-        print(res.status_code)
         if status_code==204:
-            return {"msg":"Successfully connected to LDAP"}
-        elif status_code==400:
-            return {"msg": "Bad Request", "status_code": status_code, "response": response_json}
+            return {"code": status_code, "msg":"Successfully connected to LDAP"}
+        else:
+            return {"msg": "Bad Request", "code": status_code, "response": response_json}
     except Exception as e:
-        print(f"An error occurred: {e}")
-        raise HTTPException(status_code=500, detail=e)
-    
+        return {"msg": "Error occurred", "response": str(e)}
+
 
 @activity.defn()
 async def delete_ldap_config_activity(ldap_id):
@@ -177,18 +157,16 @@ async def delete_ldap_config_activity(ldap_id):
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
         payload={}
         res=requests.delete(url,headers=headers,json=payload)
-        print(res.status_code)
         # res 204
         if (res.status_code==204):
             all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
-            return {"status_code":res.status_code,"ldaps":all_ldaps}
+            return all_ldaps
         else:
             return res
         
     except Exception as e:
-        print(f"An error occurred: {e}")
-        raise HTTPException(status_code=500, detail=e)
- 
+        return {"msg": "Error occurred", "error": str(e)}
+
 
 @activity.defn()
 async def get_LDAP_by_id_activity(ldap_id):
@@ -241,73 +219,53 @@ async def get_LDAP_by_id_activity(ldap_id):
         "krbPrincipalAttribute": res.get('config').get("krbPrincipalAttribute",[""])[0]
         }
         return mapped_data
-    except requests.RequestException as e:
-        print(f"Error occurred during request: {e}")
-        return e
-    except json.JSONDecodeError as e:
-        print(f"Error decoding JSON response: {e}")
-        return e
     except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return e
-    
+        return {"msg": "Error occurred: " + str(e)}
+
 
 @activity.defn()
 async def sync_user_from_keycloak_Byid_activity(ldap_id):
     try:
-        headers =keycloak_config. get_login_from_keycloak()  # Assuming you have a function to get headers
+        headers =keycloak_config. get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerFullSync"
-        # print(url)
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
-        # print(response)
         data =response.json() 
-        # print(data)
-        return {"msg":"Sync of users finished successfully", "data":data}
+        return data
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return e  
-    
+        return {"msg": "Error occurred: " + str(e)}
+
 
 @activity.defn()
 async def sync_changed_users_from_keycloak_activity(ldap_id):
     try:
-        headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
+        headers = keycloak_config.get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerChangedUsersSync"
-        print(url)
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
-        print(response)
         data =response.json() 
-        print(data)
-        # return data['status']
         return data
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return e  # or any other way to handle errors depending on your requirements
-    
+        return {"msg": "Error occurred: " + str(e)}
+
 
 @activity.defn()
 async def unlink_users_from_keycloak_activity(ldap_id):
     try:
-        headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
+        headers = keycloak_config.get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/unlink-users"
-        print(url)
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
-        print(f'response-----:{response}')
-        data =response.json() 
-        # data = jsonable_encoder(response)
-
         try:
-            data = response.json()
+            if response.text.strip():
+                data = response.json()
+            else:
+                data = "No response body from Keycloak"
         except requests.exceptions.JSONDecodeError:
-            data = None  # or data = "No content returned from Keycloak"
-        print(data)
-        return {"msg":"listed unlink users successfully",'data':data}
+            data = "No content returned from Keycloak"
+        return data
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return {"error": str(e)}
+        return {"msg": "Error occurred: " + str(e)}
 
 
 @activity.defn()
@@ -315,22 +273,23 @@ async def remove_imported_users_from_keycloak_activity(ldap_id):
     try:
         headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/remove-imported-users"
-        print(url)
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
-        print(response)
-        
+        if response.status_code == 404:
+            return {
+                "msg": "Resource not found",
+                "error": "The specified LDAP ID or endpoint does not exist",
+                "status_code": 404
+            }
         # Try to parse the response as JSON
         try:
             data = response.json()
         except requests.exceptions.JSONDecodeError:
-            data = None  # or data = {"error": "Invalid JSON response from Keycloak"}
+            data = None 
 
-        print(data)
         return {"msg": "Listed removed imported users successfully", "data": data}
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return {"error": str(e)}  # Return error as a serializable dictionary
+        return {"msg": "Error occurred: " + str(e)}
 
 
 
@@ -339,8 +298,8 @@ async def remove_imported_users_from_keycloak_activity(ldap_id):
 @activity.defn()
 async def update_ldap_config_activity(Ldap: LDAPCredential,ldap_id:str):
     try:
-        headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
-        parentId =keycloak_config.get_realm_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
+        headers = keycloak_config.get_login_from_keycloak()
+        parentId =keycloak_config.get_realm_id_from_keycloak(headers)
         payload = {
             "config": {
                 "enabled": [str(Ldap.enabled).lower()],
@@ -392,12 +351,9 @@ async def update_ldap_config_activity(Ldap: LDAPCredential,ldap_id:str):
         headers = keycloak_config.get_login_from_keycloak()
         response = requests.put(url, headers=headers, json=payload)
        
-        #  res 204
         if(response.status_code == 204):
             all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
-            return {"status_code":response.status_code,"ldaps":all_ldaps}
+            return all_ldaps
         return response.status_code
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return e  # or any other way to handle errors depending on your requirements
-    
+        return {"msg": "Error occurred: " + str(e)}

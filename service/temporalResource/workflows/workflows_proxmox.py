@@ -22,7 +22,7 @@ class WaitAndAssignIPsWorkflow:
             maximum_interval=timedelta(seconds=90),
             maximum_attempts=5,
         )
-        # Wait for each VM and assign IP in background
+    
         for (name, vmid, node, upid, _), ip in zip(vms, ip_list):
             await workflow.execute_activity(
                 activities_proxmox.wait_for_vm_ready_activity,
@@ -47,7 +47,6 @@ class WaitAndAssignIPsWorkflow:
             )
  
  
-# Helper to batch any list
 def batch_items(items, batch_size):
     for i in range(0, len(items), batch_size):
         yield items[i:i+batch_size]
@@ -75,14 +74,14 @@ class CloneVMWorkflow:
             batch_payload["count"] = batch_count
             batch_payload["ip_list"] = batch_ip_list
  
-            # Logging for batch
+        
             logger.info(
                 f"Processing batch {batch_start // BATCH_SIZE + 1}: "
                 f"VMs {batch_start} to {batch_start + batch_count - 1} "
                 f"with IPs {batch_ip_list}"
             )
  
-            # Step 1: Clone VMs for this batch
+        
             result = await workflow.execute_activity(
                 activities_proxmox.clone_vm_activity,
                 args=[batch_payload],
@@ -90,11 +89,11 @@ class CloneVMWorkflow:
                 start_to_close_timeout=timedelta(minutes=10),
             )
             if isinstance(result, dict) and "error" in result:
-                # Return error to caller (frontend will get it)
+            
                 return result
             
             vms = result.get("vms", [])
-            # Start the WaitAndAssignIPsWorkflow as a child workflow for this batch
+        
             child_handle = await workflow.start_child_workflow(
                 WaitAndAssignIPsWorkflow.run,
                 args=[vms, batch_ip_list, clone_payload["cluster_id"]],
@@ -103,7 +102,7 @@ class CloneVMWorkflow:
             )
             wait_assign_workflow_id = child_handle.id
 
-            # Attach both workflow IDs to each VM in this batch
+        
             vms_out = []
             for (name, vmid, node, upid, clone_workflow_id), ip in zip(vms, batch_ip_list):
                 vms_out.append({
@@ -125,39 +124,19 @@ class CloneVMWorkflow:
    
  
 
-
-# @workflow.defn(sandboxed=False)
-# class DeleteProxmoxVmWorkflow:
-#     @workflow.run
-#     async def run(self, vmid: int, cluster_data: dict):
-#         retry_policy = RetryPolicy(
-#             initial_interval=timedelta(seconds=2),
-#             backoff_coefficient=2.0,
-#             maximum_interval=timedelta(seconds=30),
-#             maximum_attempts=5,
-#         )
-#         result = await workflow.execute_activity(
-#             activities_proxmox.delete_proxmox_vm_activity,
-#             args=[vmid,cluster_data],
-#             start_to_close_timeout=timedelta(seconds=120),
-#             retry_policy=retry_policy
-#         )
-#         return result
-
-
 @workflow.defn(sandboxed=False)
 class LiveMigrateWorkflow:
     @workflow.run
     async def run(self, migration_payload: dict) -> str:
         poll_interval = migration_payload.get("poll_interval", 60)
         batch_size = migration_payload.get("batch_size", 5000)
-        # Defensive: fallback to now if not provided
+    
         last_time = migration_payload.get("start_time")
         if not last_time:
-            # Set to now in UTC if not provided
+        
             import datetime
             last_time = datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
-        print(f"[Workflow] Starting live migration from {last_time}")
+        
 
         while True:
             migration_payload["time_range_start"] = last_time
@@ -175,11 +154,11 @@ class LiveMigrateWorkflow:
             )
             new_time = result.get("max_time", last_time)
             if new_time > last_time:
-                print(f"[Workflow] Updated checkpoint: {last_time} -> {new_time}")
+                
                 last_time = new_time
             else:
-                print(f"[Workflow] No new data migrated.")
-            await asyncio.sleep(poll_interval)
+                await asyncio.sleep(poll_interval)
+
 
 
 
@@ -272,7 +251,7 @@ class VmRebuildWorkflow:
             maximum_attempts=5,
         )
 
-        # Step 1: Rebuild the VM
+    
         result = await workflow.execute_activity(
             activities_proxmox.vm_rebuild_activity,
             args=[vmid, pool_id, email],
@@ -288,17 +267,15 @@ class VmRebuildWorkflow:
             cluster_id = result["cluster_id"]
             machine_name = result["machine_name"]
             ip_address = result["ip_address"]
-            # Now you can use cluster_id, machine_name, ip_address as needed!
         else:
-            # Handle error
-            print(result.get("error"))
-        # Step 2 & 3: Wait for ready and assign IP (as a child workflow)
-        vms = [(  # Must match signature expected by WaitAndAssignIPsWorkflow
-            machine_name,  # name (if available, else machine.name)
+            return None
+            
+        vms = [(  
+            machine_name,  
             vmid,
             node,
             upid,
-            None,  # clone_workflow_id, not needed for rebuild
+            None,  
         )]
         ip_list = [ip_address]
         child_handle = await workflow.start_child_workflow(
@@ -307,12 +284,12 @@ class VmRebuildWorkflow:
             id=f"wait-assign-{workflow.info().workflow_id}-rebuild-{vmid}",
             parent_close_policy=ParentClosePolicy.ABANDON
         )
-        # child_result = await child_handle.result()
+    
 
         return {
             "status": "success",
             "rebuild_result": result,
-            "wait_and_assign_result": child_handle.id  # Return child workflow ID for tracking
+            "wait_and_assign_result": child_handle.id 
         }
 
 

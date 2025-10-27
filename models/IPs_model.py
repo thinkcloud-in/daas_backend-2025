@@ -14,10 +14,9 @@ class IPSModel(Base):
     Subnet = Column(String, nullable=False)
     Gateway = Column(String, nullable=False)
     DNS = Column(ARRAY(String), nullable=True)
-    Status = Column(String, nullable=True)  # Default status is None
+    Status = Column(String, nullable=True)
 
 
-#pydantic model for request validation
 class IPSRequest(BaseModel):
     Pool_name: str
     Starting_ip: str
@@ -26,15 +25,15 @@ class IPSRequest(BaseModel):
     Subnet: str
     Gateway: str
     DNS: List[str] = []
-    Status: Optional[str] = None      # Default status is None
+    Status: Optional[str] = None    
 
 class IPEntry(Base):
     __tablename__ = "Ip_Entries"
     id = Column(Integer, primary_key=True, index=True)
     pool_id = Column(Integer, ForeignKey("Ips_pools.id"), nullable=False)
     ip = Column(String, nullable=False)
-    status = Column(String, nullable=False, default="unused")  # "used" or "unused"
-    vm_id = Column(Integer, nullable=True)  # Optional: VM or user info
+    status = Column(String, nullable=False, default="unused")
+    vm_id = Column(Integer, nullable=True)  
 
 class IPEntryOut(BaseModel):
     id: int

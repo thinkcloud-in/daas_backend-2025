@@ -8,14 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def connectionWithTemporal():
-    print('Connecting to Temporal server...')
+    
     try:
         client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        print('Connected to Temporal server.')
+        
         return client
     except Exception as e:
-        print(f"Connection Refused to Temporal server: {e}")
-        return None
+        raise e
     
 
 
@@ -27,13 +26,13 @@ async def login_with_guacamole_worker():
         workflows=[workflows_guacmole.LoginWorkflow], 
         activities=[activities_guacmole.login_with_guacamole_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
     
 
 async def list_of_guaco_users_worker():
@@ -44,13 +43,13 @@ async def list_of_guaco_users_worker():
         workflows=[workflows_guacmole.ListOfGuacoUsersWorkflow], 
         activities=[activities_guacmole.list_of_guaco_users_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def list_of_guaco_user_with_Keyclock_worker():
     client = await connectionWithTemporal()
@@ -60,13 +59,13 @@ async def list_of_guaco_user_with_Keyclock_worker():
         workflows=[workflows_guacmole.GetUserlistFromKeycloakWorkflow], 
         activities=[activities_guacmole.get_userlist_from_keycloak_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def list_of_machines_worker():
     client = await connectionWithTemporal()
@@ -76,13 +75,13 @@ async def list_of_machines_worker():
         workflows=[workflows_guacmole.ListOfMachinesWorkflow], 
         activities=[activities_guacmole.list_of_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def creating_machines_worker():
     client = await connectionWithTemporal()
@@ -92,13 +91,13 @@ async def creating_machines_worker():
         workflows=[workflows_guacmole.CreateMachineWorkflow], 
         activities=[activities_guacmole.creating_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def get_session_report_worker():
     client = await connectionWithTemporal()
@@ -108,13 +107,13 @@ async def get_session_report_worker():
         workflows=[workflows_guacmole.GetSessionReportWorkflow], 
         activities=[activities_guacmole.get_session_reports_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def get_all_reports_vamanit_worker():
     client = await connectionWithTemporal()
@@ -124,13 +123,12 @@ async def get_all_reports_vamanit_worker():
         workflows=[workflows_guacmole.GetAllUsersVamanitWorkflow], 
         activities=[activities_guacmole.get_all_users_vamanit_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
 
 async def get_perticular_user_session_report_worker():
     client = await connectionWithTemporal()
@@ -140,13 +138,13 @@ async def get_perticular_user_session_report_worker():
         workflows=[workflows_guacmole.GetPerticularUserSessionReportWorkflow], 
         activities=[activities_guacmole.get_perticular_user_session_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_daily_report_worker():
@@ -157,13 +155,13 @@ async def get_daily_report_worker():
         workflows=[workflows_guacmole.GetDailyReportsWorkflow], 
         activities=[activities_guacmole.get_daily_reports_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def get_perticular_user_daily_report_worker():
     client = await connectionWithTemporal()
@@ -173,13 +171,13 @@ async def get_perticular_user_daily_report_worker():
         workflows=[workflows_guacmole.getPerticularUserDailyReportWorkflow], 
         activities=[activities_guacmole.get_perticular_user_daily_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def get_companies_worker():
     client = await connectionWithTemporal()
@@ -189,13 +187,13 @@ async def get_companies_worker():
         workflows=[workflows_guacmole.GetCompaniesWorkflow], 
         activities=[activities_guacmole.get_companies_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def get_companies_by_report_name_worker():
     client = await connectionWithTemporal()
@@ -205,13 +203,13 @@ async def get_companies_by_report_name_worker():
         workflows=[workflows_guacmole.GetCompaniesByReportNameWorkflow], 
         activities=[activities_guacmole.get_companies_by_report_type_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def delete_report_worker():
     client = await connectionWithTemporal()
@@ -221,13 +219,13 @@ async def delete_report_worker():
         workflows=[workflows_guacmole.DeleteReportWorkflow], 
         activities=[activities_guacmole.delete_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def update_report_worker():
@@ -238,13 +236,13 @@ async def update_report_worker():
         workflows=[workflows_guacmole.UpdateReportWorkflow], 
         activities=[activities_guacmole.update_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def insert_report_worker():
@@ -255,13 +253,13 @@ async def insert_report_worker():
         workflows=[workflows_guacmole.InsertReportWorkflow], 
         activities=[activities_guacmole.insert_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def generate_report_worker():
@@ -272,13 +270,13 @@ async def generate_report_worker():
         workflows=[workflows_guacmole.GenerateReportWorkflow], 
         activities=[activities_guacmole.generate_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def generate_user_based_report_worker():
@@ -289,13 +287,13 @@ async def generate_user_based_report_worker():
         workflows=[workflows_guacmole.GenerateUserBasedReportWorkflow], 
         activities=[activities_guacmole.generate_user_based_report_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_users_total_duration_within_timerange_worker():
@@ -306,13 +304,13 @@ async def get_users_total_duration_within_timerange_worker():
         workflows=[workflows_guacmole.GetUsersTotalDurationWithinTimerangeWorkflow], 
         activities=[activities_guacmole.get_users_total_duration_within_timerange_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def consolidate_report_perticular_user_worker():
@@ -323,13 +321,13 @@ async def consolidate_report_perticular_user_worker():
         workflows=[workflows_guacmole.ConsolidateReportPerticularUserWorkflow], 
         activities=[activities_guacmole.consolidate_report_perticular_user_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 
@@ -341,13 +339,13 @@ async def get_guacamole_history_worker():
         workflows=[workflows_guacmole.GetGuacamoleHistoryWorkflow],
         activities=[activities_guacmole.get_guacamole_history_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_guacamole_active_sessions_worker():
@@ -358,12 +356,12 @@ async def get_guacamole_active_sessions_worker():
         workflows=[workflows_guacmole.GetGuacamoleActiveSessionsWorkflow],
         activities=[activities_guacmole.get_guacamole_ActiveSessions_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
        

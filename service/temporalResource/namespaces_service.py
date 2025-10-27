@@ -1,8 +1,8 @@
 import asyncio
 from datetime import datetime
 import subprocess
-from fastapi import HTTPException, logger
-from typing import Dict, Optional
+from fastapi import HTTPException
+from typing import Optional
 from pydantic import BaseModel
 import re
 import subprocess
@@ -10,9 +10,7 @@ import json
 from typing import Optional
 import json
 import os
-# from dotenv import load_dotenv
 
-# load_dotenv()
 
 
 class CreateNamespaceRequest(BaseModel):
@@ -31,31 +29,27 @@ from service.temporalResource.workers import workers_retentionPeriod
 
 def unique_id():
     unique_id = datetime.now()
-    # logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
 async def connectionWithTemporal():
-    temporal_address = os.getenv('TEMPORAL_SERVER')  # Fetch the address
-    print(f'Connecting to Temporal server at address: {temporal_address}')
+    temporal_address = os.getenv('TEMPORAL_SERVER')
+    
     try:
         client = await Client.connect(temporal_address)
-        print(f'Connected to Temporal server at: {temporal_address}')
+        
         return client
     except Exception as e:
-        print(f"Connection Refused to Temporal server at {temporal_address}: {e}")
+        
         return None
     
 
 
 
 def parse_ttl_to_seconds(ttl: str) -> int:
-    """
-    Parses TTL strings like '2678400s' or '3d12h0m0s' into total seconds.
-    """
+
     if ttl.endswith("s") and ttl[:-1].isdigit():
         return int(ttl[:-1])
     
-    # Match format like "3d12h0m0s", "72h", "45m", etc.
     match = re.match(r"(?:(\d+)d)?(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?", ttl)
     if match:
         d, h, m, s = match.groups()
@@ -88,13 +82,11 @@ async def get_current_retention_days(namespace: str) -> Optional[int]:
             check=True
         )
         namespace_info = json.loads(result.stdout)
-        # print("namespace_info---------", namespace_info)
 
-        # Extract and parse TTL
         ttl = namespace_info["config"].get("workflowExecutionRetentionTtl", "0s")
         return parse_ttl_to_seconds(ttl) // 86400  # return days
     except subprocess.CalledProcessError as e:
-        print(f"Failed to fetch current retention: {e.stderr.strip()}")
+        
         return None
 
 
@@ -105,13 +97,10 @@ async def list_namespaces():
     uniqueId = unique_id()
     client = await connectionWithTemporal()
     if client is None:
-        print("Could not connect to Temporal server, terminating.")
         return 
 
-    print("list-namespaces-workflow about to start-------")
 
     try:
-        print("worker about to start in list namespaces...")
         asyncio.create_task(workers_retentionPeriod.get_namespaces_worker())
 
     except Exception as e:
@@ -129,14 +118,14 @@ async def update_namespace_retention(request: UpdateRetentionRequest):
     uniqueId = unique_id()
     client = await connectionWithTemporal()
     if client is None:
-        print("Could not connect to Temporal server, terminating.")
+        
         return 
 
     current_retention = await get_current_retention_days(request.namespace)
     action_message = f"Retention-Updation ({current_retention}d - {request.retention_days}d)"
 
     try:
-        print("worker about to start in update retention...")
+        
         asyncio.create_task(workers_retentionPeriod.update_retentionPeriod_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

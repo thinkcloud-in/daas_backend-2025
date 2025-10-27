@@ -8,15 +8,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def connectionWithTemporal():
-    print('Connecting to Temporal server...')
+    
     try:
         client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        print('Connected to Temporal server.')
+        
         return client
     except Exception as e:
-        print(f"Connection Refused to Temporal server: {e}")
-        return None
-    
+        raise e
 
 
 async def get_client_worker():
@@ -27,13 +25,13 @@ async def get_client_worker():
         workflows=[workflows_RBAC.GetClientWorkflow], 
         activities=[activities_RBAC.get_client_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_client_roles_worker():
@@ -44,13 +42,13 @@ async def get_client_roles_worker():
         workflows=[workflows_RBAC.GetClientRolesWorkflow], 
         activities=[activities_RBAC.get_client_roles_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def creating_role_worker():
     client = await connectionWithTemporal()
@@ -60,13 +58,12 @@ async def creating_role_worker():
         workflows=[workflows_RBAC.CreatingRoleWorkflow], 
         activities=[activities_RBAC.creating_role_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
 
 
 async def deleting_role_worker():
@@ -77,13 +74,13 @@ async def deleting_role_worker():
         workflows=[workflows_RBAC.DeletingRoleWorkflow], 
         activities=[activities_RBAC.deleting_role_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def updating_role_component_worker():
@@ -94,13 +91,13 @@ async def updating_role_component_worker():
         workflows=[workflows_RBAC.UpdateRoleComponentWorkflow], 
         activities=[activities_RBAC.updating_role_component_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def getting_role_component_worker():
     client = await connectionWithTemporal()
@@ -110,13 +107,13 @@ async def getting_role_component_worker():
         workflows=[workflows_RBAC.GetRoleComponentWorkflow], 
         activities=[activities_RBAC.getting_role_components_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def assign_user_role_worker():
@@ -127,13 +124,13 @@ async def assign_user_role_worker():
         workflows=[workflows_RBAC.AssignUserRoleworkflow], 
         activities=[activities_RBAC.assign_user_role_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_user_permissions_worker():
@@ -144,13 +141,13 @@ async def get_user_permissions_worker():
         workflows=[workflows_RBAC.GetUserPermissionsWorkflow], 
         activities=[activities_RBAC.get_user_permissions_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def delete_role_from_user_worker():
     client = await connectionWithTemporal()
@@ -160,10 +157,10 @@ async def delete_role_from_user_worker():
         workflows=[workflows_RBAC.DeleteRoleFromUserWorkflow], 
         activities=[activities_RBAC.delete_role_from_user_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        

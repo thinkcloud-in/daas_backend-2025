@@ -1,6 +1,6 @@
 import asyncio
 import base64
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 from typing import Dict, List
 from fastapi import HTTPException
@@ -8,27 +8,24 @@ import  requests
 import json
 import os
 from dotenv import load_dotenv
-import re
 import psycopg2
 from .temporalResource.workflows import workflows_guacmole
 from temporalio.client import Client
 from service.temporalResource.workers import workers_guacmole
 from dto.machineDto import MachineDto
 from models.models import CreateMachineBase, Machine
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph,Image
-from reportlab.lib.pagesizes import A4
-from reportlab.lib import colors
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from io import BytesIO
-from reportlab.lib.utils import ImageReader # type: ignore
-from models.Rbac_models import RBAC,RoleComponentSubmitRequest,RBACRequest
+from models.Rbac_models import RoleComponentSubmitRequest,RBACRequest
 from fastapi.encoders import jsonable_encoder
 import httpx
 from starlette.responses import StreamingResponse
 from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workflows import workflows_RBAC
+import logging
+import time
 
+logger = logging.getLogger(__name__)
+
+_temporal_client = None 
 
 #  Load the dotenv file
 load_dotenv()
@@ -36,24 +33,33 @@ load_dotenv()
 def unique_id():
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
-# # This get user Login from the guacamole server
 
 async def connectionWithClient():
+    global _temporal_client
+
+    if _temporal_client is not None:
+        return _temporal_client
     try:
         logger.info("connecting...")
-        return await Client.connect(os.getenv('TEMPORAL_SERVER'))
-        
+        _temporal_client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
+        logger.info("Connected to Temporal server successfully")
+        return _temporal_client
     except Exception as e:
         logger.error("There is an error connecting to the server",exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
         
+async def startup_event_client():
+    global _temporal_client
+    logger.info("Starting up FastAPI server...")
+    asyncio.create_task(connectionWithClient())
+    logger.info("Temporal connection initialization started...")
 
 logging.basicConfig(
-    filename="guacamole_report.log",  # Correct filename
-    level=logging.INFO,               # Logging level
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"  # Log format
+    filename="guacamole_report.log",
+    level=logging.INFO,             
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"  
 )
-logger = logging.getLogger("guacamole_login_logger")  # Custom logger name
+logger = logging.getLogger("guacamole_login_logger")
 
 async def login_with_guacamole():
     uniqueId = unique_id()
@@ -82,9 +88,7 @@ async def login_with_guacamole():
         raise HTTPException(status_code=500, detail=f"Failed to complete login workflow: {str(e)}")
 
 
-# login_with_guacamole()
 #------------------------------------------------------Connection/machine ----------------------------------------------------
-# adding/createing   a new machine 3
 def return_payload(machine_data:MachineDto):
     protocol = machine_data['protocol'].lower()
     match protocol:
@@ -455,7 +459,7 @@ def revoke_user_from_connection(username:str, connection:str):
 }
    
     response= requests.request("PATCH", url, headers=headers, data=payload)
-    # print(response)
+
     return response.json
        
    
@@ -495,7 +499,6 @@ async def list_machines():
  
 # Delete users from assine machine/connection
 async def delete_connection(connection):
-    print("Delete")
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     token = await login_with_guacamole()
     url = gucamole_update_url +connection+ "?token=" + token
@@ -511,10 +514,7 @@ async def modify_connection(machine_data:Machine):
     headers = {
     'Content-Type': 'application/json'
     }
-    # print(url)
-    # print(payload)
     response = requests.request("PUT", url, headers=headers, data=payload)
-    # print(response.status_code)
     return response.status_code
    
 #------------------------------------------------------User----------------------------------------------------
@@ -544,7 +544,6 @@ async def get_user_details(username):
     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
     url = gucamole_create_user_url+"/"+username+"?token="+ token
     response= requests.request("GET", url, )
-    # print(response)
     return response.status_code
 # get user paricular user  
 def delete_user_from_guca(username):
@@ -552,7 +551,6 @@ def delete_user_from_guca(username):
     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
     url = gucamole_create_user_url+"/"+username+"?token="+ token
     response= requests.request("DELETE", url, )
-    # print(response)
     return response.status_code
 # Create a user in guacamole
 async def create_user(username):
@@ -582,21 +580,17 @@ async def create_user(username):
         response = requests.post(url, headers=headers, data=payload)
         return response.status_code
     except Exception as e:
-        print(f"Error occurred: {e}")
-        return None
+        raise HTTPException(status_code=500, detail=str(e))
 
-async def delete_user(username):
+async def delete_user(username):    
     try:
         token = await login_with_guacamole()
-        print(token)
         url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/postgresql/users/{username}?token={token}"
         payload = {}
         headers = {}
         response = requests.delete(url, headers=headers, data=payload)
-        # print(response.text)
         return response.status_code
     except Exception as e:
-        print(f"Error occurred: {e}")
         return e 
 #   Get List of from Keyclaok --------------------------------
 async def get_userList_from_keycloak():
@@ -622,7 +616,6 @@ async def get_userList_from_keycloak():
 #-------------------------------------------------------------------------------------------------------
 async def get_users_connection_history(token):
     if not token:
-        print("Failed to retrieve token")
         return []
     # f"{baseurl}/guacamole/api/session/data/postgresql/history/users"
     
@@ -633,7 +626,6 @@ async def get_users_connection_history(token):
     if response.status_code == 200:
         return response.json()  # Return the JSON response directly
     else:
-        print(f"Error: {response.status_code}")
         return []
 
 async def get_session_reports(start_date_range: datetime, end_date_range: datetime):
@@ -871,7 +863,6 @@ async def get_auth_headers():
         "Authorization": f"Bearer {access_token}",
         "content-type": "application/json"
     }
-    # print('---------------------',auth_headers)
     return auth_headers
 async def get_client():
     uniqueId = unique_id()
@@ -923,7 +914,6 @@ async def create_client_role(client_id, role_name):
         realm_response.raise_for_status()
         return realm_response.json()
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
         return None
  
 async def role_exists(client_id, role_name):
@@ -935,7 +925,7 @@ async def role_exists(client_id, role_name):
         roles = response.json()
         return any(role["name"] == role_name for role in roles)
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
+        
         return False
 #delecte role in keyclock
 async def delete_client_role(client_id, role_name):
@@ -947,7 +937,6 @@ async def delete_client_role(client_id, role_name):
         realm_response.raise_for_status()
         return realm_response.json()
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
         return None
 def get_user_roles(auth_headers, user_id):
     try:
@@ -959,7 +948,7 @@ def get_user_roles(auth_headers, user_id):
         realm_data = realm_response.json()
         return realm_data
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
+ 
         return None
 def assign_role(user_id, role_id):
     try:
@@ -970,7 +959,7 @@ def assign_role(user_id, role_id):
         realm_response.raise_for_status()
         return realm_response.json()
     except requests.RequestException as e:
-        print(f"An error occurred: {e}")
+
         return None
     
 async def posting_role(role_name: str):
@@ -991,7 +980,11 @@ async def posting_role(role_name: str):
     )
     logger.info("workflow started successfully")
     result =  await handle.result()
-    logger.info("Successfully created role.")                                                                                                  
+    logger.info("Successfully created role.")
+    if result["status"] == "Error":
+        raise HTTPException(status_code=result['code'], detail=result['message'])                                                                                                  
+    if result["code"] == 200:
+        return {"msg": result["message"]}
     return result
 
 
@@ -1013,7 +1006,11 @@ async def deleting_role(role_name: str):
     )
     logger.info("workflow started successfully")
     result =  await handle.result()
-    logger.info("Successfully created role.")                                                                                                  
+    logger.info("Successfully created role.")
+    if result["code"] == 500:
+        raise HTTPException(status_code=result['code'], detail=result['message'])                                                                                                  
+    if result["code"] == 200:
+        return {"msg": result["message"]}                                                                                         
     return result
 
 async def updating_role_component(request: RoleComponentSubmitRequest):
@@ -1034,7 +1031,11 @@ async def updating_role_component(request: RoleComponentSubmitRequest):
     )
     logger.info("workflow started successfully")
     result =  await handle.result()
-    logger.info("Successfully created role.")                                                                                                  
+    logger.info("Successfully created role.")
+    if result["status"] == "Error":
+        raise HTTPException(status_code=result['code'], detail=result['message'])                                                                                                  
+    if result["status"] == "Ok":
+        return {"msg": result["message"]}                                                                                                  
     return result
 
 
@@ -1075,10 +1076,8 @@ async def assignning_user_role(request: RBACRequest):
         id=f"assign_user_role_component-{uniqueId}",
         task_queue="assign_user_role_taskqueue",
     )
-    logger.info("workflow started successfully")
-    result =  await handle.result()
-    logger.info("Successfully created role.")                                                                                                  
-    return result
+    logger.info(f"Workflow started successfully: {handle.id}")
+    return { "workflow_id": handle.id }
 
 
 async def get_user_permissions(username: str):
@@ -1121,9 +1120,10 @@ async def delete_role_from_user(request: RBACRequest):
     )
     logger.info("workflow started successfully")
     result =  await handle.result()
-    logger.info("Successfully Deleted role.")                                                                                                  
+    logger.info("Successfully Deleted role.")                                                                                                 
+    if result["code"] != 200:
+        raise HTTPException(status_code=result['code'], detail=result['msg'])
     return result
-
 
 # --------------------------------------------------------------------------------------------------------------------
 
@@ -1149,7 +1149,6 @@ async def generate_userbased_report(start_date: str, end_date: str, report_type:
     return result 
  
 def format_datetime(datetime_str):
-    """Format datetime string to match the required format"""
     if not datetime_str:
         return "Not Applicable"
     try:
@@ -1160,7 +1159,6 @@ def format_datetime(datetime_str):
  
  
 def calculate_duration(duration):
-    """Calculate duration in HH:MM:SS format between login and logout times."""
     if duration == "Not Applicable":
         return "00:00:00"
     try:
@@ -1249,7 +1247,6 @@ async def get_guacamole_history():
         raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_guacmole.GetGuacamoleHistoryWorkflow.run,
-        # args=[uniqueId],
         id=f"get_guacamole_history-{uniqueId}",
         task_queue="get_guacamole_history_taskqueue",
     )
@@ -1270,7 +1267,6 @@ async def get_guacamole_ActiveSessions():
         raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_guacmole.GetGuacamoleActiveSessionsWorkflow.run,
-        # args=[uniqueId],
         id=f"get_gucamole_ActiveSessions-{uniqueId}",
         task_queue="guacamole_active_sessions_taskqueue",
     )
@@ -1280,8 +1276,7 @@ async def get_guacamole_ActiveSessions():
     return result
 
 
-from fastapi import Response
-import base64
+
 
 
 async def generate_guacamole_session_url(session_uuid, datasource=None):
@@ -1289,22 +1284,18 @@ async def generate_guacamole_session_url(session_uuid, datasource=None):
     base_url = os.getenv('GUCAMOLE_BASE_URL')
     if not datasource or datasource == "undefined":
         datasource = os.getenv('GUACAMOLE_DATASOURCE')
-    print(f"Datasource: {datasource}, Token: {guac_token}, Session UUID: {session_uuid}")
 
-    # Raw bytes and check for null separator
     raw_bytes = f"{session_uuid}\x00{datasource}".encode()
-    print("Raw bytes:", list(raw_bytes))
+    logger.info("Raw bytes: %s", list(raw_bytes))
 
     encoded = base64.b64encode(raw_bytes).decode().rstrip("=")
-    print(f"Encoded fragment: {encoded}")
+    logger.info("Encoded fragment: %s", encoded)
 
-    # Decode and check
     decoded_bytes = base64.b64decode(encoded + '=' * ((4 - len(encoded) % 4) % 4))
-    print("Decoded bytes:", list(decoded_bytes))
-    print("Decoded (repr):", repr(decoded_bytes))
+
 
     client_url = f"{base_url}/#/client/{encoded}"
-    print(f"Redirecting to: {client_url}")
+ 
 
     response = Response(status_code=302)
     response.headers["Location"] = client_url
@@ -1316,57 +1307,6 @@ async def generate_guacamole_session_url(session_uuid, datasource=None):
     )
     return response
 
-# async def get_recording_log(identifier: str, logUuid: str, request: Request):
-#     guac_token = await login_with_guacamole()
-#     base_url = os.getenv("GUCAMOLE_BASE_URL")
-#     datasource = os.getenv("GUCAMOLE_DATASOURCE")
-#     if not base_url or not datasource:
-#         raise HTTPException(status_code=500, detail="Guacamole configuration missing")
- 
-#     url = f"{base_url}/api/session/data/{datasource}/history/connections/{identifier}/logs/{logUuid}?token={guac_token}"
- 
-#     timeout = aiohttp.ClientTimeout(total=None, sock_connect=30, sock_read=60)
-#     session = aiohttp.ClientSession(timeout=timeout)
-#     try:
-#         resp = await session.get(url)
-#         if resp.status != 200:
-#             detail = await resp.text()
-#             await resp.release()
-#             await session.close()
-#             raise HTTPException(status_code=resp.status, detail=detail or "Failed to fetch recording")
-#         # Proxy log file as text
-#         async def body_iter():
-#             async for chunk in resp.content.iter_chunked(64 * 1024):
-#                 yield chunk
-#         async def _cleanup():
-#             with contextlib.suppress(Exception): await resp.release()
-#             with contextlib.suppress(Exception): await session.close()
-#         headers = {
-#             "Content-Type": "text/plain",
-#             "Cache-Control": "no-store",
-#         }
-#         origin = request.headers.get("origin")
-#         if origin:
-#             headers["Access-Control-Allow-Origin"] = origin
-#             headers["Vary"] = "Origin"
-#         return StreamingResponse(
-#             body_iter(),
-#             status_code=200,
-#             headers=headers,
-#             background=BackgroundTask(_cleanup),
-#         )
-#     except Exception:
-#         with contextlib.suppress(Exception): await session.close()
-#         raise HTTPException(status_code=500, detail="Failed to fetch recording")
-   
- 
- 
- 
- 
- 
- 
- 
- 
  
 async def get_recording_log(identifier: str, log_uuid: str):
  
@@ -1385,7 +1325,6 @@ async def get_recording_log(identifier: str, log_uuid: str):
  
     client = httpx.AsyncClient(timeout=None)
  
-    # 👇 IMPORTANT: don’t close context before returning StreamingResponse
     r = await client.get(rec_url, timeout=None)
     if r.status_code != 200:
         text = await r.aread()
@@ -1400,7 +1339,7 @@ async def get_recording_log(identifier: str, log_uuid: str):
             async for chunk in r.aiter_bytes():
                 yield chunk
         finally:
-            await client.aclose()   # close client only when done streaming
+            await client.aclose()
  
     headers = {
         "Content-Type": "application/octet-stream",
@@ -1408,27 +1347,3 @@ async def get_recording_log(identifier: str, log_uuid: str):
         "Content-Disposition": f'inline; filename="recording-{identifier}-{log_uuid}.guac"',
     }
     return StreamingResponse(iter_bytes(), media_type="application/octet-stream", headers=headers)
-    # except Exception as e:
-    #     with contextlib.suppress(Exception):
-    #         await client.aclose()
-    #     raise HTTPException(status_code=500, detail=f"Proxy error: {e}")
- 
-
-# async def generate_guacamole_session_url(session_uuid):
-#     guac_token = await login_with_guacamole()
-#     base_url = os.getenv('GUCAMOLE_BASE_URL')
-#     datasource = os.getenv('GUCAMOLE_DATASOURCE')
-#     print(datasource,guac_token,"..................................................")
-#     encoded = base64.b64encode(f"{session_uuid}\x00{datasource}".encode()).decode().rstrip("=")
-#     print(encoded,"encoded.....")
-#     client_url = f"{base_url}/#/client/{encoded}"
-#     print(client_url,".........................")
-#     response = Response(status_code=302)
-#     response.headers["Location"] = client_url
-#     response.set_cookie(
-#         key="GUAC_AUTH",
-#         value=guac_token,
-#         path="/guacamole",
-#         httponly=True
-#     )
-#     return response

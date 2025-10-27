@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_RBAC
@@ -6,7 +6,6 @@ from service.temporalResource.activity import activities_RBAC
 
 @workflow.defn(sandboxed=False)
 class GetClientWorkflow:
-    # Entry point for the workflow
     @workflow.run
     async def run(self):
         retry_policy = RetryPolicy(
@@ -16,8 +15,6 @@ class GetClientWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.get_client_activity,
                 retry_policy=retry_policy,
@@ -26,7 +23,6 @@ class GetClientWorkflow:
             
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -41,8 +37,6 @@ class GetClientRolesWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.get_client_roles_activity,
                 retry_policy=retry_policy,
@@ -51,7 +45,6 @@ class GetClientRolesWorkflow:
             
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 @workflow.defn(sandboxed=False)
@@ -64,9 +57,7 @@ class CreatingRoleWorkflow:
             maximum_interval=timedelta(seconds=30), 
             maximum_attempts=5,
         )
-        try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+        try:            
             result = await workflow.execute_activity(
                 activities_RBAC.creating_role_activity,
                 role_name,
@@ -76,7 +67,6 @@ class CreatingRoleWorkflow:
             
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
 
 
@@ -91,8 +81,6 @@ class DeletingRoleWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.deleting_role_activity,
                 role_name,
@@ -102,7 +90,6 @@ class DeletingRoleWorkflow:
             
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -117,8 +104,6 @@ class UpdateRoleComponentWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.updating_role_component_activity,
                 request,
@@ -127,7 +112,6 @@ class UpdateRoleComponentWorkflow:
             )
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -142,8 +126,6 @@ class GetRoleComponentWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.getting_role_components_activity,
                 role,
@@ -152,7 +134,6 @@ class GetRoleComponentWorkflow:
             )
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -167,8 +148,6 @@ class AssignUserRoleworkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.assign_user_role_activity,
                 request,
@@ -177,7 +156,6 @@ class AssignUserRoleworkflow:
             )
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -192,8 +170,6 @@ class GetUserPermissionsWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_RBAC.get_user_permissions_activity,
                 username,
@@ -202,7 +178,6 @@ class GetUserPermissionsWorkflow:
             )
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
             raise e
         
 
@@ -216,9 +191,7 @@ class DeleteRoleFromUserWorkflow:
             maximum_interval=timedelta(seconds=30), 
             maximum_attempts=5,
         )
-        try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+        try:            
             result = await workflow.execute_activity(
                 activities_RBAC.delete_role_from_user_activity,
                 request,
@@ -227,5 +200,5 @@ class DeleteRoleFromUserWorkflow:
             )
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise e

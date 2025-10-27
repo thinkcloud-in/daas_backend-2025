@@ -1,4 +1,3 @@
-import asyncio
 from sqlalchemy.orm import Session
 from models.models import Machine, Pool
 from service.gucamoleService import connectionWithClient
@@ -29,24 +28,21 @@ async def poll_and_update_machine_status_activity():
                 "power_states": {}
             }
 
-        # Get Proxmox VM status for all pools just once per poll
+        
         try:
             proxmox_vm_status = await get_proxmox_vm_status_activity()
         except Exception as e:
             logger.error(f"Failed to fetch Proxmox VM status: {e}")
             proxmox_vm_status = []
 
-        # Build a mapping from VMID to status from Proxmox
         vmid_status_map = {}
         for pool in proxmox_vm_status:
             for vm in pool["vms"]:
                 vmid_status_map[vm["vmid"]] = vm["status"]
 
-        # Store power_states per pool for API/return
         for pool in proxmox_vm_status:
             power_states[pool["pool_id"]] = pool["vms"]
 
-        # Poll workflow status ONLY for machines whose workflows are not all completed/failed
         for machine in all_machines:
             workflow_ids = machine.workflowId or []
             machine_statuses = []
@@ -54,8 +50,8 @@ async def poll_and_update_machine_status_activity():
                 logger.warning(f"Machine {machine.id} has no workflow IDs")
                 continue
 
-            # Check if all workflow statuses are COMPLETED or FAILED
-            # If workflow_status is missing, poll anyway
+            
+            
             workflow_statuses = machine.workflow_status or {}
             if (
                 workflow_statuses and
@@ -64,7 +60,7 @@ async def poll_and_update_machine_status_activity():
                     for ws in workflow_statuses.values()
                 )
             ):
-                continue  # Skip polling for fully completed/failed machines
+                continue  
 
             try:
                 for wfid in workflow_ids:
@@ -79,7 +75,7 @@ async def poll_and_update_machine_status_activity():
                     vm_status = None
 
                     if status not in ("RUNNING", "COMPLETED"):
-                        # Set error_message from workflow failure, if not running or completed
+                        
                         try:
                             failure_info = await pollingStatus.get_workflow_failure_message_simple(wfid)
                             error = failure_info.get("failure_message")
@@ -88,7 +84,7 @@ async def poll_and_update_machine_status_activity():
                         except Exception as e:
                             logger.warning(f"Failed to extract failure for workflow {wfid}: {str(e)}")
 
-                    # If status is RUNNING: Do NOT touch error_message
+                    
 
                     pollingStatus.update_workflow_status(
                         db, machine.id, wfid, status, error, vm_status
@@ -107,7 +103,7 @@ async def poll_and_update_machine_status_activity():
                 logger.error(f"Error polling machine {machine.id}: {str(e)}")
                 continue
 
-        # Now update error_message for all machines that are COMPLETED
+        
         for machine in all_machines:
             if machine.status == "COMPLETED" and machine.vm_id in vmid_status_map:
                 machine.error_message = vmid_status_map[machine.vm_id]
@@ -147,7 +143,6 @@ async def get_proxmox_vm_status_activity():
     for pool in pool_data:
         vm_ids = pool.pool_vmids or []
         if not vm_ids:
-            print(f"No VMs found in pool {pool.pool_name}")
             continue
         clusterid = pool.cluster_id.split("_")[1]
         cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
@@ -168,7 +163,7 @@ async def get_proxmox_vm_status_activity():
             "shutdown": "shutdown",
             "suspended": "suspend",
            
-            # etc.
+            
         }
         for node in Nodes:
             for vmid in vm_ids:
@@ -195,8 +190,6 @@ async def get_proxmox_vm_status_activity():
                 except requests.RequestException:
                     continue
                 except Exception as e:
-                    print(f"Unexpected error for VMID {vmid} on node {node['name']}: {e}")
-        # print(f"No VMs found in pool {pool.pool_name} or cluster {cluster_data.name} is not reachable.")
-        # print(f"Pool map (type: {type(pool_map)}): {pool_map}")
+                    continue
  
     return list(pool_map.values())

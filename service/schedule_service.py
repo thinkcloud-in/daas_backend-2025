@@ -18,9 +18,9 @@ import os
 
 load_dotenv()
 GUACAMOLE_REPORT_URL = os.getenv('GUACAMOLE_REPORT_URL')
-print(GUACAMOLE_REPORT_URL)
+
 HORIZON_REPORT_URL = os.getenv('HORIZON_REPORT_URL')
-print(HORIZON_REPORT_URL)
+
 def run_temporal_schedule(*args):
 
     loop = asyncio.new_event_loop()
@@ -28,7 +28,7 @@ def run_temporal_schedule(*args):
     try:
         loop.run_until_complete(temporal_schedules(*args))
     except Exception as e:
-        print(f"Temporal schedule error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error in Temporal scheduling: {str(e)}")
     finally:
         loop.close()
 def schedul_id(username: str, schedule_type: str, report_type: str):
@@ -60,7 +60,7 @@ def post_data(item, db):
             "serverPort": smtp_response.serverPort,
             "connOption": smtp_response.connOption
         }
-        print(scheduleId,"--------")
+        
         db_item = Schdeule(
         userEmail=item.userEmail,
         receiverEmail=item.receiverEmail,
@@ -109,18 +109,18 @@ def unique_id():
 async def connectionWithClient():
     try:
         client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-        print('Connected to Temporal server.')
+        
         return client
     except Exception as e:
-        print(f"Failed to connect to Temporal server: {e}")
+        
         raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")  
     
 async def get_data():
     uniqueId = unique_id()
     client =await connectionWithClient()
-    print("Retrieving pool data with temporal server...")
+    
     try:
-        print("worker about to start...")
+        
         asyncio.create_task(workers_schedule.get_report_data_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -136,9 +136,9 @@ async def get_data():
 async def get_data_id(item_id:int):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Retrieving schedule data by id with temporal server...")
+    
     try:
-        print("worker about to start...")
+        
         asyncio.create_task(workers_schedule.get_report_data_by_id_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -156,9 +156,9 @@ async def get_data_id(item_id:int):
 async def get_data_report(report:str, limit: int, offset: int,db):
     uniqueID = unique_id()
     client = await connectionWithClient()
-    print("Retrieving pool data with temporal server...")
+    
     try:
-        print("worker about to start...")
+        
         asyncio.create_task(workers_schedule.get_schedule_data_along_report_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -174,27 +174,32 @@ async def get_data_report(report:str, limit: int, offset: int,db):
 async def update_data_id(item_id:int, item,db):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Updating pool data with temporal server...")
+    
     try:
-        print("worker about to start...")
+        
         asyncio.create_task(workers_schedule.update_schedule_data_id_worker())
+        
+        handle = await client.start_workflow(
+            workflows_schedule.update_schedule_data_id_workflow.run,
+            args=[item_id,item],
+            id=f"Updating-schedule-data-ID-{item_id}-{uniqueId}",
+            task_queue="UpdateScheduleDataById-task-queue",
+        )
+        result =  await handle.result()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_schedule.update_schedule_data_id_workflow.run,
-        args=[item_id,item],
-        id=f"Updating-schedule-data-ID-{item_id}-{uniqueId}",
-        task_queue="UpdateScheduleDataById-task-queue",
-    )
-    result =  await handle.result()
-    return result
+    if result['code'] != 200:
+        raise HTTPException(status_code=result["code"], detail=result['msg'])
+
+    return result['data']
+
 
 async def delete_data_id(item_id:int,db):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Deleting pool data with temporal server...")
+    
     try:
-        print("worker about to start...")
+        
         asyncio.create_task(workers_schedule.delete_schedule_data_id_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -224,12 +229,12 @@ async def get_temporal_status(schedule_id : str):
                 # return workflow_id, run_id, client
                 # workflow_id, run_id, client = await get_schedule_execution_details("workflow-schedule-id")
                 if workflow_id and run_id:
-                    # print(f"Workflow ID: {workflow_id}")
-                    # print(f"Run ID: {run_id}")
+                    # 
+                    # 
 
                     workflow_handle = client.get_workflow_handle(workflow_id)
                     status = await workflow_handle.describe() #status
-                    # print(f"Status: {status.status}")
+                    # 
                     if status.status == 1:
                         return("RUNNING")
                     elif status.status == 2:
@@ -243,15 +248,15 @@ async def get_temporal_status(schedule_id : str):
                     elif status.status == 6:
                         return("TIMED_OUT")  
                 else:
-                    print("Workflow not found...")
+                    
                     return("Workflow not found...")
         except Exception as e:
-            # print(f"{e}")
-            # print(len(description.info.recent_actions))
+            # 
+            # 
             return (f"Error : {e}")
     try:
         return await get_schedule_execution_details(schedule_id)
     except Exception as e:
-        print(e)
+        
         return str(e)
 

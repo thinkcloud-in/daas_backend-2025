@@ -1,8 +1,7 @@
 from pydantic import BaseModel
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String
-from sqlalchemy.dialects.postgresql import ARRAY
+from sqlalchemy import Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
-from typing import List, Optional
+from typing import  Optional
  
 Base = declarative_base()
  
@@ -16,6 +15,7 @@ class IPMIDevice(Base):
     password = Column(String)
  
 class IPMIDeviceRequest(BaseModel):
+    id : Optional[int] = None
     ipmi_server_ip: str
     name: Optional[str] = None
     username: str

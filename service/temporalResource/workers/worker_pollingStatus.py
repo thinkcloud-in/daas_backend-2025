@@ -7,9 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def status_poller_worker():
-    """
-    Worker for status polling workflows and activities
-    """
+
     try:
         client = await connectionWithClient()
         
@@ -27,18 +25,15 @@ async def status_poller_worker():
         )
         
         logger.info('Status poller worker starting...')
-        print('Status poller worker starting...')
-        
-        # Run the worker (this will block until cancelled)
         await worker.run()
         
     except Exception as e:
         logger.error(f"Error in Temporal status poller worker: {e}")
-        print(f"Error in Temporal status poller worker: {e}")
+        
         raise
     finally:
         logger.info('Status poller worker stopped...')
-        print('Status poller worker stopped...')
+        
 
 
 

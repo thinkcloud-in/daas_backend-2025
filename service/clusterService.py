@@ -1,32 +1,19 @@
 from datetime import datetime
 import json
 import random
-from typing import Dict, List, Optional
+from typing import  Optional
 from fastapi import logger
 import requests
-from sqlalchemy import and_, create_engine
-from sqlalchemy.orm import sessionmaker
 import urllib3
 from db_configuration.config import SessionLocal, get_db
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
-from models.models import Cluster, CreateClusterBase
 from service.gucamoleService import connectionWithClient
-# from controllers import store_proxmox_user,get_all_proxmox_users,clone_vm_from_template
-# Disable SSL warning (not recommended for production)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import logging
-import asyncio
-from fastapi import HTTPException
-from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workflows import workflows_cluster
 from models.proxmox_model import Proxmox, MetricServer
-
- 
-# NEW_USER_ID = "testuser@pve"
-# NEW_TOKEN_ID = "testtoken"
-# NEW_PASSWORD = "Teamw0rk@1"
 
 NEW_USER_ID = os.getenv("PROXMOX_NEW_USER_ID")
 NEW_TOKEN_ID = os.getenv("PROXMOX_NEW_TOKEN_ID")
@@ -63,18 +50,10 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
 
-    # try:
-    #     global _worker_started
-    #     if not _worker_started:
-    #         asyncio.create_task(workers_cluster.create_user_worker())
-    #     _worker_started = True
-    #     logger.info(f"Started worker task for creating user with unique ID {uniqueId}.")
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=str(e))
 
     handle = await client.start_workflow(
         workflows_cluster.CreateUserWorkflow.run,
-        args=[cluster_data, root_username, root_password],  # Pass the full cluster_data dict
+        args=[cluster_data, root_username, root_password],
         id=f'create-user-{uniqueId}',
         task_queue="cluster-task-queue",
         search_attributes={
@@ -83,11 +62,9 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
             "UserName": [userName]
         },
     )
-    print("Workflow started! Workflow ID:", handle.id)
 
     # Get result and validate
     result = await handle.result()
-    print("Workflow result:", result)
 
     if result.get('status') != 'success':
         raise Exception("User creation failed in workflow.")
@@ -100,16 +77,6 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     uniqueId = unique_id()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
-    # Role = cluster_data.get('role')
-
-    # try:
-    #     global _worker_started_assign_role
-    #     if not _worker_started_assign_role:
-    #         asyncio.create_task(workers_cluster.assign_role_to_user_worker())
-    #         _worker_started_assign_role = True
-    #     logger.info(f"Started worker task for assigning role with unique ID {uniqueId}.")
-    # except Exception as e:
-    #     raise HTTPException(status_code=500, detail=str(e))
 
     handle = await client.start_workflow(
         workflows_cluster.AssignRoleToUserWorkflow.run,
@@ -122,28 +89,8 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
             "UserName": [userName]
         },
     )
-    print("Workflow started! Workflow ID:", handle.id)
     result = await handle.result()
-    print("Workflow result:", result)
     return result
-
-
-# def create_user(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
-#     headers, cookies = root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD)
-#     url = f"{PROXMOX_HOST}/api2/json/access/users"
-#     payload = {
-#         "userid": NEW_USER_ID,
-#         "password": NEW_PASSWORD
-#     }
-#     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-#     if response.status_code == 200:
-#         print(f"User '{NEW_USER_ID}' created.")
-#     elif response.status_code == 400 and "already exists" in response.text:
-#         print(f"ℹUser '{NEW_USER_ID}' already exists.")
-#     else:
-#         print("Failed to create user:", response.text)
-#     return response.json()
- 
 def new_user_proxmox_login(PROXMOX_HOST):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": NEW_USER_ID, "password": NEW_PASSWORD}
@@ -164,41 +111,19 @@ def create_api_token_newUser(PROXMOX_HOST):
     full_token = data["full-tokenid"]
     secret = data["value"]
     api_token = f"{full_token}={secret}"
-    print("API Token created with create_api_token_newUser------:", api_token)
     return api_token,full_token,secret
  
-# Step 3: Assign role to new user (must be done as root)
-# def assign_role_to_user(PROXMOX_HOST,role, path,ROOT_USERNAME,ROOT_PASSWORD):
-#     headers, cookies = root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD)
-#     # create_api_token_newUser()
-#     url = f"{PROXMOX_HOST}/api2/json/access/acl"
-#     payload = {
-#         "path": path,
-#         "roles": role,
-#         "users": NEW_USER_ID,
-#         "tokens":f"{NEW_USER_ID}!{NEW_TOKEN_ID}",
-#         "propagate": 1
-#     }
-#     response = requests.put(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-#     response.raise_for_status()
-#     print(f"Role '{role}' assigned to user '{NEW_USER_ID}' on path '{path}'.")
- 
-# Step 4: Login as the new user
  
  
  
 def get_all_proxmox_users(db: Session):
     data=db.query(Proxmox).all()
-    # for obj in data:
-    #     print(obj.api_token)
     return data
 def get_api_token(db, cluster_name):
     obj = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_name).first()
     if obj:
-        # print(obj.api_token)
         return obj.api_token
     else:
-        print("No API token found for cluster:", cluster_name)
         return None
  
  
@@ -206,7 +131,6 @@ def get_api_token(db, cluster_name):
  
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
-    # Check if a record already exists with the same cluster_name
     existing_user = db.query(Proxmox).filter(
         Proxmox.cluster_name == cluster_name
     ).first()
@@ -225,7 +149,6 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
         db.refresh(existing_user)
         return existing_user
     else:
-        # Create new record
         proxmox_user = Proxmox(
             user=NEW_USER_ID,
             cluster_name=cluster_name,
@@ -247,7 +170,6 @@ async def create_cluster_proxmox(cluster_data):
     ROOT_USERNAME = cluster_data.username
     ROOT_PASSWORD = cluster_data.password
     cluster_data_dict = cluster_data.dict()
-    # FIX: Pass the full cluster_data dict, not just the host string!
     await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
     api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
     role = "Administrator"
@@ -256,7 +178,6 @@ async def create_cluster_proxmox(cluster_data):
     store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
  
 def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
-    # Support both dict and Pydantic object
     if isinstance(cluster_data, dict):
         ip_field = cluster_data.get('ip')
         port = cluster_data.get('port')
@@ -293,7 +214,6 @@ def get_all_nodes(cluster_data):
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
     }
-    # Try each IP in cluster_data.ip until one works
     last_exception = None
     for ip in cluster_data.ip:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
@@ -302,9 +222,7 @@ def get_all_nodes(cluster_data):
             response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
             response.raise_for_status()
             data = response.json()
-            # print(f"Cluster status data from {ip}:", data)
  
-            # Filter: Only ONLINE nodes
             nodes = [
                 {
                     "name": node["name"],
@@ -314,15 +232,12 @@ def get_all_nodes(cluster_data):
                 for node in data["data"]
                 if node.get("type") == "node" and node.get("online", 0) == 1
             ]
- 
-            # print("Filtered ONLINE nodes in the cluster:", nodes)
+
             return nodes
         except Exception as e:
-            print(f"Failed to connect to {ip}: {e}")
             last_exception = e
             continue
  
-    # If none of the IPs worked, raise the last exception
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
  
 def delete_cluster_proxmox(cluster_data):
@@ -346,23 +261,19 @@ def delete_cluster_proxmox(cluster_data):
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
-            # If the error is 401 or 404, or the body contains "no such user", ignore it
             if response.status_code in (401, 404) or "no such user" in response.text:
-                pass  # Ignore and proceed to DB deletion
+                pass
             else:
-                raise  # Re-raise for any other error
+                raise
     except Exception as e:
-        # Other unexpected exceptions (network, etc)
-        print(f"Ignoring exception during user deletion: {e}")
+        raise Exception(f"Failed to delete user from Proxmox API: {str(e)}")
  
-    # Now delete the cluster from DB
     proxmox_cluster = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_data.name).first()
     if proxmox_cluster:
         db.delete(proxmox_cluster)
         db.commit()
         return f"Cluster '{cluster_data.name}' deleted successfully."
     else:
-        print("Cluster not found in the database.")
         return f"Cluster '{cluster_data.name}' not found in the database."
  
  
@@ -398,8 +309,6 @@ def get_influxdb_metric_server(cluster_data):
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
     }
-    print("API Token for get_influxdb_metric_server:", api_token)
-    print("headers",headers)
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
     try:
@@ -425,10 +334,7 @@ def get_influxdb_metric_server(cluster_data):
     else:
         return {"error": "No InfluxDB metric server found for the cluster."}
  
-def create_and_get_metric_server(cluster_data):
-    """
-    Checks if a metric server exists. If not, creates a new InfluxDB bucket and registers the metric server.
-    """    
+def create_and_get_metric_server(cluster_data):   
     influxdb_payload = {
         "type": "influxdb",
         "id": cluster_data.name,
@@ -452,7 +358,6 @@ def save_metric_server_to_db(
 ):
     ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
     if not ms:
-        # Always set is_custom_integration on new row, default to False if not provided
         ms = MetricServer(
             cluster_id=cluster_id,
             is_custom_integration=is_custom_integration if is_custom_integration is not None else False
@@ -476,9 +381,7 @@ def save_metric_server_to_db(
  
 
 def delete_influxdb_metric_server(cluster_data):
-    """
-    Deletes the InfluxDB metric server for the given cluster in Proxmox.
-    """
+
     db = next(get_db())
     api_token = get_api_token(db, cluster_data.name)
     headers = {
@@ -493,14 +396,11 @@ def delete_influxdb_metric_server(cluster_data):
         response.raise_for_status()
         return {"status": "success"}
     except Exception as e:
-        print(f"Error deleting metric server: {e}")
+
         return {"error": "Failed to delete metric server from Proxmox API."}
 
 def can_delete_metric_server(db, cluster_id):
-    """
-    Checks if the metric server can be deleted based on monitoring and is_custom_integration fields.
-    Returns (allowed: bool, message: str)
-    """
+
     ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
     if not ms:
         return False, "Metric server integration not found."
@@ -509,14 +409,13 @@ def can_delete_metric_server(db, cluster_id):
     return True, ""
 
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
-    """Fetch the MetricServer record from the database."""
     db: Optional[Session] = None
     try:
         db = SessionLocal()
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
         return ms
     except Exception as e:
-        print(f"Error fetching MetricServer for cluster_id={cluster_id}: {e}")
+
         return None
     finally:
         if db:

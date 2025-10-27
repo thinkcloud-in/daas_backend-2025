@@ -1,17 +1,15 @@
-import asyncio
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db  
 from models.models import CreateMachineBase, Machine, Pool ,Cluster,CreatePoolBase,UpdateMachineBase
-from fastapi import HTTPException, logger
+from fastapi import HTTPException
 from service.gucamoleService import delete_connection
 from fastapi.encoders import jsonable_encoder
 from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-import logging
-from datetime import datetime
+
 
 
 @activity.defn()
@@ -19,7 +17,7 @@ async def create_pool_activity(request: dict) -> dict:
     db: Session = next(get_db())
     pool_data = {key: request[key] for key in CreatePoolBase.__annotations__.keys() if key in request}
     email = pool_data.pop("email", None)
-      # All necessary fields are now in pool_data
+
     ip_pool_names = pool_data.get("pool_ip_pool_names")
     if pool_data.get("pool_type") == "Automated":
         if not ip_pool_names or not isinstance(ip_pool_names, list) or not ip_pool_names:
@@ -30,42 +28,38 @@ async def create_pool_activity(request: dict) -> dict:
         template_vm_id = pool_data.get("pool_template_vm_id")
         name_template = pool_data.get("pool_naming_pattern")
     try:
-        # Check for duplicate pool
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
-        if existing_pool:
-            return {
-                "msg": f"Pool already exists with this pool_name {existing_pool.pool_name} --- please try with another pool name."
-            }
- 
-        # Create Pool instance
-        pool = Pool(**pool_data)
-        db.add(pool)
-        db.commit()
-        db.refresh(pool)
-        id_pool = pool.id
-        if pool_data.get("cluster_id"):
-            pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
+        if existing_pool is None:
+            pool = Pool(**pool_data)
+            db.add(pool)
             db.commit()
             db.refresh(pool)
- 
+            id_pool = pool.id
+            if pool_data.get("cluster_id"):
+                pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
+                db.commit()
+                db.refresh(pool)
+        else:
+            return {
+                    "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
+                }
+    
         machines_json = []
-       
         if pool.pool_type == "Automated":
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             nodes = node if isinstance(node, list) else [node]
  
-            # Allocate IPs
+            
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
             num_allocated = len(allocated_ips)
             num_requested = vm_count
             num_missing = num_requested - num_allocated
  
             if num_allocated == 0:
-                raise HTTPException(status_code=400, detail="No available IPs in the selected IP pools to create any VMs.")
- 
-            ip_list = [ip_entry.ip for ip_entry, _ in allocated_ips]
+                raise Exception("No available IPs in the selected IP pools to create any VMs.")
+
+            ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
-            # Prepare clone payload
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),
                 "node": nodes,
@@ -75,18 +69,14 @@ async def create_pool_activity(request: dict) -> dict:
                 "count": num_allocated,
                 "ip_list": ip_list,
             }
-            # Call Temporal workflow and wait for result
             response = await clone_vm(clone_payload_dict)
-            print("Response from clone_vm:", response)
            
 
-            assigned_vms = response.get("vms", [])  # Expecting a list of {name, vmid, node, upid, ip}
-            # clone_workflow_id = assigned_vms[0].get("clone_workflow_id") if assigned_vms else None
+            assigned_vms = response.get("vms", [])
             pool.pool_vmids = [str(vm["vmid"]) for vm in assigned_vms]
             db.commit()
             db.refresh(pool)
  
-            print("About to write machines and IPEntry updates...")
             for vm in assigned_vms:
                 name = vm["name"]
                 vmid = vm["vmid"]
@@ -98,19 +88,18 @@ async def create_pool_activity(request: dict) -> dict:
                     if ip_entry:
                         ip_entry.status = "used"
                         ip_entry.vm_id = int(vmid)
-                        print(f"Updating IPEntry: {ip}, vmid={vmid}")
-                    else:
-                        print(f"IPEntry not found for {ip}")
+                         
                     db.commit()
-                    print("Committed IPEntry update")
+                    
                 except Exception as e:
-                    print(f"Failed to update IPEntry: {e}")
                     db.rollback()
-                # Prepare machine data (fill out as needed)
+                    raise e
+                    
+                
                 try:
-                      # Collect both workflow IDs
+                      
                     workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                    workflow_ids = [wid for wid in workflow_ids if wid]  # Filter out None
+                    workflow_ids = [wid for wid in workflow_ids if wid]  
                     machine_data = {
                         "vm_id": int(vmid),
                         "name": name,
@@ -209,10 +198,10 @@ async def create_pool_activity(request: dict) -> dict:
                     machine_data_obj = CreateMachineBase(**machine_data)
                     machine_result = await controllers.create_machine(machine_data_obj)
                     machines_json.append(jsonable_encoder(machine_result))
-                    # db.commit()
-                    print("Committed machine to DB")
+                    
+                    
                 except Exception as e:
-                    print(f"Failed to create machine: {e}")
+                    
                     db.rollback()
        
             msg = f"pool, {num_allocated} VM(s) created successfully."
@@ -369,7 +358,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         email = pool_data.get("email", None)
 
-        # If scaling up automated pool, do all checks and VM creation BEFORE pool update
+        
         if is_automated and added_count > 0:
             cluster_id = db_pool.cluster_id.split("_")[-1] if "_" in db_pool.cluster_id else db_pool.cluster_id
             try:
@@ -389,8 +378,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, added_count)
             if not allocated_ips:
                 return {
-                    "msg": "Pool update failed: No available IPs in the selected IP pools to add more VMs.",
-                    "error": True
+                    "msg": 'No available IPs in the selected IP pools to create any additional VMs.',
                 }
 
             ip_list = [ip_entry.ip for ip_entry, _ in allocated_ips]
@@ -408,7 +396,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             try:
                 response = await clone_vm(clone_payload_dict)
-                print("DEBUG: clone_vm response in update_pool_activity:", response)
+                
                 if isinstance(response, dict) and "error" in response:
                     err_msg = response["error"]
                     if "Template VM" in err_msg and "not found in cluster" in err_msg:
@@ -426,7 +414,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 else:
                     raise Exception(err_msg)
 
-        # Now update pool data
+        
         pool_data_excluding_vmcount = dict(pool_data)
         if is_automated and added_count > 0:
             pool_data_excluding_vmcount.pop("pool_number_of_vms", None)
@@ -443,11 +431,11 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
         db.commit()
         db.refresh(db_pool)
 
-        # Assign IPs and create machines for scaled VMs
+        
         if is_automated and added_count > 0 and vms:
-            print("debug:vms to add machines for:", vms)
+            
             for vm in vms:
-                print("debug:processing vm:", vm)
+                
                 name = vm["name"]
                 vmid = vm["vmid"]
                 ip = vm["ip"]
@@ -458,17 +446,14 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                         ip_entry.status = "used"
                         ip_entry.vm_id = int(vmid)
                         db.commit()
-                    else:
-                        print(f"IPEntry not found for {ip}")
                 except Exception as e:
-                    print(f"Failed to update IPEntry: {e}")
                     db.rollback()
 
                 try:
-                    # collect both workflow IDs
+                    
                     workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                    workflow_ids = [wid for wid in workflow_ids if wid]  # Filter out None
-                    print(f"Workflow IDs for VM {name}: {workflow_ids}")
+                    workflow_ids = [wid for wid in workflow_ids if wid]  
+                    
                     machine_data = {
                         "vm_id": int(vmid),
                         "name": name,
@@ -569,24 +554,23 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     machine_result = await controllers.create_machine(machine_data_obj)
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
-                    print(f"Failed to create machine: {e}")
+                    db.rollback()
                     continue
 
-        # 🔄 Update existing machines (excluding custom)
         existing_machines = db.query(Machine).filter(Machine.pool_id == db_pool.id, Machine.is_custom_machine == False).all()
         for machine in existing_machines:
-            print(f"Type of machine: {type(machine)}")
+            
             try:
 
                 machine_update_data = machinedata(email,machine, db_pool)
 
                 machine_update_data["identifier"] = machine.identifier
-                print(f"Data for update_machine: {machine_update_data}")
+                
                 machine_update_data_obj = UpdateMachineBase(**machine_update_data)
-                print(f"Machine update data object: {machine_update_data_obj}")
+                
                 await controllers.update_machine(machine.identifier, machine_update_data_obj)
             except Exception as e:
-                print(f"Failed to update existing machine {machine.identifier}: {e}")
+                db.rollback()
                 continue
 
         db_pool_json = jsonable_encoder(db_pool)
@@ -598,12 +582,11 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             elif vm_add_error:
                 msg += f", {vm_add_error}"
 
-        return {"msg": msg, "pool": db_pool_json, "machines": machines_in_pool}
+        return {"pool": db_pool_json, "machines": machines_in_pool}
 
     except Exception as e:
         db.rollback()
         return {
-            "msg": f"Pool update failed: {str(e)}",
             "error": True
         }
     finally:
@@ -627,70 +610,71 @@ async def delete_pool_activity(pool_id: int) -> dict:
             try:
                 id_cluster = cluster_pool_id.split("_")[1]
             except Exception as e:
-                # raise HTTPException(status_code=400, detail="Malformed cluster_pool_id")
+                
                 raise RuntimeError(str(e))
             cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
 
-            # Delete VMs and free their IPs
+            
             for vmid in pool_vmids:
                 if vmid:
                     try:
-                        delete_proxmox_vm(vmid, cluster_data)
+                        await delete_proxmox_vm(vmid, cluster_data)
                         vmid_int = int(vmid)
                         ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_int, IPEntry.status == "used").all()
-                        print(f"Freeing IPs for VMID {vmid_int}: {[ip.ip for ip in ip_entries]}")
+                        
                         for ip_entry in ip_entries:
                             ip_entry.status = "unused"
                             ip_entry.vm_id = None
-                        print("About to commit IP status updates...")
+                        
                         db.commit()
-                        print("Commit done.")
-                        # Optional: Re-fetch and print for debugging
+                        
+                        
                         for ip_entry in ip_entries:
                             db.refresh(ip_entry)
-                            print(f"After commit: IP {ip_entry.ip} status={ip_entry.status}, vm_id={ip_entry.vm_id}")
+                            
                     except Exception as e:
                         db.rollback()
-                        print(f"Exception occurred: {e}")
+                        
 
-        # Delete machines
+        
         for machine_item in pool_machines:
             machine = db.query(Machine).filter(Machine.identifier == machine_item).first()
             if machine:
                 try:
                     await delete_connection(machine.identifier)
+                    db.delete(machine)
+                    db.commit()
                 except Exception as e:
-                    print(f"Failed to delete connection for machine {machine.identifier}: {e}")
-                db.delete(machine)
+                    db.rollback()
 
         db.delete(pool)
         db.commit()
         all_pools = db.query(Pool).all()
         all_pools_json = jsonable_encoder(all_pools)
-        return {"msg": f"Pool deleted successfully", "pools": all_pools_json}
+        return {"pools": all_pools_json}
     except Exception as e:
-       
-        raise HTTPException(status_code=500, detail=f"An error occurred while deleting the Pool: {str(e)}")
-# Activity funtion for retrieve pool data
+        db.rollback()
+        return {"msg": f"An error occurred while deleting the pool: {str(e)}"}
+
 @activity.defn()
 async def retrieve_pool_data_activity(pool_name: str) :
     db: Session = next(get_db())  
     try:
         pool = db.query(Pool).filter(Pool.pool_name == pool_name).first()
         pool_json = jsonable_encoder(pool)
-        # print(f"pool_dict type-----------: {type(pool_dict)}")
+        
         if pool_json:
             return {"msg": f"{pool_name} Pool found ", "pool": pool_json}
         else:
-            print("Pool not found")
-            return {"msg": f"{pool_name} Pool not found"}, 404
+            
+            return {"msg": f"{pool_name} Pool not found"}
     except Exception as e:
         db.rollback()
-        print("Pool retrieval failed")
+        
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving the pool: {str(e)}")
     
 
-# Activity function for getting all the pool names 
+
 @activity.defn()
 async def list_all_pool_names_activity():
     db: Session = next(get_db())  
@@ -700,7 +684,7 @@ async def list_all_pool_names_activity():
         return {"msg": "listed all the Pool names successfully", "pool_names": pool_names}
     except Exception as e:
         db.rollback()
-        print("Error while retrieving all pools")
+        
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving all pools: {str(e)}")
     
 
@@ -712,8 +696,7 @@ async def get_all_pools_activity():
         pools_json = jsonable_encoder(pools)
         return {"msg": "listed all the Pools successfully", "pools": pools_json}
     except Exception as e:
-        db.rollback()
-        print("Error while retrieving all pools")
+        db.rollback()  
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving all pools: {str(e)}")
     
 
@@ -727,9 +710,9 @@ async def get_pool_details_id_activity(pool_id: int):
         if pool_json:
             return {"msg": f"Pool Retrived Successfully", "pool": pool_json}
         else:
-            # print("Pool not found")
+            
             return {"msg": f"Pool not found "}, 404
     except Exception as e:
         db.rollback()
-        print("Pool retrieval failed")
+        
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving the pool: {str(e)}")

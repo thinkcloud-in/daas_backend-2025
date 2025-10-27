@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Dict, List
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -6,7 +6,6 @@ from models.models import CreateMachineBase
 from service.temporalResource.activity import activities_guacmole
 @workflow.defn(sandboxed=False)
 class LoginWorkflow:
-    # Entry point for the workflow
     @workflow.run
     async def run(self) -> str:
         retry_policy = RetryPolicy(
@@ -16,19 +15,17 @@ class LoginWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
             result = await workflow.execute_activity(
                 activities_guacmole.login_with_guacamole_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
             auth_token = result.get("authToken")
-            print('Workflow completed.')
+            
             return auth_token
         except Exception as e:
-            print(f"Error in workflow: {e}")
-            return None
+            return e 
         
 
 @workflow.defn(sandboxed=False)
@@ -42,17 +39,16 @@ class ListOfGuacoUsersWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
             result = await workflow.execute_activity(
                 activities_guacmole.list_of_guaco_users_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
 
 @workflow.defn(sandboxed=False)
@@ -66,17 +62,16 @@ class GetUserlistFromKeycloakWorkflow:
             maximum_attempts=5,
         )
         try:
-        # Execute the activity with retry policy
-            print('Running workflow...')
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_userlist_from_keycloak_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
     
 @workflow.defn(sandboxed=False)
@@ -90,17 +85,17 @@ class ListOfMachinesWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.list_of_machine_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 from dto.machineDto import MachineDto
@@ -116,18 +111,18 @@ class CreateMachineWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.creating_machine_activity,
                 args=[machine_data],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
     
 @workflow.defn(sandboxed=False)
@@ -141,18 +136,18 @@ class GetSessionReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_session_reports_activity,
                 args=[start_date_range, end_date_range],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -167,18 +162,18 @@ class GetAllUsersVamanitWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_all_users_vamanit_activity,
                 args=[session_reports],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -193,18 +188,18 @@ class GetPerticularUserSessionReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_perticular_user_session_report_activity,
                 args=[session_reports, username],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 @workflow.defn(sandboxed=False)
@@ -218,18 +213,18 @@ class GetDailyReportsWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_daily_reports_activity,
                 args=[session_reports],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -244,18 +239,18 @@ class getPerticularUserDailyReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_perticular_user_daily_report_activity,
                 args=[daily_reports,username],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -270,17 +265,17 @@ class GetCompaniesWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_companies_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
 
 @workflow.defn(sandboxed=False)
@@ -294,18 +289,18 @@ class GetCompaniesByReportNameWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_companies_by_report_type_activity,
                 report_type,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -320,18 +315,18 @@ class DeleteReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.delete_report_activity,
                 report_type,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -346,18 +341,18 @@ class UpdateReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.update_report_activity,
                 args = [company_name, company_logo, report_type],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 @workflow.defn(sandboxed=False)
@@ -371,18 +366,18 @@ class InsertReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.insert_report_activity,
                 args = [company_name, company_logo, report_type],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -397,18 +392,18 @@ class GenerateReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.generate_report_activity,
                 args = [start_date, end_date, report_type],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -424,18 +419,18 @@ class GenerateUserBasedReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.generate_user_based_report_activity,
                 args = [start_date, end_date, report_type, username],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -450,18 +445,18 @@ class GetUsersTotalDurationWithinTimerangeWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_users_total_duration_within_timerange_activity,
                 day_duration,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -476,18 +471,18 @@ class ConsolidateReportPerticularUserWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.consolidate_report_perticular_user_activity,
                 args = [user_total_duration, user],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -502,17 +497,17 @@ class GetGuacamoleHistoryWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_guacamole_history_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
         
 
@@ -527,16 +522,16 @@ class GetGuacamoleActiveSessionsWorkflow:
             maximum_attempts=5,
         )
         try:
-            # Execute the activity with retry policy
-            print('Running workflow...')
+            
+            
             result = await workflow.execute_activity(
                 activities_guacmole.get_guacamole_ActiveSessions_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             return None
  

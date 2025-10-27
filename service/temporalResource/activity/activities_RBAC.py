@@ -21,7 +21,7 @@ async def get_client_activity():
         
         auth_headers = await service.get_auth_headers()
        
-        # return {"status": "Ok", "code": 200, "message": "Client ID retrieved successfully", "client_id": client_id}
+        
     
         headers = auth_headers
         keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_RELAM')}/clients"
@@ -34,7 +34,6 @@ async def get_client_activity():
             realm_data = await realm_response.json()
             client_id=os.getenv('CLIENT_ID')
             logger.info(f"Looking for client with clientId: {client_id}")
-            # print("Client id",client_id)
             for client_data in realm_data:
                 api_six_clientId=client_data.get("clientId")
                 if(api_six_clientId == client_id):
@@ -45,7 +44,6 @@ async def get_client_activity():
             return None    
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
-        print(f"An error occurred: {e}")
         raise e
     
 
@@ -66,9 +64,8 @@ async def get_client_roles_activity():
             return realm_data
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
-        print(f"An error occurred: {e}")
-        return {"status": "Error", "code": 500, "message": e}
-    
+        return {"status": "Error", "code": 500, "message": str(e)}
+
 
 @activity.defn
 async def creating_role_activity(role_name: str):
@@ -77,44 +74,43 @@ async def creating_role_activity(role_name: str):
         client_id_ = await service.get_client()
         client_id = dict(client_id_).get("id")
 
-        # Check if role exists in the external service
+        
         if await service.role_exists(client_id, role_name):
-            return("Role already exists in the external service")
-            # raise HTTPException(status_code=400, detail="Role already exists in the external service")
+            return {"status": "Error", "code": 400, "message": "Role already exists in the external service"}
+            
  
-        # Check if role exists in the database
+        
         logger.info("Checking if role exists in the database...")
         existing_role = db.query(RBAC).filter(RBAC.role == role_name).first()
         if existing_role:
             logger.info("Role already exists in the database...")
             return("Role Already Exists")
-            # raise HTTPException(status_code=400, detail="Role already exists in the database")     
-        # Create role in the database
+            
+        
        
-        # Create role in the external service
+        
         await service.create_client_role(client_id, role_name)
 
-        # Add role to the database
+        
         logger.info("Adding role to the database")
         new_role = RBAC(users=[], role=role_name, components=[])
         db.add(new_role)
         db.commit()
         logger.info("Added role to the database")
         db.refresh(new_role)
-       
+
         return {"status": "Ok", "code": 200, "message": "Role created successfully in both places"}
     except Exception as e:
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
-        print(f"An error occurred: {e}")
-        return {"status": "Error", "code": 500, "message": e}
-    
+        return {"status": "Error", "code": 500, "message": str(e)}
+
 
 @activity.defn
 async def deleting_role_activity(role_name: str):
     try:
         db: Session = next(get_db())
-        # Step 1: Delete the role in the backend system        
+        
         client_id_ = await service.get_client()
 
         client_id = dict(client_id_).get("id")
@@ -122,7 +118,7 @@ async def deleting_role_activity(role_name: str):
         await service.delete_client_role(client_id, role_name)
         logger.info(f"Deleted role '{role_name}' from the backend system")
        
-        # Step 2: Delete the role from the database
+        
         role_entry = db.query(RBAC).filter(RBAC.role == role_name).first()
         if not role_entry:
             return {"status": "Ok", "code": 500, "message":f"Role '{role_name}' not found in the database."}
@@ -141,15 +137,15 @@ async def deleting_role_activity(role_name: str):
 async def updating_role_component_activity(request: dict):
     try:
         db: Session = next(get_db())
-        # Check if role already exists
+        
         existing_rbac = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
         logger.info("getting role  from the database")
  
         if existing_rbac:
-            # Update existing role's components
+            
             existing_rbac.components = request.get("components")
         else:
-            # Create new role with components
+            
             new_rbac = RBAC(
                 users=[],
                 role=request.get("role"),
@@ -159,7 +155,7 @@ async def updating_role_component_activity(request: dict):
  
         db.commit()
         logger.info("Role and components saved successfully")
-        return {"message": "Role and components saved successfully"}
+        return {"status": "Ok", "code": 200, "message": "Role and components saved successfully"}
    
     except Exception as e:
         db.rollback()
@@ -171,16 +167,16 @@ async def updating_role_component_activity(request: dict):
 async def getting_role_components_activity(role: str):
     try:
         db: Session = next(get_db())
-        # Query the RBAC table for the specific role
+        
         rbac_entry = db.query(RBAC).filter(RBAC.role == role).first()
         logger.info("getting role components from the database")
                
-        # If role is found, return its components
+        
         if rbac_entry:
             logger.info("Role components retrieved successfully")
             return {"components": rbac_entry.components}
        
-        # If role not found, return empty list
+        
         logger.info("Role not found in the database")
         return {"status": "Error", "code": 404, "message": "Data Not Found"}
        
@@ -193,19 +189,19 @@ async def getting_role_components_activity(role: str):
 async def assign_user_role_activity(request :dict):
     try:
         db: Session = next(get_db())
-        # Verify user exists in Keycloak
+        
         users = await service.get_userList_from_keycloak()
         if not any(user["username"] == request.get("username")[0] for user in users):
             logger.info("User not found in Keycloak")
             return {"status_code":404, "detail":"User not found in Keycloak"}
  
-        # Get the role entry
+        
         role_entry = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
         if not role_entry:
             logger.info("Role not found")  
             return {"status_code":404, "detail":"Role not found"}
  
-        # Update users array for the role
+        
         if request.get("username")[0] not in role_entry.users:
             
             role_entry.users = role_entry.users + request.get("username")
@@ -228,29 +224,27 @@ async def assign_user_role_activity(request :dict):
 async def get_user_permissions_activity(username: str):
     try:
         db: Session = next(get_db())
-        # Find all roles where the username is in the users array
+        
         roles = db.query(RBAC).filter(RBAC.users.contains([username])).all()
        
         if not roles:
             return {
-                "status": "Ok",
                 "code": 200,
                 "roles": [],
                 "components": [],
                 "message": "No permissions found for user"
             }
        
-        # Collect all roles and their components
+        
         user_roles = [role.role for role in roles]
         all_components = []
         for role in roles:
             all_components.extend(role.components)
        
-        # Remove duplicates from components
+        
         unique_components = list(set(all_components))
            
         return {
-            "status": "Ok",
             "code": 200,
             "roles": user_roles,
             "components": unique_components,
@@ -264,29 +258,28 @@ async def get_user_permissions_activity(username: str):
 async def delete_role_from_user_activity(request: dict):
     try:
         db: Session = next(get_db())
-        # Verify user exists in Keycloak
+        
         users = await service.get_userList_from_keycloak()
         if not any(user["username"] == request.get("username")[0] for user in users):
             logger.info("User not found in Keyclock")  
-            return {"status_code":404, "detail":"User not found"}
+            return {"code":404, "msg":"User not found"}
  
-        # Find the role entry
+        
         role_entry = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
         if not role_entry:
             logger.info("Role not found")  
-            return {"status_code":404, "detail":"Role not found"}
- 
-        # Remove user from the users array
+            return {"code":404, "msg":"Role not found"}
+
+        
         if request.get("username")[0] in role_entry.users:
             role_entry.users = [u for u in role_entry.users if u != request.get("username")[0]]
             db.commit()
-            logger.info("User removed from role and updated also")  # Log activity
+            logger.info("User removed from role and updated also")
         return {
-            "status": "Ok",
             "code": 200,
-            "message": f"""Role '{request.get("role")}' successfully removed from user '{request.get("username")[0]}'"""
+            "msg": f"""Role '{request.get("role")}' successfully removed from user '{request.get("username")[0]}'"""
         }
     except Exception as e:
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
-        return {"status": "Error", "code": 500, "message": e}
+        return {"code": 500, "msg": e}

@@ -1,12 +1,11 @@
-from sqlalchemy import JSON, Text, create_engine, Column, Integer, String, ForeignKey, Table, DateTime, text, Boolean,ARRAY, Sequence# type: ignore
-from sqlalchemy.orm import relationship, backref# type: ignore
+from sqlalchemy import JSON, Text, Column, Integer, String, DateTime, Boolean,ARRAY, Sequence
 from pydantic import BaseModel, Field# type: ignore
 from typing import Dict, List, Optional, Union
 from db_configuration.config import Base
 import datetime
 import datetime
 from typing import List, Optional
-from sqlalchemy.dialects.postgresql import ARRAY  # <-- GOOD: Postgres-specific
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.mutable import MutableDict
 
 

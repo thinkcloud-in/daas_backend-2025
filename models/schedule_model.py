@@ -1,10 +1,9 @@
-from sqlalchemy import Column,Integer,String,Nullable
+from sqlalchemy import Column,Integer,String
 from pydantic import BaseModel
 from sqlalchemy.ext.declarative import declarative_base
 
 Base=declarative_base()
 
-#creating the basemodel
 
 class Schdeule(Base):
     __tablename__ = 'schedule_report_table'
@@ -18,9 +17,6 @@ class Schdeule(Base):
     schedule_date=Column(String)
     schedule_type=Column(String(100), nullable=False)
     schedule_id=Column(String)
-
-
-#creating the  pydantic basemodel
 
 class Schedule_report(BaseModel):
     userEmail:str

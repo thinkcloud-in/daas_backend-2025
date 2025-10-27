@@ -1,5 +1,4 @@
 from datetime import timedelta
-from fastapi import HTTPException
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_ipmi
@@ -14,18 +13,15 @@ class IpmiCreationWorkflow:
             maximum_attempts=5,
         )
         try:
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_ipmi.ipmi_activity,
                 ipmi_data,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise e
 @workflow.defn(sandboxed=False)
 class IpmiUpdateWorkflow:
     @workflow.run
@@ -37,18 +33,15 @@ class IpmiUpdateWorkflow:
             maximum_attempts=5,
         )
         try:
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_ipmi.update_ipmi_activity,
                 args=[ipmi_id, ipmi_data],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise e
 @workflow.defn(sandboxed=False)
 class IpmiDeletionWorkflow:
     @workflow.run
@@ -60,15 +53,12 @@ class IpmiDeletionWorkflow:
             maximum_attempts=5,
         )
         try:
-            print('Running workflow...')
             result = await workflow.execute_activity(
                 activities_ipmi.delete_ipmi_activity,
                 ipmi_id,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")      
+            raise e

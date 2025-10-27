@@ -1,7 +1,13 @@
 src
 .dockerignore
-.my-venv
 endpointWithTemporal.py
-test.py
-__pycache__
-test-temporal.py
+__pycache__/
+.vscode/
+.qodo
+my-venv
+uvicorn.log
+session_reports.pdf
+temporal
+env
+app.log
+email_schgeduler.log

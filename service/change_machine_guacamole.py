@@ -1,18 +1,20 @@
 import asyncio
 from http.client import HTTPException
 import os
-import psycopg2 # type: ignore
+import psycopg2
 import select
 import json
+import logging
 from dto.machineDto import MachineDto
 from models.models import Machine
-# from pydantic import BaseModel # type: ignore
-# from typing import Optional, List
-from dotenv import load_dotenv
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 import requests
-# load_dotenv()
 
+logger = logging.getLogger("machine_listener")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 DATABASE_USER = os.getenv('USER_NAME')
 DATABASE_PASSWORD = os.getenv('PASSWORD')
@@ -28,7 +30,7 @@ def login_with_guacamole():
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
     response = requests.post(url, headers=headers, data=payload)
     if response.status_code == 200:
-        return response.json().get('authToken')  # Assuming Guacamole returns JSON data
+        return response.json().get('authToken')
     else:
       raise HTTPException(status_code=response.status_code, detail="Failed to authenticate with Guacamole")
     
@@ -295,7 +297,7 @@ def return_payload(machine_data: MachineDto):
                     "color-scheme": machine_data.get('color_scheme'),
                     "font-size": machine_data.get('font_size'),
                     "scrollback": machine_data.get('scrollback'),
-                    "timezone": machine_data.get('timezone', ""),  # Handle None
+                    "timezone": machine_data.get('timezone', ""),
                     "server-alive-interval": machine_data.get('server_alive_interval'),
                     "backspace": machine_data.get('backspace'),
                     "terminal-type": machine_data.get('terminal_type'),
@@ -330,27 +332,20 @@ def return_payload(machine_data: MachineDto):
     return payload
   
 def modify_connection(machine_data:Machine):
-    # print(login_with_guacamole())
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     try:
         url = gucamole_update_url + machine_data.get('identifier')+"?token="+login_with_guacamole()
-        print(url)
         payload=return_payload(machine_data)
         headers = {
         'Content-Type': 'application/json'
         }
     except TypeError:
-        print('Machine Already Existed')
-        return 'null' 
-    # print(url)
-    # print(payload)
+       return 'null' 
     try:
         response = requests.request("PUT", url, headers=headers, data=payload)
-        print(response.status_code)
         return response.status_code
-    
+
     except Exception as e:
-        print(f"Error updating connection : {str(e)}")
         return None
 
 
@@ -360,35 +355,32 @@ async def listen_for_machine_changes():
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
     
-    # Listen to the 'machine_change' channel
     cur.execute("LISTEN machine_change;")
-    print("Listening for machine change notifications...")
+
 
     while True:
         # Wait for notifications
         if select.select([conn], [], [], 5) == ([], [], []):
-            print("No notification received.")
+            logger.info("No notification received.")
         else:
             conn.poll()
             while conn.notifies:
                 notify = conn.notifies.pop(0)
-                print("Notification received:")
-                
-                # Check for empty payload
+                logger.info("Notification received:")
+
                 if not notify.payload:
-                    print("Received empty payload, skipping...")
+                    logger.warning("Received empty payload, skipping...")
                     continue
                 
-                # Convert payload to JSON 
                 try:
                     machine_data = json.loads(notify.payload)
-                    print("Machine data:", machine_data)
+                    logger.info("Machine data: %s", machine_data)
                     modify_connection(machine_data)
                 except json.JSONDecodeError as e:
-                    print(f"Failed to decode JSON: {str(e)}, payload: {notify.payload}")
+                    logger.error("Failed to decode JSON: %s, payload: %s", str(e), notify.payload)
 
         await asyncio.sleep(1)
-             # Add your code here to update the actual machine in Guacamole based on machine_data
+
 
 
 

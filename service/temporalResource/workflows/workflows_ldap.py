@@ -16,17 +16,17 @@ class ad_ldap_configuration_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running ad_ldap_configuration_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.ad_ldap_configuration_activity,
                 ldap_data,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 @workflow.defn(sandboxed=False)
@@ -40,16 +40,16 @@ class get_LDAPs_from_keycloak_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running get_lDAPS_from_keycloak_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.get_LDAPs_from_keycloak_activity,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
         
@@ -64,17 +64,17 @@ class test_ldap_connection_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running test_ldap_connection_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.test_ldap_connection_activity,
                 ldap_data,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 @workflow.defn(sandboxed=False)
@@ -88,17 +88,17 @@ class test_ldap_authentication_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running test_ldap_authentication_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.test_ldap_authentication_activity,
                 ldap_data,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -113,17 +113,17 @@ class delete_ldap_config_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running delete_ldap_config_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.delete_ldap_config_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -138,17 +138,17 @@ class get_LDAP_by_id_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running get_ldap_by_id_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.get_LDAP_by_id_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -163,17 +163,17 @@ class sync_user_from_keycloak_Byid_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running sync_user_from_keycloak_Byid_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.sync_user_from_keycloak_Byid_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -188,17 +188,17 @@ class sync_changed_users_from_keycloak_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running sync_changed_users_from_keycloak_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.sync_changed_users_from_keycloak_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -213,17 +213,17 @@ class unlink_users_from_keycloak_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running unlink_users_from_keycloak_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.unlink_users_from_keycloak_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -238,17 +238,17 @@ class remove_imported_users_from_keycloak_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running remove_imported_users_from_keycloak_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.remove_imported_users_from_keycloak_activity,
                 ldap_id,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
         
 
@@ -263,16 +263,16 @@ class update_ldap_config_workflow:
             maximum_attempts=5,
         )
         try:
-            print('Running update_ldap_config_workflow...')
+            
             result = await workflow.execute_activity(
                 activities_ldap.update_ldap_config_activity,
                 args=[ldap_data,ldap_id,] ,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            print('Workflow completed.')
+            
             return result
         except Exception as e:
-            print(f"Error in workflow: {e}")
+            
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
     

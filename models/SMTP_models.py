@@ -1,10 +1,9 @@
 from sqlalchemy import Column,Integer,String,Boolean
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from sqlalchemy.ext.declarative import declarative_base
 
 Base_smtp=declarative_base()
 
-#creating the basemodel for SMTP configuration
 
 class SMTP(Base_smtp):
     __tablename__ = 'SMTP_config'
@@ -19,7 +18,6 @@ class SMTP(Base_smtp):
     connOption = Column(String(100), nullable=False)
     userAuthentication = Column(String(100), nullable=False)
 
-#creating the pydantic basemodel for SMTP configuration
 
 class SMTP_Config(BaseModel):
 

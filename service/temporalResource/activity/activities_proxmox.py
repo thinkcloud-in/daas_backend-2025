@@ -1,15 +1,10 @@
-from http.client import HTTPException
 import ipaddress
-from time import time
-# import time
-from pydantic import BaseModel
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db
 import requests
 import asyncio
 from models.models import Machine, Cluster,Pool
-from typing import List
 from service.clusterService import get_all_nodes
 from models.IPs_model import IPEntry,IPSModel
 from service import proxmoxService
@@ -20,12 +15,10 @@ dotenv.load_dotenv()
 
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
-    print(">>> clone_vm_activity STARTED with payload:", clone_payload)
 
     db: Session = next(get_db())
-    # from service.proxmoxService import get_api_token
     try:
-        # Use bracket notation for all clone_payload accesses
+
         cluster_data = db.query(Cluster).filter(Cluster.id == clone_payload['cluster_id']).first()
         api_token = proxmoxService.get_api_token(db, cluster_data.name)
         headers = {"Authorization": f"PVEAPIToken={api_token}"}
@@ -55,7 +48,7 @@ async def clone_vm_activity(clone_payload: dict):
                 break
  
         if not template_node:
-            # Return error dict, not raise!
+            
             return {
                 "error": f"Template VM {clone_payload['template_vm_id']} not found in cluster.",
                 "error_type": "template_missing"
@@ -109,8 +102,7 @@ async def clone_vm_activity(clone_payload: dict):
                     "error": f"Error cloning VM {new_name} on node {node}: {e}",
                     "error_type": "clone_failed"
                 }
-        print(">>> RETURNING from clone_vm_activity")
- 
+
         return {
             "message": f"{len(final_new_names)} VMs cloned successfully across {len(clone_payload['node'])} nodes",
             "vms": vms
@@ -122,12 +114,9 @@ async def clone_vm_activity(clone_payload: dict):
         db.close()
  
 def netmask_to_cidr(netmask: str) -> int:
-    """
-    Converts a netmask like '255.255.252.0' to CIDR prefix length (e.g., 22).
-    """
     return ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
- 
- 
+
+
 def extract_node_from_upid(upid: str) -> str:
     return upid.split(":")[1]
  
@@ -158,7 +147,7 @@ async def wait_for_vm_ready_activity(args: dict):
                     else:
                         raise Exception(f"Task failed: {data}")
             except requests.RequestException as ex:
-                print(f"Error polling Proxmox task status: {ex}")
+                raise Exception(f"Error checking task status: {ex}")
             await asyncio.sleep(2)
     finally:
         db.close()
@@ -172,7 +161,7 @@ async def assign_ip_to_vm_activity(args: dict):
     cluster_id = args["cluster_id"]
     ip_address = args["ip_address"]
  
-    # Re-query for cluster_data
+    
     cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster_data:
         raise Exception(f"Cluster {cluster_id} not found")
@@ -180,7 +169,7 @@ async def assign_ip_to_vm_activity(args: dict):
     headers = {"Authorization": f"PVEAPIToken={api_token}"}
     PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
     nodes = get_all_nodes(cluster_data)
-    # Fetch the pool for the IP
+    
     ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip_address).first()
     if not ip_entry:
         raise Exception(f"IP entry not found for {ip_address}")
@@ -202,7 +191,7 @@ async def assign_ip_to_vm_activity(args: dict):
                     "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
                 }
                 config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
-                print(f"Assigned IP {ip_with_cidr} to VMID {vmid} on node {node_name}", config_response.json())
+                
                 return {
                     "message": f"IP {ip_with_cidr} assigned successfully on node {node_name}."
                 }
@@ -210,46 +199,6 @@ async def assign_ip_to_vm_activity(args: dict):
             continue
     raise Exception(f"VMID {vmid} not found on any node. Cannot assign IP or reboot.")
  
- 
- 
-# @activity.defn
-# async def delete_proxmox_vm_activity(vmid: int, cluster_data: dict):
-#     db: Session = next(get_db())
-#     if not Cluster:
-#         raise HTTPException(status_code=404, detail="No Proxmox cluster found in the database.")
-
-#     api_token = proxmoxService.get_api_token(db, cluster_data["name"])
-#     headers = {"Authorization": f"PVEAPIToken={api_token}"}
-#     nodes = get_all_nodes(cluster_data)
-#     PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
-#     if not nodes:
-#         raise RuntimeError("No reachable Proxmox nodes found for the cluster.")
-
-#     # Add purge and destroy-unreferenced-disks as query string parameters
-#     params = {
-#         "purge": 1,
-#         "destroy-unreferenced-disks": 1
-#     }
-
-#     for node in nodes:
-#         vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
-#         try:
-#             resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
-#             if resp.status_code == 200:
-#                 delete_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}"
-#                 delete_resp = requests.delete(
-#                     delete_url,
-#                     headers=headers,
-#                     params=params,  # Pass parameters here
-#                     verify=False,
-#                     timeout=10
-#                 )
-#                 delete_resp.raise_for_status()
-#                 return {"message": f"VM with VMID {vmid} deleted successfully on node {node['name']}."}
-#         except requests.RequestException:
-#             continue
-
-#     raise HTTPException(status_code=404, detail=f"VMID {vmid} not found on any node. Consider deleting the pool.")
  
 RESERVED_TAG_KEYS = {
     '_measurement', '_field', '_value', '_time', '_start', '_stop', 'result', 'table'
@@ -279,8 +228,8 @@ async def migrate_bucket_new_data_activity(payload: dict):
     dst_write = dst_client.write_api(write_options=WriteOptions(batch_size=batch_size))
  
     query = f'from(bucket: "{src_bucket}") |> range(start: {time_range_start})'
-    print(f"[Activity] Query: {query}")
-    print("[Activity] Starting migration...")
+    
+    
     results = src_query.query(query)
     points = []
     total = 0
@@ -294,9 +243,9 @@ async def migrate_bucket_new_data_activity(payload: dict):
             measurement = record.get_measurement()
             field = record.get_field()
             value = record.get_value()
-            time = record.get_time()  # This is a Python datetime object
+            time = record.get_time()  
  
-            # Update max_time if needed
+            
             if time and str(time) > str(max_time):
                 max_time = str(time)
  
@@ -310,15 +259,15 @@ async def migrate_bucket_new_data_activity(payload: dict):
             if len(points) >= batch_size:
                 dst_write.write(bucket=dst_bucket, org=dst_org, record=points)
                 total += len(points)
-                print(f"[Activity] Written {total} points so far...")
+                
                 points = []
  
     if points:
         dst_write.write(bucket=dst_bucket, org=dst_org, record=points)
         total += len(points)
-        print(f"[Activity] Written {total} points (final batch)")
+        
  
-    print(f"[Activity] Migration complete! Total points written: {total}")
+    
     dst_write.close()
     src_client.close()
     dst_client.close()
@@ -327,7 +276,7 @@ async def migrate_bucket_new_data_activity(payload: dict):
  
 @activity.defn
 async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
-    db: Session = next(get_db())  # or your session manager/context
+    db: Session = next(get_db())  
     machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
@@ -348,11 +297,11 @@ async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
         machine.error_message = "power-on"
         msg = "VM started successfully."
     elif isinstance(vm_status, dict) and vm_status.get("error"):
-        # machine.error_message = f"Start failed: {vm_status['error']}"
+        
         msg = f"Start failed: {vm_status['error']}"
  
     db.commit()
-    print("VM Status:", vm_status)
+    
     return {"vm_status": vm_status, "msg": msg}
  
  
@@ -378,17 +327,17 @@ async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
         machine.error_message = "power-off"
         msg = "VM stopped successfully."
     elif isinstance(vm_status, dict) and vm_status.get("error"):
-        # machine.error_message = f"Stop failed: {vm_status['error']}"
+        
         msg = f"Stop failed: {vm_status['error']}"
  
     db.commit()
-    print("VM Status:", vm_status)
+    
     return {"vm_status": vm_status, "msg": msg}
 
 
 @activity.defn
 async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
-    db: Session = next(get_db())  # or use a context/session manager as appropriate
+    db: Session = next(get_db())  
     machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
@@ -408,17 +357,17 @@ async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
         machine.error_message = "reboot..."
         msg = "VM rebooted successfully."
     elif vm_status.get("error"):
-        # machine.error_message = f"Reboot failed: {vm_status['error']}"
+        
         msg = f"Reboot failed: {vm_status['error']}"
    
     db.commit()
-    print("VM Status:", vm_status)
+    
     return {"vm_status": vm_status, "msg": msg}
  
  
 @activity.defn
 async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
-    # Do DB operations here!
+    
     db: Session = next(get_db())
     machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
     if not machine:
@@ -439,7 +388,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
         machine.error_message = "shutdown..."
         msg = "VM shutdown successfully."
     elif isinstance(vm_status, dict) and vm_status.get("error"):
-        # machine.error_message = f"Shutdown failed: {vm_status['error']}"
+        
         msg = f"Shutdown failed: {vm_status['error']}"
    
     db.commit()
@@ -484,11 +433,11 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         if not node:
             node = getattr(cluster_data, "nodes", ["pve"])[0]
 
-        # --- Deletion logic for ALL cases (healthy/unhealthy) ---
+        
         delete_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}"
         resp = requests.get(delete_url, headers=headers, verify=False)
         if resp.status_code == 200:
-            # VM exists: stop if running, then delete
+            
             status_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current"
             status_resp = requests.get(status_url, headers=headers, verify=False)
             running = False
@@ -502,9 +451,9 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
            
             del_resp = requests.delete(delete_url, headers=headers, verify=False)
             del_resp.raise_for_status()
-            await asyncio.sleep(5)  # Poll for deletion
+            await asyncio.sleep(5)  
 
-        # --- Template node selection ---
+        
         template_node = None
         for vm in all_vms:
             if str(vm.get("vmid")) == str(template_vm_id) and vm.get("template") == 1:
@@ -513,7 +462,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         if not template_node:
             return {"status": "error", "error": f"Template VM {template_vm_id} not found in cluster."}
 
-        # --- Cloning logic ---
+        
         try:
             clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template_vm_id}/clone"
             payload = {
@@ -526,10 +475,10 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
             resp = requests.post(clone_url, headers=headers, data=payload, verify=False)
             resp.raise_for_status()
             upid = resp.json()["data"]
-            print(f"Cloning VM {vmid} with name {machine.name} on node {node}, UPID: {upid}")
+            
 
             
-            # DO NOT assign IP here. Leave that to assign_ip_to_vm_activity!
+            
      
             return {"status": "success", "upid": upid, "node": node, "cluster_id": cluster_id,"machine_name": machine.name,"ip_address": machine.hostname}
         except Exception as e:

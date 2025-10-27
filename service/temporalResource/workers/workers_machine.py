@@ -8,14 +8,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def connectionWithTemporal():
-    print('Connecting to Temporal server...')
+    
     try:
         client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        print('Connected to Temporal server.',os.getenv('TEMPORAL_SERVER'))
+        
         return client
     except Exception as e:
-        print(f"Connection Refused to Temporal server: {e}")
-        return None
+        
+        raise e
 
 async def create_machine_worker():
     client = await connectionWithTemporal()
@@ -25,13 +25,13 @@ async def create_machine_worker():
         workflows=[workflows_machine.CreateMachineWorkflow], 
         activities=[activities_machine.create_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def delete_machine_worker():
@@ -42,13 +42,12 @@ async def delete_machine_worker():
         workflows=[workflows_machine.DeleteMachineWorkflow], 
         activities=[activities_machine.delete_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
 
 async def update_machine_worker():
     client = await connectionWithTemporal()
@@ -58,13 +57,13 @@ async def update_machine_worker():
         workflows=[workflows_machine.UpdateMachineWorkflow], 
         activities=[activities_machine.update_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+
 
 
 async def get_all_machines_worker():
@@ -75,13 +74,13 @@ async def get_all_machines_worker():
         workflows=[workflows_machine.GetAllMachinesWorkflow], 
         activities=[activities_machine.get_all_machines_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def update_is_custom_machine_worker():
@@ -92,13 +91,13 @@ async def update_is_custom_machine_worker():
         workflows=[workflows_machine.UpdateIsCustomMachineWorkflow], 
         activities=[activities_machine.update_is_custom_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def add_user_to_machine_worker():
     client = await connectionWithTemporal()
@@ -108,13 +107,13 @@ async def add_user_to_machine_worker():
         workflows=[workflows_machine.AddUserToMachineWorkflow], 
         activities=[activities_machine.add_user_to_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def delete_user_from_machine_worker():
@@ -125,13 +124,13 @@ async def delete_user_from_machine_worker():
         workflows=[workflows_machine.DeleteUserFromMachineWorkflow], 
         activities=[activities_machine.delete_user_from_machine_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 async def list_all_machine_in_pool_worker():
     client = await connectionWithTemporal()
@@ -141,13 +140,13 @@ async def list_all_machine_in_pool_worker():
         workflows=[workflows_machine.GetAllMachineInPoolWorkflow], 
         activities=[activities_machine.list_all_machine_in_pool_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def list_all_asigned_users_worker():
@@ -158,13 +157,13 @@ async def list_all_asigned_users_worker():
         workflows=[workflows_machine.ListOfAsignedUsersWorkflow], 
         activities=[activities_machine.list_of_asigned_users_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        
 
 
 async def get_machine_details_worker():
@@ -175,10 +174,10 @@ async def get_machine_details_worker():
         workflows=[workflows_machine.GetMachineDetailsWorkflow], 
         activities=[activities_machine.get_machine_details_activity],
     )
-    print('Worker starting...')
+    
     try:
         await worker.run()
-        print("Temporal worker started. Waiting for tasks...")
+        
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
-        print('Worker stopped...')
+        raise e
+        

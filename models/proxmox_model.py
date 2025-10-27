@@ -1,6 +1,5 @@
-
-from typing import List, Optional
-from sqlalchemy import ARRAY, Boolean, Column, Integer, String
+from typing import Optional
+from sqlalchemy import Boolean, Column, Integer, String
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
  
@@ -48,6 +47,8 @@ class MetricServer(Base):
     monitoring = Column(Boolean, default=False)  
     is_custom_integration = Column(Boolean, nullable=False)
     workflow_id = Column(String, nullable=True)  # Optional field for workflow ID
+    
+    
 class MetricServerBase(BaseModel):
     cluster_id: int
     type: str
@@ -71,9 +72,6 @@ class MigrateRequest(BaseModel):
     cluster_id: int
     email: Optional[str] = None
     workflow_id: Optional[str] = None
-    # Optionally: batch_size: int = 5000, time_range_start: str = "0"
-
-
 class VMPowerRequest(BaseModel):
     email: str
  

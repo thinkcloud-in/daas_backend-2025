@@ -16,7 +16,7 @@ import os
 load_dotenv()
 
 TEMPORAL_SERVER = os.getenv('TEMPORAL_SERVER')
-print(f"Connecting to Temporal server at: {TEMPORAL_SERVER}")
+
 
 def calculate_time_range(schedule_type: str) -> tuple[str, str]:
     now = workflow.now()
@@ -27,7 +27,7 @@ def calculate_time_range(schedule_type: str) -> tuple[str, str]:
         end_time = (now - timedelta(days=1)).replace(hour=23, minute=59, second=59, microsecond=999999).strftime("%Y-%m-%d %H:%M:%S")
     elif schedule_type.lower() == 'weekly':
 
-        start_time = now - timedelta(days=now.weekday() + 1)  # Subtract days to reach Sunday
+        start_time = now - timedelta(days=now.weekday() + 1)
         start_time = start_time.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%d %H:%M:%S")
 
         end_time = (start_time + timedelta(days=6)).replace(hour=23, minute=59, second=59, microsecond=999999).strftime("%Y-%m-%d %H:%M:%S")
@@ -57,7 +57,7 @@ async def fetch_pdf_report(base_url: str, start_time: str, end_time: str, report
 
         formatted_url = f"{base_url}/{encoded_start}/{encoded_end}/{encoded_report_type}"       
         
-        print(f"Fetching PDF from URL: {formatted_url}")
+        
         
         async with aiohttp.ClientSession() as session:
             async with session.post(formatted_url) as response:
@@ -65,8 +65,7 @@ async def fetch_pdf_report(base_url: str, start_time: str, end_time: str, report
                     return await response.read()
                 raise Exception(f"Failed to fetch PDF. Status: {response.status}, URL: {formatted_url}")
     except Exception as e:
-        print(f"Error fetching PDF: {e}")
-        # raise
+        raise Exception(f"Error fetching PDF report: {e}")
 
 @activity.defn
 async def send_email_with_pdf_activity(
@@ -118,13 +117,12 @@ async def send_email_with_pdf_activity(
 
         server.login(sender_email, password)
         server.sendmail(sender_email, receiver_emails, msg.as_string())
-        print(f"Email with PDF report sent successfully to {receiver_emails}...")
+        
         server.quit()
         
         return True
     except Exception as e:
-        print(f"Email sending error: {e}")
-        # raise
+        raise Exception(f"Error sending email with PDF report: {e}")
 
 @workflow.defn(sandboxed=False)
 class EmailWorkflow:
@@ -157,7 +155,7 @@ async def create_pdf_email_schedule(
     report_type: str
 ) -> None:
     input_time = datetime.strptime(send_time, "%H:%M")
-    updated_time = input_time - timedelta(hours=5, minutes=30)  # Time zone adjustment
+    updated_time = input_time - timedelta(hours=5, minutes=30)  
 
     today = datetime.today().date()
     send_datetime = datetime.combine(today + timedelta(days=1), datetime.min.time()) + timedelta(
@@ -200,15 +198,14 @@ async def create_pdf_email_schedule(
                 state=ScheduleState(note=f"Scheduled PDF report email for {schedule_id}")
             )
         )
-        print(f"Schedule created with ID: {schedule_id} at {send_time}")
-    except Exception as e:
-        print(f"Error creating schedule: {e}")
         
-
+    except Exception as e:
+        raise Exception(f"Error creating schedule: {e}")
+        
 async def run_temporal_worker(temporal_server: str):
     try:
         client = await Client.connect(temporal_server)
-        print(f"Connecting to Temporal server at: {temporal_server}")
+        
         
         async with Worker(
             client,
@@ -216,10 +213,10 @@ async def run_temporal_worker(temporal_server: str):
             workflows=[EmailWorkflow],
             activities=[send_email_with_pdf_activity, fetch_pdf_report]
         ):
-            print("Temporal worker started. Waiting for tasks...")
+            
             await asyncio.Future()
     except Exception as e:
-        print(f"Error in Temporal worker: {e}")
+        raise Exception(f"Error in Temporal worker: {e}")
 
 async def temporal_schedules(
     scheduleId: str,
@@ -246,5 +243,5 @@ async def temporal_schedules(
         await run_temporal_worker(temporal_server)
         return "Schedule created successfully"
     except Exception as e:
-        print(f"Error in temporal_schedules: {e}")
+        
         return f"Failed to schedule: {str(e)}"

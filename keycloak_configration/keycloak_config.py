@@ -1,14 +1,11 @@
 import asyncio
 from datetime import datetime
 from temporalio.client import Client
-
 import json
 import requests
 import os
-from models.models import LDAPCredential,LDAP_test_connection_model
 from fastapi import HTTPException
 from dotenv import load_dotenv
-
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workflows import workflows_ldap
  
@@ -18,7 +15,7 @@ def get_login_from_keycloak():
         resp = requests.post(
             f"{os.getenv('KEYCLOAK_ROOT_URL')}/realms/master/protocol/openid-connect/token",
             data={
-                "client_id": "admin-cli", # admin_cli it will be default client
+                "client_id": "admin-cli",
                 "username": "admin",
                 "password": "admin",
                 "grant_type": "password"
@@ -33,7 +30,6 @@ def get_login_from_keycloak():
         }
         return auth_headers
     except Exception as e:
-        print(f"Error occurred: {e}")
         return None
  
  
@@ -44,18 +40,16 @@ def unique_id():
 async def connectionWithClient():
     try:
         client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-        print('Connected to Temporal server.')
+       
         return client
     except Exception as e:
-        print(f"Failed to connect to Temporal server: {e}")
+       
         raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")
 
 async def configuration_ad(ldap_data: dict) -> dict:
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Configuring AD with temporal server...")
-    try:
-        print("worker about to start...")
+    try:   
         asyncio.create_task(workers_ldap.ad_ldap_configuration_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -73,33 +67,30 @@ def get_realm_id_from_keycloak(auth_headers):
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole"
         payload = {}
-        headers = auth_headers  # Assuming you have a function to get headers
+        headers = auth_headers  
         response = requests.get(url, headers=headers, data=payload)
         data  = response.json()
-        # print(data['id'])
         return data['id']
     except Exception as e:
-        print(f"An error occurred: {e}")
-        return e  # or any other way to handle errors depending on your requirements
+        return e 
 
 def get_componeant_id_from_keycloak(auth_headers):
-    url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components"
+    try:
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components"
 
-    payload = {}
-    headers = auth_headers  # Assuming you have a function to get headers
-    response = requests.get(url, headers=headers, data=payload)
-    data  = response.json()
-    # print(data[0]['id'])
-    return data[0]['id']
+        payload = {}
+        headers = auth_headers 
+        response = requests.get(url, headers=headers, data=payload)
+        data  = response.json()
+        return data[0]['id']
+    except Exception as e:
+        return e 
 
 
-# To test LDAP connection
 async def test_ldap_connection(ldap_data):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Testing LDAP connection with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.test_ldap_connection_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -110,16 +101,15 @@ async def test_ldap_connection(ldap_data):
         task_queue="TestLdapConnection-task-queue",
     )
     result =  await handle.result()
-    return result
- 
-    
-# to test LDAP authentication
+    if(result['code'] not in [200,204,201]):
+        return {"code": result['code'], "msg": "LDAP connection failed", "response": result['response']}
+    else:
+        return {"code": result['code'], "msg": result['msg'], "response": result['response']}
+
 async def test_ldap_authentication(ldap_data):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Testing LDAP authentication with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.test_ldap_authentication_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -133,13 +123,10 @@ async def test_ldap_authentication(ldap_data):
     return result
 
  
-#  Delete LDAP configuration from keycloak
 async def delete_ldap_config(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Deleting LDAP configuration with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.delete_ldap_config_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -153,13 +140,10 @@ async def delete_ldap_config(ldap_id):
     return result
 
 
-# get configured LDAPs from keycloak
 async def get_LDAPs_from_keycloak():
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Getting LDAPs from Keycloak with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.get_lDAPS_from_keycloak_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -171,13 +155,10 @@ async def get_LDAPs_from_keycloak():
     result =  await handle.result()
     return result
 
-# get LDAP data based on id
 async def get_LDAP_by_id(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Getting LDAP by ID with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.get_LDAP_by_id_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -191,14 +172,10 @@ async def get_LDAP_by_id(ldap_id):
     return result
 
 
-# Update LDAP configuration
 async def update_ldap_config(ldap_data:dict,ldap_id:str) :
-    print(f'ldap_data in update config--{type(ldap_data)}')
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Updating LDAP configuration with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.update_ldap_config_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -209,15 +186,12 @@ async def update_ldap_config(ldap_data:dict,ldap_id:str) :
         task_queue="UpdateLdapConfig-task-queue",
     )
     result =  await handle.result()
-    return result
-
+    return  result
     
 async def sync_user_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Syncing user from Keycloak to LDAP with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.sync_user_from_keycloak_Byid_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -233,9 +207,7 @@ async def sync_user_from_keycloak(ldap_id):
 async def sync_changed_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Syncing changed users from Keycloak to LDAP with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.sync_changed_users_from_keycloak_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -251,9 +223,7 @@ async def sync_changed_users_from_keycloak(ldap_id):
 async def unlink_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Unlinking users from Keycloak with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.unlink_users_from_keycloak_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -270,9 +240,7 @@ async def unlink_users_from_keycloak(ldap_id):
 async def remove_imported_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    print("Removing imported users from Keycloak with temporal server...")
     try:
-        print("worker about to start...")
         asyncio.create_task(workers_ldap.remove_imported_users_from_keycloak_worker())
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -284,11 +252,9 @@ async def remove_imported_users_from_keycloak(ldap_id):
     )
     result =  await handle.result()
     return result      
+   
 
 
-    # or any other way to handle errors depending on your requirements
-
-#==================================================================================================
 # it is responisble for enable or disable opt for client
 def get_Auth_flow_id_browser(auth_flow_headers):
     try:
@@ -301,7 +267,6 @@ def get_Auth_flow_id_browser(auth_flow_headers):
         ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
         return ids 
     except Exception as e:
-        print(f"Error occurred: {e}")
         return "ERROR"
     
 def get_Auth_flow_Value_browser():
@@ -311,18 +276,14 @@ def get_Auth_flow_Value_browser():
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
         data = response.json()
-        # print(data)
-        
         if data[5]['requirement'] == "REQUIRED":
             return  True
         else:
          return  False
     except Exception as e:
-        print(f"Error occurred: {e}")
         return "ERROR"    
 
 def set_otp_for_browser_auth(value):
-    print(value,"set_otp_for_browser")
     try:
         if value is True:
             requires = "REQUIRED"
@@ -353,9 +314,8 @@ def set_otp_for_browser_auth(value):
         response = requests.request("PUT", url, headers=headers, data=payload)
         return  response.status_code
     except Exception as e:
-        print(f"Error occurred: {e}")
         return e
-# =================================================================================================
+
 def get_guacamole_browser_auth_flow(auth_flow_headers):
     try:
         url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
@@ -368,10 +328,9 @@ def get_guacamole_browser_auth_flow(auth_flow_headers):
         ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
         return ids 
     except Exception as e:
-        print(f"Error occurred: {e}")
+       
         return "ERROR"
 def set_otp_for_guacamole_browser(value):
-    print(value,"set_otp_for_guacamole_browser")
     try:
         if value is True:
             requires = "REQUIRED"
@@ -400,12 +359,10 @@ def set_otp_for_guacamole_browser(value):
             "index": 1
         })
         response = requests.request("PUT", url, headers=headers, data=payload)
-        print(response,"response")
     except Exception as e:
-        print(f"Error occurred: {e}")
         return e
-    
-    
+
+
 def get_Auth_flow_Value_guacamole_browser():
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
@@ -413,13 +370,11 @@ def get_Auth_flow_Value_guacamole_browser():
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
         data = response.json()
-        # print(data)
+
         
         if data[5]['requirement'] == "REQUIRED":
             return  True
         else:
          return  False
     except Exception as e:
-        print(f"Error occurred: {e}")
-        return "ERROR" 
-#============================================================================================================================
+        return "ERROR"

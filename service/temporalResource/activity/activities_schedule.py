@@ -1,4 +1,5 @@
-from fastapi import HTTPException, Query
+from fastapi import HTTPException
+from sqlalchemy import select, func
 from temporalio import activity
 from sqlalchemy.orm import Session
 
@@ -55,7 +56,30 @@ async def get_schedule_along_report_activity(report:str, limit: int , offset: in
         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")
    
  
-    
+# @activity.defn()
+# async def get_schedule_along_report_activity(report:str, limit: int , offset: int):
+#     db: Session = next(get_db())
+#     try:
+#         query = db.query(Schdeule).filter(Schdeule.report == report).order_by(Schdeule.schedule_date.desc())
+#         total_count = db.execute(
+#             select(func.count()).select_from(Schdeule).where(Schdeule.report == report)
+#         ).scalar()
+#         items = query.offset(offset).limit(limit).execution_options(yield_per=50).all()
+#         if items is None:
+#             raise HTTPException(status_code=404, detail="Schedule report not found")
+#         items_json = jsonable_encoder(items)
+#         return {
+#             "msg": "Getting schedule reports data successfully",
+#             "items": items_json,
+#             "total": total_count,
+#             "limit": limit,
+#             "offset": offset
+#         }
+#     except Exception as e:
+#         db.rollback()
+#         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")
+ 
+ 
 
 
 @activity.defn()
@@ -64,9 +88,8 @@ async def update_schedule_data_id_activity(item_id: int, item_data: dict) -> dic
     try:
         db_schedule = db.query(Schdeule).filter(Schdeule.id == item_id).first()
         if db_schedule is None:
-            raise HTTPException(status_code=404, detail="Schedule report not found")
+            return {"code":509,"msg": "Schedule report not found", "data": None}
 
-        # Update attributes dynamically
         for field, value in item_data.items():
             setattr(db_schedule, field, value)
         db.commit()
@@ -74,7 +97,7 @@ async def update_schedule_data_id_activity(item_id: int, item_data: dict) -> dic
 
         db_schedule_json = jsonable_encoder(db_schedule)
 
-        return {"msg": "Schedule report updated successfully", "updated_data": db_schedule_json}
+        return {"code":200, "msg": "Schedule report updated successfully", "data": db_schedule_json}
 
     except Exception as e:
         db.rollback()
@@ -92,7 +115,7 @@ async def delete_schedule_data_id_activity(item_id: int) -> dict:
         db.delete(db_schedule)
         db.commit()
         db_schedule_json = jsonable_encoder(db_schedule)
-        return {"msg": "Schedule report deleted successfully", "Deleted_Data":db_schedule_json}
+        return db_schedule_json
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while deleting schedule report: {str(e)}")
