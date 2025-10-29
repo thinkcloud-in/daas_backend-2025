@@ -756,3 +756,52 @@ def get_all_vm_details(db, cluster_data):
                     "error": str(e)
                 })
     return vm_info_list
+
+async def get_vm_detail(db, cluster_data, vm):
+    loop = asyncio.get_running_loop()
+ 
+    node = vm['node']
+    vmid = vm['vmid']
+ 
+    try:
+        # Run blocking functions in thread pool
+        config = await loop.run_in_executor(None, get_vm_config, db, cluster_data, node, vmid)
+        datastores = get_vm_datastores_from_config(config)
+        agent_enabled = bool(config.get("agent", 0))
+ 
+        if agent_enabled:
+            ip_addresses = await loop.run_in_executor(None, get_vm_ip_addresses, db, cluster_data, node, vmid)
+        else:
+            ip_addresses = []
+ 
+        return {
+            "vmid": vmid,
+            "node": node,
+            "name": vm.get("name", ""),
+            "datastores": datastores,
+            "agent_enabled": agent_enabled,
+            "ip_addresses": ip_addresses
+        }
+ 
+    except Exception as e:
+        return {
+            "vmid": vmid,
+            "node": node,
+            "name": vm.get("name", ""),
+            "datastores": [],
+            "agent_enabled": False,
+            "ip_addresses": [],
+            "error": str(e)
+        }
+ 
+ 
+async def get_all_vm_details_parallel(db, cluster_data):
+    loop = asyncio.get_running_loop()
+ 
+    vms = await loop.run_in_executor(None, get_all_cluster_vms, db, cluster_data)
+    qemu_vms = [vm for vm in vms if vm['type'] == 'qemu']
+ 
+    tasks = [get_vm_detail(db, cluster_data, vm) for vm in qemu_vms]
+    vm_info_list = await asyncio.gather(*tasks, return_exceptions=False)
+    return vm_info_list
+ 
