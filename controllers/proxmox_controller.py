@@ -41,12 +41,12 @@ class CloneRequest(BaseModel):
  
  
  
-def get_nodes(db: Session = Depends(get_db)):
-    try:
-        cluster_vms = service.get_all_cluster_vms(db)    
-        return response_format.success_response(200, "Cluster VMs retrieved successfully", cluster_vms)
-    except Exception as e:
-        return response_format.error_response(500, "Failed to retrieve cluster VMs", str(e))
+# def get_nodes(db: Session = Depends(get_db)):
+#     try:
+#         cluster_vms = service.get_all_cluster_vms(db)
+#         return response_format.success_response(200, "Cluster VMs retrieved successfully", cluster_vms)
+#     except Exception as e:
+#         return response_format.error_response(500, "Failed to retrieve cluster VMs", str(e))
 
 async def get_templates_for_nodes(cluster_id: str = None, db: Session = Depends(get_db)):
     try:

@@ -4,15 +4,7 @@ from controllers import ip_controller
 from models.API_Response_model import APIResponse
 from models.IPs_model import IPSRequest
 from sqlalchemy.orm import Session
-from db_configuration.config import SessionLocal
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
+from db_configuration.config import get_db
 
 ip_router = APIRouter(prefix="/v1/ips", tags=["ips"])
 
@@ -25,7 +17,7 @@ def get_ip_pool(ips_id: int):
     return ip_controller.read_ips(ips_id)
 
 @ip_router.get("/get_all_ips")
-def get_all_ip_pools(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+def get_all_ip_pools(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     return ip_controller.read_all_ips(skip, limit, db)
 
 @ip_router.get("/ip_pool_names", response_model=APIResponse[List[str]])

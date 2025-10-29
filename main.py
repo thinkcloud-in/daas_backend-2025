@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from fastapi import FastAPI
 from middleware.Grafana_init import router as grafana_router
 from controllers.routes import router
@@ -46,10 +47,23 @@ app.include_router(ip_router)
 app.include_router(ipmi_router)
 app.include_router(grafana_router)
 
+
+def start_async_worker(target):
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(target())
+        except Exception as e:
+            print(f"[Worker Error] {target.__name__}: {e}")
+        finally:
+            loop.close()
+    threading.Thread(target=run, daemon=True).start()
 @app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(workers_cluster.combined_worker())
-    asyncio.create_task(worker_pollingStatus.status_poller_worker())
-    asyncio.create_task(worker_proxmox.vm_power_worker())
-    asyncio.create_task(worker_proxmox.vm_rebuild_worker())
-    asyncio.create_task(listen_for_machine_changes()) 
+def start_workers():
+    start_async_worker(workers_cluster.combined_worker)
+    start_async_worker(worker_pollingStatus.status_poller_worker)
+    start_async_worker(worker_proxmox.vm_power_worker)
+    start_async_worker(worker_proxmox.vm_rebuild_worker)
+    start_async_worker(listen_for_machine_changes)
+

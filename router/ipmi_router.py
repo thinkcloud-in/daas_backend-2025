@@ -3,16 +3,9 @@ from sqlalchemy.orm import Session
 from controllers import ipmi_controller
 from models.API_Response_model import APIResponse
 from models.IPMI_models import IPMIDeviceRequest
-from db_configuration.config import SessionLocal
+from db_configuration.config import get_db
 
 ipmi_router = APIRouter(prefix="/v1/ipmi", tags=["ipmi"])
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @ipmi_router.post("/add_ipmi_server")
 async def add_ipmi_server(ipmi_data: IPMIDeviceRequest, db: Session = Depends(get_db)):

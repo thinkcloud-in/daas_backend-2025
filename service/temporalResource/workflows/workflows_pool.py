@@ -130,7 +130,7 @@ class GetListofPoolNamesWorkflow:
 @workflow.defn(sandboxed=False)
 class get_all_pools_workflow:
     @workflow.run
-    async def run(self) :
+    async def run(self):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,

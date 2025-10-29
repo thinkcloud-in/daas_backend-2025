@@ -339,7 +339,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
     try:
         db_pool = db.query(Pool).filter(Pool.id == pool_id).first()
         if db_pool is None:
-            raise HTTPException(status_code=404, detail="Pool not found")
+            raise Exception("Pool not found")
 
         is_automated = db_pool.pool_type == "Automated"
         old_vm_count = db_pool.pool_number_of_vms if is_automated else 0
@@ -381,7 +381,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     "msg": 'No available IPs in the selected IP pools to create any additional VMs.',
                 }
 
-            ip_list = [ip_entry.ip for ip_entry, _ in allocated_ips]
+            ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
 
             clone_payload_dict = {
@@ -586,9 +586,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
     except Exception as e:
         db.rollback()
-        return {
-            "error": True
-        }
+        raise e
     finally:
         db.close()
  

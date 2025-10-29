@@ -1,8 +1,6 @@
 from fastapi import HTTPException
-from sqlalchemy import select, func
 from temporalio import activity
 from sqlalchemy.orm import Session
-
 from db_configuration.config import get_db
 from models.schedule_model import Schdeule
 from fastapi.encoders import jsonable_encoder

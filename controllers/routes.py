@@ -2,7 +2,7 @@ import json
 from fastapi import APIRouter, HTTPException, Depends, Request 
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
-from db_configuration.config import SessionLocal
+from db_configuration.config import get_db
 from keycloak_configration import keycloak_config as key_config
 from models import models
 from typing import Any, List
@@ -15,15 +15,6 @@ from models.API_Response_model import APIResponse
 from utils import response_format
 
 router = APIRouter(prefix="/v1")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-
 
 TEMPORAL_SERVER = os.getenv("TEMPORAL_SERVER")
 
@@ -86,14 +77,14 @@ async def list_pools_names(db: Session = Depends(get_db)):
 
 # Route to list all the pools
 @router.get('/pools', response_model=APIResponse)
-async def list_pools(db: Session = Depends(get_db)):
-    pools = await controller.get_all_pools(db)
+async def list_pools():
+    pools = await controller.get_all_pools()
     return response_format.success_response(200, "Pools retrieved successfully.", pools.get("pools", []))
 
 #get pool details based on id
 @router.get("/pool/{pool_id}", response_model=APIResponse)
-async def get_pool_details_route(pool_id: int, db: Session = Depends(get_db)):
-    data = await controller.get_pool_details(pool_id,db)
+async def get_pool_details_route(pool_id: int):
+    data = await controller.get_pool_details(pool_id)
     return response_format.success_response(200, "Pool details retrieved successfully.", data)
 
 

@@ -7,10 +7,10 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from models import models as model
 from service import gucamoleService
-from db_configuration.config import SessionLocal
 from service import proxmoxService
 from models.IPs_model import IPEntry
 from service.pollingStatus import update_workflow_status, ensure_status_poller_running
+from db_configuration.config import get_db
 
 logger = logging.getLogger("create_machine_activity")
 load_dotenv()
@@ -20,13 +20,6 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("machine_activity_logger")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 async def get_machine_name(machine_data):
     try:

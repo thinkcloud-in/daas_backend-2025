@@ -1,19 +1,7 @@
 import json
-from fastapi import Depends, HTTPException, Request
-from sqlalchemy.orm import Session
-from models.IPMI_models import IPMIDeviceRequest
 from service.IPMIService import create_ipmi_server,get_all_ipmi_servers, get_ipmi_server_id, update_ipmi_server, delete_ipmi_server
-from db_configuration.config import SessionLocal
 from utils import response_format
 
-
-# Function to get the database session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 async def create_ipmi_server_route(ipmi_data, db):
     try:
