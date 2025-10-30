@@ -2,7 +2,6 @@ import threading
 from fastapi import HTTPException
 from models.schedule_model import Schdeule
 from datetime import datetime
-
 from service.temporalResource.workers import workers_schedule
 from service.temporalResource.workflows import workflows_schedule
 from .temporalService import temporal_schedules
@@ -84,7 +83,6 @@ def post_data(item, db):
         db.add(db_item)
         db.commit()
         db.refresh(db_item)
-        # asyncio.run(temporal_schedules(scheduleId))
         threading.Thread(
             target=run_temporal_schedule, 
             args=(scheduleId,

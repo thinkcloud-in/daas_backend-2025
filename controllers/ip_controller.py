@@ -1,7 +1,5 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import Depends, Query
 from sqlalchemy.orm import Session
-from typing import List, Any, Optional
-from models.IPs_model import IPSRequest
 from service.IPService import (
     create_ips,
     get_ips,
@@ -10,19 +8,9 @@ from service.IPService import (
     delete_ip_pool_by_name,
     get_available_ips,
 )
-from db_configuration.config import SessionLocal
-from utils.response_format import success_response, error_response
-from models.API_Response_model import APIResponse
+from utils.response_format import success_response, error_response, paginated_success_response
+from db_configuration.config import get_db
 
-router = APIRouter(prefix="/v1/ips", tags=["ips"])
-
-# Function to get the database session
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 def to_dict(model_instance):
     return {c.name: getattr(model_instance, c.name) for c in model_instance.__table__.columns}
@@ -41,7 +29,7 @@ def read_ips(ips_id: int, db: Session = Depends(get_db)):
 def read_all_ips(skip: int, limit: int, db: Session):
     data = get_all_ips(db, skip=skip, limit=limit)
     data_dict = [to_dict(item) for item in data]
-    return success_response(200, "All IPS entries retrieved successfully", data_dict)
+    return paginated_success_response(200, offset=skip, limit=limit, total=len(data), msg="All IPS entries retrieved successfully", data=data_dict)
 
 def read_pool_names(db: Session):
     data = get_all_pool_names(db)

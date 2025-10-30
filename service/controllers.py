@@ -227,8 +227,7 @@ async def add_user_to_machine( machine_identifier: str, username: str):
         task_queue="add-user-to-machine-task-queue",
     )
     result = await handle.result()
-    return response_format.success_response(200, "User added to machine successfully.", result)
-
+    return result
 #remove assigned user from a machine 
 async def delete_user_from_machine(machine_identifier: str, user_id: str):
     uniqueId = unique_id()
@@ -246,9 +245,8 @@ async def delete_user_from_machine(machine_identifier: str, user_id: str):
     )
     result = await handle.result()
     if(result['msg'] != "404"):
-        return response_format.success_response(200, "User removed from machine successfully.", result)
-    else:
-        return response_format.error_response(404, "User or Machine not found.")
+        return result
+
 
 async def update_machine(machine_identifier: str, machine_data: UpdateMachineBase):
     uniqueId = unique_id()
@@ -345,7 +343,7 @@ async def list_assigned_users( machine_id: str):
     result = await handle.result()
     return result
 
-async def get_pool_details(pool_id:int, db: Session):
+async def get_pool_details(pool_id:int):
     uniqueId = unique_id()
     client = await connectionWithClient()
     try:
@@ -395,7 +393,7 @@ async def get_all_pool_names(db: Session):
     return result
 
 
-async def get_all_pools(db: Session):
+async def get_all_pools():
     uniqueId = unique_id()
     client = await connectionWithClient()
     workflow_id = f"Get-all-pools-{uniqueId}"

@@ -42,6 +42,6 @@ def smtp_update_status(data:dict,db:Session = Depends(get_db)):
 def smtp_test_mail(data, db):
     try:
         data = smtp_service.smtp_test_mail(data, db)
-        return response_format.success_response(200, "Test email sent successfully")
+        return data
     except Exception as e:
-        return response_format.error_response(500, "Failed to send test email", str(e))
+        raise Exception(f"Failed to send test email: {str(e)}")

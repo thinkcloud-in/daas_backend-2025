@@ -1,5 +1,4 @@
 from fastapi import APIRouter
-from db_configuration.config import get_db
 from service.temporalResource import namespaces_service
 from controllers import temporal_namespace_controller
 

@@ -21,19 +21,36 @@ database_url=f"postgresql://{os.getenv('USER_NAME')}:{os.getenv('PASSWORD')}@{os
 SQLALCHEMY_DATABASE_URL = database_url
 
 engine = create_engine(
-    SQLALCHEMY_DATABASE_URL,
-        pool_size=20,
-        max_overflow=30,
-        pool_timeout=30,
-    )
+    database_url,
+    pool_size=20,        
+    max_overflow=10,     
+    pool_timeout=10,     
+    pool_recycle=1800,   
+    pool_pre_ping=True,  
+    echo=False,          
+    future=True          
+)
 
 
 try:
-    with engine.connect() as connection:
-        connection = connection.execution_options(isolation_level="AUTOCOMMIT")
-        connection.execute(text("CREATE SEQUENCE machine_id_seq;CREATE SEQUENCE pool_id_seq;CREATE SEQUENCE cluster_id_seq;"))
+    with engine.begin() as connection:
+        connection.execute(text("""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'machine_id_seq') THEN
+                    CREATE SEQUENCE machine_id_seq;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'pool_id_seq') THEN
+                    CREATE SEQUENCE pool_id_seq;
+                END IF;
+                IF NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'cluster_id_seq') THEN
+                    CREATE SEQUENCE cluster_id_seq;
+                END IF;
+            END;
+            $$;
+        """))
 except Exception as e:
-    logger.error(f"Failed to create database sequences: {str(e)}")
+    logger.error(f"Failed to ensure sequences exist: {str(e)}")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()

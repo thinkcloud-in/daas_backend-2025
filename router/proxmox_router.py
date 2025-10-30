@@ -16,9 +16,9 @@ proxmox_router = APIRouter(prefix="/v1/proxmox", tags=["proxmox"])
 async def generate_name(db: Session = Depends(get_db)):
     return await proxmox_controller.generate_name(db)
 
-@proxmox_router.get("/get_all_cluster_vms", response_model=APIResponse[Any])
-async def get_all_cluster_vms(db: Session = Depends(get_db)):
-    return await proxmox_controller.get_nodes(db)
+# @proxmox_router.get("/get_all_cluster_vms", response_model=APIResponse[Any])
+# async def get_all_cluster_vms(db: Session = Depends(get_db)):
+#     return await proxmox_controller.get_nodes(db)
 
 @proxmox_router.get("/get_templates")
 async def get_templates(cluster_id: str = None, db: Session = Depends(get_db)):

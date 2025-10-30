@@ -41,12 +41,12 @@ class CloneRequest(BaseModel):
  
  
  
-def get_nodes(db: Session = Depends(get_db)):
-    try:
-        cluster_vms = service.get_all_cluster_vms(db)    
-        return response_format.success_response(200, "Cluster VMs retrieved successfully", cluster_vms)
-    except Exception as e:
-        return response_format.error_response(500, "Failed to retrieve cluster VMs", str(e))
+# def get_nodes(db: Session = Depends(get_db)):
+#     try:
+#         cluster_vms = service.get_all_cluster_vms(db)
+#         return response_format.success_response(200, "Cluster VMs retrieved successfully", cluster_vms)
+#     except Exception as e:
+#         return response_format.error_response(500, "Failed to retrieve cluster VMs", str(e))
 
 async def get_templates_for_nodes(cluster_id: str = None, db: Session = Depends(get_db)):
     try:
@@ -227,7 +227,6 @@ async def migrate_bucket_all_data_route(
     if not all([INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_TOKEN, INFLUXDB_BUCKET]):
         raise HTTPException(status_code=500, detail="Destination InfluxDB is not configured")
 
-    # Build migration payload as a dict for both source and destination
     migration_payload = {
         "src_url": req.src_url,
         "src_token": req.src_token,
@@ -240,10 +239,8 @@ async def migrate_bucket_all_data_route(
         "dst_bucket": INFLUXDB_BUCKET
     }
     await service.update_metric_server_token(req.cluster_id, req.src_token)
-    # Schedule the migration as a background task
     workflow_info = await service.migrate_bucket_all_data(migration_payload)
     if workflow_info.get("workflow_id"):
-        # Assuming you have a working DB session and ORM model
         db_metric_server = db.query(MetricServer).filter(MetricServer.cluster_id == req.cluster_id).first()
         if db_metric_server:
             db_metric_server.workflow_id = workflow_info["workflow_id"]
@@ -261,7 +258,6 @@ async def get_metric_server_endpoint(
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))
 
-#----------- VM Rebuild, Reboot, Shutdown, Start, Stop Endpoints -----------#
 
 async def start_vm_endpoint(
     data: VMPowerRequest,
@@ -345,17 +341,14 @@ def proxmox_all_vm_details(
         return vm_infos
 
 
-async def proxmox_vm_details(
-
-    vm_id: int,
-    db
-):
+async def proxmox_vm_details(vm_id: int, db):
         cluster_data = get_cluster_by_id(db, vm_id)
         if not cluster_data:
             raise HTTPException(status_code=404, detail="Cluster not found")
-        vm_infos = service.get_all_vm_details(db, cluster_data)
-        # Only return the details for the requested vm_id
+        vm_infos = await service.get_all_vm_details_parallel(db, cluster_data)
         vm_info = next((vm for vm in vm_infos if vm["vmid"] == vm_id), None)
         if not vm_info:
             raise HTTPException(status_code=404, detail="VM not found")
         return vm_info
+ 
+  

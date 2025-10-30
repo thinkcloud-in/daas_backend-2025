@@ -16,7 +16,7 @@ def paginated_success_response(
     code: int,
     msg: str,
     data: Optional[Any],
-    total: int,
+    total: Optional[int],
     limit: int,
     offset: int,
     status: str = "OK"
@@ -35,7 +35,7 @@ def paginated_Error_response(
     code: int,
     msg: str,
     data: Optional[Any],
-    total: int,
+    total: Optional[int],
     limit: int,
     offset: int,
     status: str = "Failed"

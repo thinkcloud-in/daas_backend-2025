@@ -11,7 +11,7 @@ import urllib3
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
 from models.models import Cluster, CreateClusterBase,Pool, Machine
-from db_configuration.config import SessionLocal, get_db
+from db_configuration.config import get_db
 import re
 from service.gucamoleService import connectionWithClient
 from service.temporalResource.workers import worker_proxmox
@@ -30,7 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
  
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-VERIFY_SSL = False  # Set to True if you want to verify SSL certificates
+VERIFY_SSL = False 
  
 def get_all_proxmox_users(db):
     data=db.query(Proxmox).all()
@@ -46,7 +46,6 @@ def get_cluster_nodes(cluster_data):
         "Content-Type": "application/json"
     }
  
-    # If IPs are stored as a comma-separated string, split them:
     if isinstance(cluster_data.ip, str):
         ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if is_valid_ip(ip.strip())]
     else:
@@ -242,7 +241,8 @@ async def delete_proxmox_vm(vmid: int, cluster_data):
 async def update_metric_server_token(cluster_id: int, new_token: str):
     db: Optional[Session] = None
     try:
-        db = SessionLocal()
+        # db = SessionLocal()
+        db = next(get_db())
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
         if ms:
             ms.token = new_token
@@ -251,9 +251,9 @@ async def update_metric_server_token(cluster_id: int, new_token: str):
             logger.warning(f"No MetricServer found for cluster_id={cluster_id}")
     except Exception as e:
         logger.error(f"Error updating MetricServer token for cluster_id={cluster_id}: {e}")
-    finally:
-        if db:
-            db.close()
+    # finally:
+    #     if db:
+    #         db.close()
  
 
 async def migrate_bucket_all_data(migration_payload: dict):
@@ -294,15 +294,16 @@ async def migrate_bucket_all_data(migration_payload: dict):
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
     db: Optional[Session] = None
     try:
-        db = SessionLocal()
+        # db = SessionLocal()
+        db = next(get_db())
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
         return ms
     except Exception as e:
         logger.error(f"Error fetching MetricServer for cluster_id={cluster_id}: {e}")
         return jsonable_encoder("error",e)
-    finally:
-        if db:
-            db.close()
+    # finally:
+    #     if db:
+    #         db.close()
 
 
 #---------------------------proxmox power state operations---------------------------
@@ -755,3 +756,52 @@ def get_all_vm_details(db, cluster_data):
                     "error": str(e)
                 })
     return vm_info_list
+
+async def get_vm_detail(db, cluster_data, vm):
+    loop = asyncio.get_running_loop()
+ 
+    node = vm['node']
+    vmid = vm['vmid']
+ 
+    try:
+        # Run blocking functions in thread pool
+        config = await loop.run_in_executor(None, get_vm_config, db, cluster_data, node, vmid)
+        datastores = get_vm_datastores_from_config(config)
+        agent_enabled = bool(config.get("agent", 0))
+ 
+        if agent_enabled:
+            ip_addresses = await loop.run_in_executor(None, get_vm_ip_addresses, db, cluster_data, node, vmid)
+        else:
+            ip_addresses = []
+ 
+        return {
+            "vmid": vmid,
+            "node": node,
+            "name": vm.get("name", ""),
+            "datastores": datastores,
+            "agent_enabled": agent_enabled,
+            "ip_addresses": ip_addresses
+        }
+ 
+    except Exception as e:
+        return {
+            "vmid": vmid,
+            "node": node,
+            "name": vm.get("name", ""),
+            "datastores": [],
+            "agent_enabled": False,
+            "ip_addresses": [],
+            "error": str(e)
+        }
+ 
+ 
+async def get_all_vm_details_parallel(db, cluster_data):
+    loop = asyncio.get_running_loop()
+ 
+    vms = await loop.run_in_executor(None, get_all_cluster_vms, db, cluster_data)
+    qemu_vms = [vm for vm in vms if vm['type'] == 'qemu']
+ 
+    tasks = [get_vm_detail(db, cluster_data, vm) for vm in qemu_vms]
+    vm_info_list = await asyncio.gather(*tasks, return_exceptions=False)
+    return vm_info_list
+ 
