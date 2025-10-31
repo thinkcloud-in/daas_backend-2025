@@ -1,6 +1,6 @@
 from fastapi.middleware.cors import CORSMiddleware
 import os
- 
+
 def cors(app):
     allowed_origins = os.getenv("CORS_ALLOWED_ORIGINS", "*").split(",")
     allowed_methods = os.getenv("CORS_ALLOWED_METHODS", "GET,POST,PUT,DELETE,OPTIONS,PATCH").split(",")

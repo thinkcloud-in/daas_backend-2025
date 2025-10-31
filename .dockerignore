@@ -1,4 +1,5 @@
 src
+.dockerignore
 endpointWithTemporal.py
 __pycache__/
 .vscode/
@@ -10,3 +11,4 @@ temporal
 env
 app.log
 email_scheduler.log
+.gitignore

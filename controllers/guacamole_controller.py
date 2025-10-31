@@ -7,9 +7,6 @@ from fastapi import  HTTPException,File, UploadFile, Form,Query
 from fastapi.responses import FileResponse
 from fastapi.encoders import jsonable_encoder
 from utils import response_format
-
-
-
 async def get_login():
     data = await service.login_with_guacamole()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)

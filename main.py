@@ -35,7 +35,6 @@ app.add_middleware(
 )
 exception_handlers(app)
  
-# Call the function to create tables
 DB_init.create_tables()
 app.include_router(router)
 app.include_router(guacamole_router)
