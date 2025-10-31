@@ -10,6 +10,7 @@ from utils import response_format
 async def get_login():
     data = await service.login_with_guacamole()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)
+#testing
 
 async def  list_of_users():
     data = await service.list_of_users()
