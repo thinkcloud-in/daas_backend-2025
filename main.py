@@ -20,6 +20,7 @@ from service.temporalResource.workers import worker_proxmox
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
+from middleware.request_logger import RequestLoggerMiddleware
 
 app = FastAPI()
 
@@ -34,8 +35,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(RequestLoggerMiddleware)
+
 exception_handlers(app)
- 
+
 # Call the function to create tables
 DB_init.create_tables()
 app.include_router(router)
