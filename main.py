@@ -19,6 +19,7 @@ from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
+from router.hyper_v_router import hyper_v_router
 
 app = FastAPI()
 
@@ -46,6 +47,7 @@ app.include_router(proxmox_router)
 app.include_router(ip_router)
 app.include_router(ipmi_router)
 app.include_router(grafana_router)
+app.include_router(hyper_v_router)
 
 
 def start_async_worker(target):
