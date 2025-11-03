@@ -57,7 +57,8 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         }
 
         if request.method in tracked_methods:
+            print("Scuccessfully logged request")
             # print(":::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::", json.dumps(log_entry, ensure_ascii=False, indent=2))
-            logger.info("Request Log: " + json.dumps(log_entry, ensure_ascii=False, indent=2))
+            # logger.info("Request Log: " + json.dumps(log_entry, ensure_ascii=False, indent=2))
 
         return response

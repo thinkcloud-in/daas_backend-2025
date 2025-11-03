@@ -9,17 +9,20 @@ def unique_id():
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-async def get_vms_from_hyperv():
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vms/"
+async def get_vms():
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vms"
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = (await client.get(url)).json()
-        return response['data']
-    
-async def clone_vms():
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vms/"
+        response = await client.get(url)
+        data = response.json()
+        return data['data']
+
+async def clone_vm_for_single_node(request):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = (await client.post(url)).json()
-        if response['code'] == 200:
-            return response['data']
+        response = await client.post(url, json=request.dict())
+        data = response.json()
+        print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::",data, request)
+        if data.get('code') == 200:
+            return data.get('data')
         else:
-            return response['msg']
+            return data.get('msg', 'Unknown error occurred')
