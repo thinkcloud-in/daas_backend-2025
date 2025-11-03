@@ -1,0 +1,22 @@
+limit.maxIDLength:
+  - value: 255
+    constraints: {}
+
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true
+    constraints: {}
+
+# Namespace-specific retention
+namespaces:
+  - name: "default"
+    retention:
+      days: 365  # Existing setting (1 year)
+
+  # - name: "new-namespace"  # Your new namespace
+  #   retention:
+  #     days: 100  # 90 days retention for new namespace
+
+# Default retention for all namespaces (uncomment and adjust)
+system.namespaceDefaults.retention:
+  - value: 30d
+    constraints: {}

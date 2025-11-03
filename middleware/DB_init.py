@@ -6,6 +6,7 @@ from models.proxmox_model import Base as Proxmox_Base
 from models.IPMI_models import Base as IPMI_Base
 from models.IPs_model import Base as IPs_Base
 from models.request_logger_model import Base as RequestLog_Base
+
 from models import task_models
 
 def create_tables():
@@ -19,5 +20,6 @@ def create_tables():
         Proxmox_Base.metadata.create_all(bind=engine)
         IPMI_Base.metadata.create_all(bind=engine)
         RequestLog_Base.metadata.create_all(bind=engine)
+
     except Exception as e:
         raise Exception(f"Failed to create tables: {str(e)}") from e
