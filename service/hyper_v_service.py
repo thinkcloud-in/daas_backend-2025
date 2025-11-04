@@ -2,8 +2,6 @@ import httpx
 import os
 from datetime import datetime
 
-from utils import response_format
-
 HYPER_V_AGENT_URL = os.getenv('HYPER_V_AGENT_URL')
 def unique_id():
     unique_id = datetime.now()
@@ -21,7 +19,6 @@ async def clone_vm_for_single_node(request):
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.post(url, json=request.dict())
         data = response.json()
-        print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::",data, request)
         if data.get('code') == 200:
             return data.get('data')
         else:
