@@ -1,8 +1,10 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 import controllers.hyper_v_controller as controller
 from models.API_Response_model import APIResponse
-from models.hyper_v_model import CloneVMRequest
+from models.hyper_v_model import CloneVMRequest, HandleActionRequest
 from typing import Any
+from db_configuration.config import get_db
+from sqlalchemy.orm import Session
 
 hyper_v_router = APIRouter(prefix="/v1/hyper_v", tags=["Hyper-V"])
 
@@ -13,5 +15,25 @@ async def get_vms():
         return await controller.get_vms()
 
 @hyper_v_router.post("/clone_vm_for_single_node", response_model=APIResponse[Any])
-async def clone_vm_for_single_node(request: CloneVMRequest):
-        return await controller.clone_vm_for_single_node(request)
+async def clone_vm_for_single_node(request: CloneVMRequest, db: Session = Depends(get_db)):
+        return await controller.clone_vm_for_single_node(request, db)
+
+@hyper_v_router.get("/get_vm_info/{vm_name}", response_model=APIResponse[Any])
+async def get_vm_info(vm_name: str):
+        return await controller.get_vm_info(vm_name)
+
+@hyper_v_router.get("/get_switches", response_model=APIResponse[Any])
+async def get_switches():
+        return await controller.get_switches()
+
+@hyper_v_router.delete("/delete_vm/{vm_name}", response_model=APIResponse[Any])
+async def delete_vm(vm_name: str):
+        return await controller.delete_vm(vm_name)
+
+@hyper_v_router.get("/get_status/{vm_name}", response_model=APIResponse[Any])
+async def get_status(vm_name: str):
+        return await controller.get_status(vm_name)
+
+@hyper_v_router.post("/handle_action", response_model=APIResponse[Any])
+async def handle_action(request: HandleActionRequest, db: Session = Depends(get_db)):
+        return await controller.handle_action(request, db)
