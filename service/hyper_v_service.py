@@ -62,8 +62,8 @@ async def clone_vm_for_single_node(request, db):
         else:
             return data.get('msg', 'Unknown error occurred')
         
-async def get_vm_info(vm_name):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_name}"
+async def get_vm_info(vm_id):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url)
         data = response.json()
@@ -76,15 +76,15 @@ async def get_switches():
         data = response.json()
         return data['data']
     
-async def delete_vm(vm_name: str):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_name}"
+async def delete_vm(vm_id):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.delete(url)
         data = response.json()
         return data['data']
     
-async def get_status(vm_name: str):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_name}"
+async def get_status(vm_id):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url)
         data = response.json()

@@ -9,20 +9,20 @@ async def clone_vm_for_single_node(request, db):
     result = await service.clone_vm_for_single_node(request, db)
     return success_response(200, "Successfully cloned Hyper-V VM for single node", result)
 
-async def get_vm_info(vm_name):
-    result = await service.get_vm_info(vm_name)
+async def get_vm_info(vm_id):
+    result = await service.get_vm_info(vm_id)
     return success_response(200, "Successfully retrieved Hyper-V VM info", result)
 
 async def get_switches():
     result = await service.get_switches()
     return success_response(200, "Successfully retrieved Hyper-V switches", result)
 
-async def delete_vm(vm_name: str):
-    result = await service.delete_vm(vm_name)
+async def delete_vm(vm_id):
+    result = await service.delete_vm(vm_id)
     return success_response(200, "Successfully deleted Hyper-V VM", result)
 
-async def get_status(vm_name: str):
-    result = await service.get_status(vm_name)
+async def get_status(vm_id):
+    result = await service.get_status(vm_id)
     return success_response(200, "Successfully retrieved Hyper-V VM status", result)
 
 async def handle_action(request, db):

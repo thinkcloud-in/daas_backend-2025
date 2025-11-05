@@ -18,21 +18,21 @@ async def get_vms():
 async def clone_vm_for_single_node(request: CloneVMRequest, db: Session = Depends(get_db)):
         return await controller.clone_vm_for_single_node(request, db)
 
-@hyper_v_router.get("/get_vm_info/{vm_name}", response_model=APIResponse[Any])
-async def get_vm_info(vm_name: str):
-        return await controller.get_vm_info(vm_name)
+@hyper_v_router.get("/get_vm_info/{vm_id}", response_model=APIResponse[Any])
+async def get_vm_info(vm_id: str):
+        return await controller.get_vm_info(vm_id)
 
 @hyper_v_router.get("/get_switches", response_model=APIResponse[Any])
 async def get_switches():
         return await controller.get_switches()
 
-@hyper_v_router.delete("/delete_vm/{vm_name}", response_model=APIResponse[Any])
-async def delete_vm(vm_name: str):
-        return await controller.delete_vm(vm_name)
+@hyper_v_router.delete("/delete_vm/{vm_id}", response_model=APIResponse[Any])
+async def delete_vm(vm_id: str):
+        return await controller.delete_vm(vm_id)
 
-@hyper_v_router.get("/get_status/{vm_name}", response_model=APIResponse[Any])
-async def get_status(vm_name: str):
-        return await controller.get_status(vm_name)
+@hyper_v_router.get("/get_status/{vm_id}", response_model=APIResponse[Any])
+async def get_status(vm_id: str):
+        return await controller.get_status(vm_id)
 
 @hyper_v_router.post("/handle_action", response_model=APIResponse[Any])
 async def handle_action(request: HandleActionRequest, db: Session = Depends(get_db)):
