@@ -12,6 +12,7 @@ from typing import Dict, List
 from urllib.parse import quote
 from dotenv import load_dotenv
 import os
+from temporalio.common import RetryPolicy
 
 load_dotenv()
 
@@ -136,10 +137,16 @@ class EmailWorkflow:
         pdf_url: str
     ) -> bool:
         start_time, end_time = calculate_time_range(schedule_type)
-        
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=30),
+            maximum_attempts=5,
+        )
         result = await workflow.execute_activity(
             send_email_with_pdf_activity,
             args=[smtp_config, receiver_emails, pdf_url, start_time, end_time, report_type],
+            retry_policy=retry_policy,
             start_to_close_timeout=timedelta(minutes=5)
         )
         return result
