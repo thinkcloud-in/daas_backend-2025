@@ -26,7 +26,11 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
             if hasattr(response, "body_iterator"):
                 body = [chunk async for chunk in response.body_iterator]
                 response.body_iterator = iter(body)
-                response_data = b"".join(body).decode("utf-8")
+                # response_data = b"".join(body).decode("utf-8")
+                try:
+                    response_data = b"".join(body).decode("utf-8")
+                except UnicodeDecodeError:
+                    response_data = "<binary data>"
 
                 response = Response(
                     content=response_data,
