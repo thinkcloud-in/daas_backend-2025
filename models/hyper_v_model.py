@@ -1,5 +1,6 @@
-from sqlalchemy.ext.declarative import declarative_base
+from typing import Optional
 from pydantic import BaseModel, Field
+
 class CloneVMRequest(BaseModel):
     vm_name: str = Field(..., description="Name of the new cloned VM")
     memory: int = Field(..., gt=0, description="Memory size in MB")
@@ -10,7 +11,11 @@ class CloneVMRequest(BaseModel):
     failover_only: bool = Field(..., description="Indicates if the clone is for failover only")
     guacd_hostname: str = Field(..., description="Guacd hostname for remote access")
     guacd_encryption: str = Field(..., description="Guacd encryption method")
-    
+    number_of_vms: Optional[int] = Field(1, ge=1, le=50, description="Number of VM clones to create")
+
 class HandleActionRequest(BaseModel):
     vm_name: str = Field(..., description="Name of the VM")
     action: str = Field(..., description="Action to perform on the VM")
+    
+class HandleDeleteDiskRequest(BaseModel):
+    disk_path: str = Field(..., description="Path of the disk to be deleted")

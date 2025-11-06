@@ -165,7 +165,7 @@ class Pool(Base):
     pool_ip_pool_names = Column(ARRAY(String), nullable=True)  # List of IP pools associated with the pool
     pool_number_of_vms = Column(Integer, nullable=True)  # Number of VMs in the pool
     pool_naming_pattern = Column(String, nullable=True)  # Naming pattern for VMs in the pool
-    pool_template_vm_id = Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
+    pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes = Column(ARRAY(String), nullable=True)  # Selected node for the pool
     pool_status = Column(String, nullable=True)  # Status of the pool
 

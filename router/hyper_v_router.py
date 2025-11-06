@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 import controllers.hyper_v_controller as controller
 from models.API_Response_model import APIResponse
-from models.hyper_v_model import CloneVMRequest, HandleActionRequest
+from models.hyper_v_model import CloneVMRequest, HandleActionRequest, HandleDeleteDiskRequest
 from typing import Any
 from db_configuration.config import get_db
 from sqlalchemy.orm import Session
@@ -37,3 +37,7 @@ async def get_status(vm_id: str):
 @hyper_v_router.post("/handle_action", response_model=APIResponse[Any])
 async def handle_action(request: HandleActionRequest, db: Session = Depends(get_db)):
         return await controller.handle_action(request, db)
+
+@hyper_v_router.delete("/delete_disk", response_model=APIResponse[Any])
+async def delete_disk(request: HandleDeleteDiskRequest, db: Session = Depends(get_db)):
+        return await controller.delete_disk(request, db)
