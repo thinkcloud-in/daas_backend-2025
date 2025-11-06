@@ -226,9 +226,19 @@ async def generate_pdf_report_by_username(start_date: str, end_date: str, report
     start_date_dt = parse_datetime(start_date)
     end_date_dt = parse_datetime(end_date)
     try:
-        pdf_file = await service.generate_userbased_report(start_date_dt, end_date_dt, report_type,username)
-        data= FileResponse(pdf_file, media_type="application/pdf", filename=f"{report_type}{username}.pdf")
-        return response_format.success_response(200, "PDF report generated successfully", data)
+        pdf_path = await service.generate_report(start_date_dt, end_date_dt, report_type)
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        encoded_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
+
+        return response_format.success_response(
+            200,
+            "PDF report generated successfully",
+            {"pdf_data": encoded_pdf}
+        )
+        # pdf_file = await service.generate_userbased_report(start_date_dt, end_date_dt, report_type,username)
+        # data= FileResponse(pdf_file, media_type="application/pdf", filename=f"{report_type}{username}.pdf")
+        # return response_format.success_response(200, "PDF report generated successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to generate PDF report", str(e)) 
 
