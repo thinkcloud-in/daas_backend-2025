@@ -1,5 +1,5 @@
 import asyncio
-from http.client import HTTPException
+from fastapi import HTTPException
 import os
 import psycopg2
 import select

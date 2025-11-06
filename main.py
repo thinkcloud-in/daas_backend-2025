@@ -39,12 +39,7 @@ app.add_middleware(
 app.add_middleware(RequestLoggerMiddleware)
 
 exception_handlers(app)
-<<<<<<< HEAD
- 
-=======
 
-# Call the function to create tables
->>>>>>> ef7e9a3465a32a096feabde12e62c266c475cc95
 DB_init.create_tables()
 app.include_router(router)
 app.include_router(guacamole_router)
