@@ -35,7 +35,8 @@ def login_with_guacamole():
       raise HTTPException(status_code=response.status_code, detail="Failed to authenticate with Guacamole")
     
 
-def return_payload(machine_data: MachineDto):
+def return_payload(machine_data_: MachineDto):
+    machine_data = machine_data_.dict()
     protocol = machine_data.get('protocol', '').lower()
     match protocol:
         case "rdp":

@@ -220,16 +220,13 @@ async def get_temporal_status(schedule_id : str):
         
         try:
             description = await schedule_handle.describe()
-            latest_action = description.info.recent_actions[-1] #latest
+            latest_action = description.info.recent_actions[-1]
             if isinstance(latest_action.action, ScheduleActionExecutionStartWorkflow):
                 workflow_id = latest_action.action.workflow_id
                 run_id = latest_action.action.first_execution_run_id
                 # return workflow_id, run_id, client
                 # workflow_id, run_id, client = await get_schedule_execution_details("workflow-schedule-id")
                 if workflow_id and run_id:
-                    # 
-                    # 
-
                     workflow_handle = client.get_workflow_handle(workflow_id)
                     status = await workflow_handle.describe() #status
                     # 
