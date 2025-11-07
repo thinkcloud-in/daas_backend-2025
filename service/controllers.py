@@ -495,13 +495,11 @@ async def update_cluster(db, cluster_id: str, cluster_data: UpdateClusterBase):
     return result
  
 async def get_cluster_details(db: Session, cluster_id: str):
-    try:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        return cluster
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=404, detail="Cluster not found-")
+    return cluster
+
 
 def create_task_details(task: task_models.Task_config, db: Session):
     try:

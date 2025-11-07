@@ -179,7 +179,7 @@ async def delete_influxdb_metric_server_endpoint(cluster_id: str, db: Session):
     try:
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster_data:
-            raise HTTPException(status_code=404, detail="Cluster not found")
+            raise HTTPException(status_code=404, detail="Cluster not found !!")
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_data.id).first()
         if not ms:
             raise HTTPException(status_code=404, detail="Metric server integration not found.")

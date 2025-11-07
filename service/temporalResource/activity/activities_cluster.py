@@ -33,16 +33,16 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
         "password": NEW_PASSWORD,
         "enable": 1
     }
-    print('---------------------------------------', payload)
+
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-    print('---------------------------------------', response.json())
+
 
     if response.status_code == 200:
         return {"status": "success"}
     elif response.status_code == 400 and "already exists" in response.text:
         return {"status": "success"}
     else:
-        return {"msg": "Error occurred: {}".format(response.text)}
+        return {"msg": "Error occurred"}
 
 
 @activity.defn
@@ -121,8 +121,7 @@ async def delete_cluster_activity(cluster_id: str):
     try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
-            raise Exception("Cluster not found")
-
+            raise HTTPException(status_code=404, detail="Cluster not found !")
         msg_parts = []
 
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster.id).first()
@@ -143,9 +142,11 @@ async def delete_cluster_activity(cluster_id: str):
                 db.delete(ms)
                 db.commit()
                 msg_parts.append("Metric server integration deleted from DB.")
-            db.delete(cluster)
+            clusterService.delete_cluster_proxmox(cluster,db) #proxmox deletion
+            
+            db.delete(cluster) # db deletion
             db.commit()
-            clusterService.delete_cluster_proxmox(cluster)
+            
             msg_parts.append("Cluster deleted successfully.")
 
         clusters = db.query(Cluster).all()

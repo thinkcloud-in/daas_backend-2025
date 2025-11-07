@@ -117,16 +117,12 @@ def create_api_token_newUser(PROXMOX_HOST):
 def get_all_proxmox_users(db: Session):
     data=db.query(Proxmox).all()
     return data
-def get_api_token(db, cluster_name):
+def get_api_token(db: Session, cluster_name: str):
     obj = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_name).first()
     if obj:
         return obj.api_token
     else:
         return None
- 
- 
- 
- 
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
     existing_user = db.query(Proxmox).filter(
@@ -238,8 +234,7 @@ def get_all_nodes(cluster_data):
  
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
  
-def delete_cluster_proxmox(cluster_data):
-    db = next(get_db())
+def delete_cluster_proxmox(cluster_data, db: Session):
     ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if ip.strip()]
     any_ip = random.choice(ip_list) if ip_list else None
     if not any_ip:
@@ -394,8 +389,7 @@ def delete_influxdb_metric_server(cluster_data):
         response.raise_for_status()
         return {"status": "success"}
     except Exception as e:
-
-        return {"error": "Failed to delete metric server from Proxmox API."}
+        return {"error": f"Failed to delete metric server from Proxmox API: {e}"}
 
 def can_delete_metric_server(db, cluster_id):
 
