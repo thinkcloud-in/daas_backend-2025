@@ -49,8 +49,7 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
     uniqueId = unique_id()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
-
-
+    
     handle = await client.start_workflow(
         workflows_cluster.CreateUserWorkflow.run,
         args=[cluster_data, root_username, root_password],
@@ -63,7 +62,6 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
         },
     )
 
-    # Get result and validate
     result = await handle.result()
 
     if result.get('status') != 'success':
@@ -264,7 +262,7 @@ def delete_cluster_proxmox(cluster_data):
             if response.status_code in (401, 404) or "no such user" in response.text:
                 pass
             else:
-                raise
+                raise Exception("Failed to delete user from Proxmox API")
     except Exception as e:
         raise Exception(f"Failed to delete user from Proxmox API: {str(e)}")
  

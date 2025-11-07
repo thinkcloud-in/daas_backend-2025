@@ -61,10 +61,8 @@ class AssignRoleToUserWorkflow:
 
 @workflow.defn(sandboxed=False)
 class CreateClusterWorkflow:
-    # Entry point for the workflow
     @workflow.run
     async def run(self, cluster_data: dict):
-        # Define retry policy
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -75,7 +73,6 @@ class CreateClusterWorkflow:
         try:
             logger.info("Running workflow to create cluster...")
 
-            # Execute the activity with retry policy
             result = await workflow.execute_activity(
                 activities_cluster.create_cluster_activity,
                 args=[cluster_data],

@@ -123,7 +123,7 @@ async def get_influxdb_metric_server_endpoint(
             )
         return {"influxdb_metric_server": influxdb_metric_server}
     except Exception as e:
-        return response_format.error_response(500, "Failed to retrieve InfluxDB metric server", str(e))
+        raise Exception("Failed to retrieve InfluxDB metric server: {}".format(e))
 
 async def get_influxdb_metric_server_endpoints(
     cluster_id: int,

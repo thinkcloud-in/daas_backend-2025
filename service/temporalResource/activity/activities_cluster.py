@@ -33,16 +33,16 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
         "password": NEW_PASSWORD,
         "enable": 1
     }
-
+    print('---------------------------------------', payload)
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-
+    print('---------------------------------------', response.json())
 
     if response.status_code == 200:
         return {"status": "success"}
     elif response.status_code == 400 and "already exists" in response.text:
         return {"status": "success"}
     else:
-        return {"msg": "Error occurred", "error": str(e)}
+        return {"msg": "Error occurred: {}".format(response.text)}
 
 
 @activity.defn
@@ -74,19 +74,13 @@ async def create_cluster_activity(cluster_data: dict):
         ip_string = ",".join(ip_list)
         cluster_data_dict["ip"] = ip_string
 
-        user_email = cluster_data_dict.pop("email", None)
+        # user_email = cluster_data_dict.pop("email", None)
         model_columns = set(c.name for c in Cluster.__table__.columns)
         cluster_fields = {k: v for k, v in cluster_data_dict.items() if k in model_columns}
         existing_cluster = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
 
         if existing_cluster:
-            return {
-                "msg": "already_exists",
-                "cluster": {
-                    **model_to_dict(existing_cluster),
-                    "ip": existing_cluster.ip.split(",") if existing_cluster.ip else []
-                }
-            }
+            raise Exception("Cluster already exists")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
@@ -118,7 +112,7 @@ async def create_cluster_activity(cluster_data: dict):
         }
     except Exception as e:
         db.rollback()
-        return {"msg": "Error occurred", "error": str(e)}
+        raise Exception("Error occurred while creating cluster: " + str(e))
 
 
 @activity.defn
@@ -127,7 +121,7 @@ async def delete_cluster_activity(cluster_id: str):
     try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
-            return {"msg": "Cluster not found", "error": 404}
+            raise Exception("Cluster not found")
 
         msg_parts = []
 
@@ -161,8 +155,7 @@ async def delete_cluster_activity(cluster_id: str):
         })
     except Exception as e:
         db.rollback()
-        return {"msg": "Error occurred", "error": str(e)}
-    
+        raise Exception("Error occurred while deleting cluster")
 
 @activity.defn
 async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: str):
