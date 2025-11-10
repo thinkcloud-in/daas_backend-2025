@@ -20,6 +20,11 @@ NEW_TOKEN_ID = os.getenv("PROXMOX_NEW_TOKEN_ID")
 NEW_PASSWORD = os.getenv("PROXMOX_NEW_PASSWORD")
 VERIFY_SSL = False
 
+INFLUXDB_URL = os.getenv("INFLUXDB_URL")
+INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
+INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
+INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
+
 
 def unique_id():
     unique_id = datetime.now()
@@ -111,18 +116,19 @@ def create_api_token_newUser(PROXMOX_HOST):
     api_token = f"{full_token}={secret}"
     return api_token,full_token,secret
  
- 
- 
- 
+ #--------------------------------------------helper functions--------------------------------------------#
+def model_to_dict(obj):
+    return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+#--------------------------------------------helper functions--------------------------------------------#
+
 def get_all_proxmox_users(db: Session):
     data=db.query(Proxmox).all()
     return data
 def get_api_token(db: Session, cluster_name: str):
     obj = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_name).first()
-    if obj:
-        return obj.api_token
-    else:
-        return None
+    data = model_to_dict(obj) if obj else {}
+    return data.get("api_token", "")
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
     existing_user = db.query(Proxmox).filter(
@@ -235,6 +241,7 @@ def get_all_nodes(cluster_data):
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
  
 def delete_cluster_proxmox(cluster_data, db: Session):
+
     ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if ip.strip()]
     any_ip = random.choice(ip_list) if ip_list else None
     if not any_ip:
@@ -273,14 +280,11 @@ def delete_cluster_proxmox(cluster_data, db: Session):
  
 
 # Example: fetch from env
-INFLUXDB_URL = os.getenv("INFLUXDB_URL")
-INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
-INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
-INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
-import requests
+
  
 def add_influxdb_metric_server(cluster_data, payload):
-    api_token = get_api_token(next(get_db()), cluster_data.name)
+    db = next(get_db())
+    api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
@@ -374,8 +378,8 @@ def save_metric_server_to_db(
  
 
 def delete_influxdb_metric_server(cluster_data):
-
     db = next(get_db())
+
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",

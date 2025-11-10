@@ -311,17 +311,24 @@ async def list_workflows():
         close_time_ist = wf.close_time.astimezone(IST_TZ).strftime(time_format)[:-3] if wf.close_time else "Ongoing"
 
         execution_time = None
+ 
         if wf.close_time:
-            execution_time = f"{round((wf.close_time - wf.start_time).total_seconds() * 1000)}ms"
+            delta_ms = (wf.close_time - wf.start_time).total_seconds() * 1000
+            if delta_ms < 1000:
+                execution_time = f"{int(delta_ms)}ms"
+            else:
+                execution_time = f"{delta_ms / 1000:.2f}s"
+        else:
+            execution_time = None
+ 
 
         entity = wf.search_attributes.get("Entity", ["UnknownEntity"])[0]
         action = wf.search_attributes.get("Action", ["UnknownAction"])[0]
         UserName = wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
-        
-      
-        
+
+
         if entity == "UnknownEntity":
-            continue 
+            continue
 
 
         workflows.append({
