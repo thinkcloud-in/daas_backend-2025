@@ -28,7 +28,11 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
             if hasattr(response, "body_iterator"):
                 body = [chunk async for chunk in response.body_iterator]
                 response.body_iterator = iter(body)
-                response_data = b"".join(body).decode("utf-8")
+                # response_data = b"".join(body).decode("utf-8")
+                try:
+                    response_data = b"".join(body).decode("utf-8")
+                except UnicodeDecodeError:
+                    response_data = "<binary data>"
 
                 response = Response(
                     content=response_data,
@@ -59,17 +63,8 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         }
 
         if request.method in tracked_methods:
+            print("Scuccessfully logged request")
             # print(":::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::", json.dumps(log_entry, ensure_ascii=False, indent=2))
             # logger.info("Request Log: " + json.dumps(log_entry, ensure_ascii=False, indent=2))
-            
-            try:
-                db = SessionLocal()
-                save_request_log(db, log_entry)
-            except Exception as e:
-                logger.error(f"Failed to save request log to database: {str(e)}")
-            finally:
-                if 'db' in locals():
-                    db.close()
-
 
         return response

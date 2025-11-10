@@ -8,7 +8,6 @@ from typing import List, Optional
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.mutable import MutableDict
 
-
 #declarative base model for pool
 class Pool(Base):
     __tablename__ = 'pools'
@@ -166,12 +165,11 @@ class Pool(Base):
     pool_ip_pool_names = Column(ARRAY(String), nullable=True)  # List of IP pools associated with the pool
     pool_number_of_vms = Column(Integer, nullable=True)  # Number of VMs in the pool
     pool_naming_pattern = Column(String, nullable=True)  # Naming pattern for VMs in the pool
-    pool_template_vm_id = Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
+    pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes = Column(ARRAY(String), nullable=True)  # Selected node for the pool
     pool_status = Column(String, nullable=True)  # Status of the pool
 
 #Pydantic model for create pool
-
 class CreatePoolBase(BaseModel):
     pool_type: Optional[str] = None
     email: Optional[str] = None
@@ -464,7 +462,6 @@ class UpdatePoolBase(BaseModel):
     pool_naming_pattern: Optional[str] = None  # Naming pattern for VMs in the pool
     pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
- 
 
 class Machine(Base):
     __tablename__ = 'machines'
@@ -620,8 +617,6 @@ class Machine(Base):
     error_message = Column(Text, nullable=True)
     # workflow_status = Column(JSON, default=dict) # NEW: workflow_status field for tracking status of all workflow IDs
     workflow_status = Column(MutableDict.as_mutable(JSON), default=dict)
-
-
 
 #pydantic model for creating machine
 class CreateMachineBase(BaseModel):
@@ -999,8 +994,6 @@ class LDAPCredential(BaseModel):
     serverPrincipal:Optional[str]=''
     krbPrincipalAttribute:Optional[str]=''
 
-
-
 class LDAP_test_connection_model(BaseModel):
     authType: Optional[str] = ''
     bindCredential: Optional[str] = ''
@@ -1011,19 +1004,5 @@ class LDAP_test_connection_model(BaseModel):
     startTls: Optional[bool] = False
     useTruststoreSpi: Optional[str] = ''
 
-
-
-    
 class IsCustomeValue(BaseModel):
        is_custom_machine :bool
-    
-    
-    
-
-    
-    
-    
-    
-    
-
-

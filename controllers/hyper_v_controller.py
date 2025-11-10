@@ -1,10 +1,34 @@
 import service.hyper_v_service as service
-from utils.response_format import success_response, error_response
+from utils.response_format import success_response
 
-async def get_vms_from_hyperv():
-    result = await service.get_vms_from_hyperv()
+async def get_vms():
+    result = await service.get_vms()
     return success_response(200, "Successfully retrieved Hyper-V data", result)
 
-async def clone_vms():
-    result = await service.clone_vms()
-    return success_response(200, "Successfully cloned Hyper-V VMs", result)
+async def clone_vm_for_single_node(request, db):
+    result = await service.clone_vm_for_single_node(request, db)
+    return success_response(200, "Successfully cloned Hyper-V VM for single node", result)
+
+async def get_vm_info(vm_id):
+    result = await service.get_vm_info(vm_id)
+    return success_response(200, "Successfully retrieved Hyper-V VM info", result)
+
+async def get_switches():
+    result = await service.get_switches()
+    return success_response(200, "Successfully retrieved Hyper-V switches", result)
+
+async def delete_vm(vm_id):
+    result = await service.delete_vm(vm_id)
+    return success_response(200, "Successfully deleted Hyper-V VM", result)
+
+async def get_status(vm_id):
+    result = await service.get_status(vm_id)
+    return success_response(200, "Successfully retrieved Hyper-V VM status", result)
+
+async def handle_action(request, db):
+    result = await service.handle_action(request, db)
+    return success_response(200, "Successfully performed action on Hyper-V VM", result)
+
+async def delete_disk(request, db):
+    result = await service.delete_disk(request, db)
+    return success_response(200, "Successfully deleted disk from Hyper-V VM", result)
