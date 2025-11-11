@@ -927,6 +927,7 @@ class Cluster(Base):
     username = Column(String)
     password = Column (String)
     tls = Column(Boolean)
+    node_type = Column(String)
     
 # pydantic model to create cluster
 class CreateClusterBase(BaseModel):
@@ -938,6 +939,7 @@ class CreateClusterBase(BaseModel):
     password : str
     tls : bool
     email: Optional[str] = None
+    node_type: Optional[str] = None
 
 # pydantic model to update cluster
 class UpdateClusterBase(BaseModel):
@@ -949,8 +951,9 @@ class UpdateClusterBase(BaseModel):
     password : Optional[str]
     tls : Optional[bool]
     email: Optional[str] = None
-    
-# here LDAP pydeantic model class 
+    node_type: Optional[str] = None
+
+# here LDAP pydeantic model class
 class LDAPCredential(BaseModel):
     enabled: Optional[bool] = True
     vendor: Optional[str] = 'ad'

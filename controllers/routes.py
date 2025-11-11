@@ -162,14 +162,14 @@ async def get_machine_details_route(machine_id: str):
 
 # Create cluster
 @router.post('/create_cluster', response_model=APIResponse)
-async def create_cluster_endpoint(pool_data: models.CreateClusterBase, db: Session = Depends(get_db)):
-    pool_data_dict = pool_data.dict()
-    res = await controller.create_cluster(pool_data_dict, db)
+async def create_cluster_endpoint(cluster_data: models.CreateClusterBase, db: Session = Depends(get_db)):
+    cluster_data_dict = cluster_data.dict()
+    res = await controller.create_cluster(cluster_data_dict, db)
     return response_format.success_response(200, "Cluster created successfully.", res)
 
 #Route to list all the clusters
 @router.get('/clusters', response_model=APIResponse[Any])
-async def list_pools(db: Session = Depends(get_db)):
+async def list_clusters(db: Session = Depends(get_db)):
     clusters = db.query(models.Cluster).all()
     clusters_json = jsonable_encoder(clusters)
     return response_format.success_response(200, "Clusters retrieved successfully.", clusters_json)

@@ -96,20 +96,25 @@ async def create_cluster_activity(cluster_data: dict):
                 cluster_data_obj.tls,
                 cluster.id
             )
-        else:
+        elif cluster_data_obj.type.lower() == "proxmox":
             await clusterService.create_cluster_proxmox(cluster_data_obj)
             proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
             node_ips = [node["ip"] for node in proxmox_nodes]
             cluster.ip = ",".join(node_ips)
             db.commit()
             db.refresh(cluster)
-
+            
+        elif cluster_data_obj.type.lower() == "hyper-v":
+            pass
+        
         return {
             "cluster": {
                 **model_to_dict(cluster),
                 "ip": cluster.ip.split(",") if cluster.ip else []
             }
         }
+        
+            
     except Exception as e:
         db.rollback()
         raise Exception("Error occurred while creating cluster: " + str(e))
@@ -131,7 +136,7 @@ async def delete_cluster_activity(cluster_id: str):
             db.commit()
             delete_telegraf_vsphere_input_plugin(cluster_id)
             msg_parts.append("Cluster and any metric server integration deleted from DB.")
-        else:
+        elif cluster.type.lower() == "proxmox":
             if ms:
                 if ms.monitoring and ms.is_custom_integration:
                     result = clusterService.delete_influxdb_metric_server(cluster)
@@ -148,6 +153,10 @@ async def delete_cluster_activity(cluster_id: str):
             db.commit()
             
             msg_parts.append("Cluster deleted successfully.")
+        elif cluster.type.lower() == "hyper-v":
+            db.delete(cluster)
+            db.commit()
+            msg_parts.append("Hyper-V Cluster deleted successfully from DB.")
 
         clusters = db.query(Cluster).all()
         return jsonable_encoder({
@@ -172,10 +181,12 @@ async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: s
         if cluster_data.password:
             db_cluster.password = cluster_data.password
         db_cluster.tls = cluster_data.tls
-        db.commit()
+        db_cluster.node_type = cluster_data.node_type
+        db.commit() 
         db.refresh(db_cluster)
-        modify_telegraf_vsphere_input_plugin(db_cluster.ip, cluster_data.username, cluster_data.password,cluster_data.port,cluster_id)
-       
+        if db_cluster.type.lower() == "vmware":
+            modify_telegraf_vsphere_input_plugin(db_cluster.ip, cluster_data.username, cluster_data.password,cluster_data.port,cluster_id)
+        
         return jsonable_encoder({
             "msg": "Cluster updated successfully",
             "cluster": db_cluster
