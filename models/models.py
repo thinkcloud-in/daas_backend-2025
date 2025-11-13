@@ -1,6 +1,6 @@
 from sqlalchemy import JSON, Text, Column, Integer, String, DateTime, Boolean,ARRAY, Sequence
 from pydantic import BaseModel, Field# type: ignore
-from typing import Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from db_configuration.config import Base
 import datetime
 import datetime
@@ -10,7 +10,7 @@ from sqlalchemy.ext.mutable import MutableDict
 
 #declarative base model for pool
 class Pool(Base):
-    __tablename__ = 'pools'
+    __tablename__ = 'pools_new'
 
     id = Column(Integer, Sequence('pool_id_seq'), primary_key=True)
     pool_type = Column(String)
@@ -165,7 +165,8 @@ class Pool(Base):
     pool_ip_pool_names = Column(ARRAY(String), nullable=True)  # List of IP pools associated with the pool
     pool_number_of_vms = Column(Integer, nullable=True)  # Number of VMs in the pool
     pool_naming_pattern = Column(String, nullable=True)  # Naming pattern for VMs in the pool
-    pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
+    pool_template_vm_id = Column(JSON, nullable=True)
+    # pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes = Column(ARRAY(String), nullable=True)  # Selected node for the pool
     pool_status = Column(String, nullable=True)  # Status of the pool
 
@@ -311,7 +312,8 @@ class CreatePoolBase(BaseModel):
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
     pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
     pool_naming_pattern: Optional[str] = None  # Naming pattern for VMs in the pool
-    pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
+    # pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
+    pool_template_vm_id: Optional[Union[int, Dict[str, Any]]] = None 
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
     pool_status: Optional[str] = None  # Status of the pool
 
@@ -460,7 +462,8 @@ class UpdatePoolBase(BaseModel):
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
     pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
     pool_naming_pattern: Optional[str] = None  # Naming pattern for VMs in the pool
-    pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
+    pool_template_vm_id: Optional[Union[int, Dict[str, Any]]] = None  # Template VM ID for cloning VMs in the pool
+    # pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
 
 class Machine(Base):
