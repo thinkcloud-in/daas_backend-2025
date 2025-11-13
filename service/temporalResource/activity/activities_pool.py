@@ -333,7 +333,6 @@ def machinedata(email,machine, db_pool):
 @activity.defn()
 async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
     from fastapi.encoders import jsonable_encoder
-    import asyncio
 
     db: Session = next(get_db())
     try:

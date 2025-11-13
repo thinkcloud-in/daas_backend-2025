@@ -15,7 +15,6 @@ dotenv.load_dotenv()
 
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
-
     db: Session = next(get_db())
     try:
 
