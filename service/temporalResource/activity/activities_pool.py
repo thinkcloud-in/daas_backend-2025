@@ -9,6 +9,7 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
+from service.hyper_v_service import clone_vm_for_single_node
 import json
 
 
@@ -27,18 +28,6 @@ async def create_pool_activity(request: dict) -> dict:
         cluster_id = pool_data.get("cluster_id")
         node = pool_data.get("pool_selected_nodes")
         template_vm_id = pool_data.get("pool_template_vm_id")
-        # Accept JSON string or dict for template data. Keep raw value in pool record
-        if isinstance(template_vm_id, str):
-            try:
-                parsed = json.loads(template_vm_id)
-                template_vm_id = parsed
-            except Exception:
-                # not JSON — leave as-is (could be numeric string)
-                try:
-                    # try convert numeric string to int
-                    template_vm_id = int(template_vm_id)
-                except Exception:
-                    pass
         name_template = pool_data.get("pool_naming_pattern")
     try:
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
@@ -73,66 +62,22 @@ async def create_pool_activity(request: dict) -> dict:
 
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
+            clone_payload_dict = {
+                "cluster_id": str(cluster_data.id),
+                "node": nodes,
+                "template_vm_id": template_vm_id,
+                "name_template": name_template,
+                "ip_pool_names": ip_pool_assignments,
+                "count": num_allocated,
+                "ip_list": ip_list,
+            }
+            response = await clone_vm(clone_payload_dict)
+           
 
-            # Determine what to pass to clone_vm based on cluster type
-            cluster_type = (cluster_data.type or "").lower() if cluster_data else ""
-            template_for_clone = template_vm_id
-            if cluster_type == "proxmox":
-                # For Proxmox we require either a numeric template id (vmid) or a JSON object
-                # that contains a single key 'template_vm_id' whose value is numeric.
-                if isinstance(template_vm_id, dict):
-                    if "template_vm_id" in template_vm_id:
-                        try:
-                            template_for_clone = int(template_vm_id["template_vm_id"])
-                        except Exception:
-                            raise HTTPException(status_code=400, detail="Invalid template_vm_id value for Proxmox: must be numeric")
-                    else:
-                        raise HTTPException(status_code=400, detail="Invalid template data for Proxmox: missing 'template_vm_id' key")
-                else:
-                    try:
-                        template_for_clone = int(template_vm_id)
-                    except Exception:
-                        raise HTTPException(status_code=400, detail="Invalid template id for Proxmox cluster: must be numeric")
-            elif cluster_type in ("hyper-v", "hyperv", "hyper-v"):
-                # For Hyper-V we accept a dict of properties; ensure it's a dict
-                if not isinstance(template_vm_id, dict):
-                    raise HTTPException(status_code=400, detail="Invalid template data for Hyper-V: expected JSON object with template properties")
-            if cluster_type =="proxmox":
-
-                clone_payload_dict = {
-                    "cluster_id": str(cluster_data.id),
-                    "node": nodes,
-                    "template_vm_id": template_for_clone,
-                    "name_template": name_template,
-                    "ip_pool_names": ip_pool_assignments,
-                    "count": num_allocated,
-                    "ip_list": ip_list,
-                }
-                response = await clone_vm(clone_payload_dict)
-            
-
-                assigned_vms = response.get("vms", [])
-                pool.pool_vmids = [str(vm["vmid"]) for vm in assigned_vms]
-                db.commit()
-                db.refresh(pool)
-            if cluster_type in ("hyper-v", "hyperv"):
-
-                clone_payload_dict = {
-                    "cluster_id": str(cluster_data.id),
-                    # "node": nodes,
-                    "template_vm_id": template_for_clone,
-                    "name_template": name_template,
-                    "ip_pool_names": ip_pool_assignments,
-                    "count": num_allocated,
-                    "ip_list": ip_list,
-                }
-                response = await clone_hyper_vm(clone_payload_dict)
-            
-
-                assigned_vms = response.get("vms", [])
-                pool.pool_vmids = [str(vm["vmid"]) for vm in assigned_vms]
-                db.commit()
-                db.refresh(pool)
+            assigned_vms = response.get("vms", [])
+            pool.pool_vmids = [str(vm["vmid"]) for vm in assigned_vms]
+            db.commit()
+            db.refresh(pool)
  
             for vm in assigned_vms:
                 name = vm["name"]

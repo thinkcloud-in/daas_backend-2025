@@ -13,22 +13,133 @@ import dotenv
 import os
 dotenv.load_dotenv()
 
+# @activity.defn
+# async def clone_vm_activity(clone_payload: dict):
+#     db: Session = next(get_db())
+#     try:
+
+#         cluster_data = db.query(Cluster).filter(Cluster.id == clone_payload['cluster_id']).first()
+#         api_token = proxmoxService.get_api_token(db, cluster_data.name)
+#         headers = {"Authorization": f"PVEAPIToken={api_token}"}
+#         PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
+#         if not PROXMOX_HOST:
+#             raise RuntimeError("No reachable Proxmox host found for the cluster.")
+ 
+#         all_vms =proxmoxService.get_all_cluster_vms(db, cluster_data)
+#         existing_names = [
+#             vm["name"] for vm in all_vms if "name" in vm and vm["name"]
+#         ]
+#         db_names = [m.name for m in db.query(Machine).all()]
+#         all_existing_names = set(existing_names) | set(db_names)
+#         new_names = proxmoxService.generate_machine_name(
+#             clone_payload['name_template'],
+#             list(all_existing_names),
+#             clone_payload['count'],
+#         )
+#         existing_vmids = {
+#             int(vm["vmid"]) for vm in all_vms if "vmid" in vm and str(vm["vmid"]).isdigit()
+#         }
+#         template_node = None
+#         template_vm_id_str = str(clone_payload['template_vm_id'])
+#         for vm in all_vms:
+#             if str(vm.get("vmid")) == template_vm_id_str and vm.get("template") == 1:
+#                 template_node = vm.get("node")
+#                 break
+ 
+#         if not template_node:
+            
+#             return {
+#                 "error": f"Template VM {clone_payload['template_vm_id']} not found in cluster.",
+#                 "error_type": "template_missing"
+#             }
+ 
+ 
+#         def get_free_vmids(existing_vmids: set[int], needed: int, min_vmid: int = 100) -> list[int]:
+#             free_vmids = []
+#             vmid = min_vmid
+#             while len(free_vmids) < needed:
+#                 if vmid not in existing_vmids and vmid not in free_vmids:
+#                     free_vmids.append(vmid)
+#                 vmid += 1
+#             return free_vmids
+ 
+#         needed_count = len(new_names)
+#         free_vmids = get_free_vmids(existing_vmids, needed_count)
+ 
+#         assigned_nodes = []
+#         final_new_names = []
+#         final_vmids = []
+#         for i, new_name in enumerate(new_names):
+#             node = clone_payload['node'][i % len(clone_payload['node'])]
+#             db_machine = db.query(Machine).filter(Machine.name == new_name).first()
+#             if db_machine:
+#                 continue
+#             assigned_nodes.append(node)
+#             final_new_names.append(new_name)
+#             final_vmids.append(free_vmids[i])
+ 
+#         vms = []
+#         clone_workflow_id = clone_payload.get("workflowId")  
+   
+#         for new_name, new_vmid, node in zip(final_new_names, final_vmids, assigned_nodes):
+#             clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{clone_payload['template_vm_id']}/clone"
+#             payload_dict = {
+#                 "newid": new_vmid,
+#                 "name": new_name,
+#                 "target": node,
+#                 "storage":os.getenv("PROXMOX_STORAGE"),
+#                 "full": 1
+#             }
+#             try:
+#                 response = requests.post(clone_url, headers=headers, data=payload_dict, verify=False)
+#                 response.raise_for_status()
+#                 upid = response.json()['data']
+#                 vms.append((new_name, new_vmid, node, upid,clone_workflow_id))
+               
+#             except requests.exceptions.RequestException as e:
+#                 return {
+#                     "error": f"Error cloning VM {new_name} on node {node}: {e}",
+#                     "error_type": "clone_failed"
+#                 }
+
+#         return {
+#             "message": f"{len(final_new_names)} VMs cloned successfully across {len(clone_payload['node'])} nodes",
+#             "vms": vms
+#         }
+#     except Exception as e:
+#         return {"error": str(e), "error_type": "activity_exception"}
+ 
+#     finally:
+#         db.close()
+
+
+from typing import Dict
+import os
+import requests
+from sqlalchemy.orm import Session
+
+import os
+import requests
+from sqlalchemy.orm import Session
+
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
     db: Session = next(get_db())
     try:
-
         cluster_data = db.query(Cluster).filter(Cluster.id == clone_payload['cluster_id']).first()
         api_token = proxmoxService.get_api_token(db, cluster_data.name)
         headers = {"Authorization": f"PVEAPIToken={api_token}"}
         PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
         if not PROXMOX_HOST:
             raise RuntimeError("No reachable Proxmox host found for the cluster.")
- 
-        all_vms =proxmoxService.get_all_cluster_vms(db, cluster_data)
-        existing_names = [
-            vm["name"] for vm in all_vms if "name" in vm and vm["name"]
-        ]
+
+        # Validate provided storage environment variable
+        storage = os.getenv("PROXMOX_STORAGE")
+        if not storage:
+            return {"error": "PROXMOX_STORAGE environment variable not set", "error_type": "invalid_config"}
+
+        all_vms = proxmoxService.get_all_cluster_vms(db, cluster_data)
+        existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
         db_names = [m.name for m in db.query(Machine).all()]
         all_existing_names = set(existing_names) | set(db_names)
         new_names = proxmoxService.generate_machine_name(
@@ -36,24 +147,49 @@ async def clone_vm_activity(clone_payload: dict):
             list(all_existing_names),
             clone_payload['count'],
         )
+
         existing_vmids = {
             int(vm["vmid"]) for vm in all_vms if "vmid" in vm and str(vm["vmid"]).isdigit()
         }
+
+        # Normalize template_vm_id (accept int/string/dict/list)
+        raw_template = clone_payload.get('template_vm_id')
+        template_vm_id = None
+        if isinstance(raw_template, dict):
+            template_vm_id = raw_template.get('vmid') or raw_template.get('id')
+        elif isinstance(raw_template, list) and raw_template:
+            first = raw_template[0]
+            if isinstance(first, dict):
+                template_vm_id = first.get('vmid') or first.get('id')
+            else:
+                template_vm_id = first
+        else:
+            template_vm_id = raw_template
+
+        # Coerce and prepare string for URL comparison
+        try:
+            if template_vm_id is not None and template_vm_id != "":
+                template_vm_id_int = int(template_vm_id)
+                template_vm_id_str = str(template_vm_id_int)
+                template_vm_id = template_vm_id_int
+            else:
+                return {"error": "template_vm_id is empty", "error_type": "invalid_payload"}
+        except (ValueError, TypeError):
+            template_vm_id_str = str(template_vm_id)
+
+        # find template node
         template_node = None
-        template_vm_id_str = str(clone_payload['template_vm_id'])
         for vm in all_vms:
             if str(vm.get("vmid")) == template_vm_id_str and vm.get("template") == 1:
                 template_node = vm.get("node")
                 break
- 
+
         if not template_node:
-            
             return {
-                "error": f"Template VM {clone_payload['template_vm_id']} not found in cluster.",
+                "error": f"Template VM {clone_payload.get('template_vm_id')} not found in cluster.",
                 "error_type": "template_missing"
             }
- 
- 
+
         def get_free_vmids(existing_vmids: set[int], needed: int, min_vmid: int = 100) -> list[int]:
             free_vmids = []
             vmid = min_vmid
@@ -62,56 +198,72 @@ async def clone_vm_activity(clone_payload: dict):
                     free_vmids.append(vmid)
                 vmid += 1
             return free_vmids
- 
+
         needed_count = len(new_names)
         free_vmids = get_free_vmids(existing_vmids, needed_count)
- 
+
+        nodes_list = clone_payload.get('node') or []
+        if not nodes_list:
+            return {"error": "No target node(s) provided in clone payload.", "error_type": "invalid_payload"}
+
         assigned_nodes = []
         final_new_names = []
         final_vmids = []
         for i, new_name in enumerate(new_names):
-            node = clone_payload['node'][i % len(clone_payload['node'])]
+            node = nodes_list[i % len(nodes_list)]
             db_machine = db.query(Machine).filter(Machine.name == new_name).first()
             if db_machine:
                 continue
             assigned_nodes.append(node)
             final_new_names.append(new_name)
             final_vmids.append(free_vmids[i])
- 
+
+        ip_list = clone_payload.get("ip_list", [])
         vms = []
-        clone_workflow_id = clone_payload.get("workflowId")  
-   
-        for new_name, new_vmid, node in zip(final_new_names, final_vmids, assigned_nodes):
-            clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{clone_payload['template_vm_id']}/clone"
+        clone_workflow_id = clone_payload.get("workflowId")
+
+        # Return vms as tuples to preserve original behavior expected by workflow:
+        # (name, vmid, node, upid, clone_workflow_id)
+        for idx, (new_name, new_vmid, node) in enumerate(zip(final_new_names, final_vmids, assigned_nodes)):
+            clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template_vm_id_str}/clone"
             payload_dict = {
                 "newid": new_vmid,
                 "name": new_name,
                 "target": node,
-                "storage":os.getenv("PROXMOX_STORAGE"),
+                "storage": storage,
                 "full": 1
             }
             try:
                 response = requests.post(clone_url, headers=headers, data=payload_dict, verify=False)
-                response.raise_for_status()
-                upid = response.json()['data']
-                vms.append((new_name, new_vmid, node, upid,clone_workflow_id))
-               
+                # if non-200, include body to help debugging
+                if response.status_code >= 400:
+                    return {
+                        "error": f"Error cloning VM {new_name} on node {node}: {response.status_code} {response.text}",
+                        "error_type": "clone_failed"
+                    }
+                upid = response.json().get('data')
+                # keep the old tuple format exactly as workflow expects
+                vms.append((new_name, new_vmid, node, upid, clone_workflow_id))
             except requests.exceptions.RequestException as e:
+                resp_text = getattr(e, "response", None)
+                resp_body = resp_text.text if resp_text is not None else str(e)
                 return {
-                    "error": f"Error cloning VM {new_name} on node {node}: {e}",
+                    "error": f"Error cloning VM {new_name} on node {node}: {resp_body}",
                     "error_type": "clone_failed"
                 }
 
+        # return the ip_list as-is so external code can zip(vms, ip_list)
         return {
-            "message": f"{len(final_new_names)} VMs cloned successfully across {len(clone_payload['node'])} nodes",
-            "vms": vms
+            "message": f"{len(vms)} VMs cloned successfully across {len(nodes_list)} nodes",
+            "vms": vms,
+            "ip_list": ip_list
         }
+
     except Exception as e:
         return {"error": str(e), "error_type": "activity_exception"}
- 
+
     finally:
         db.close()
- 
 def netmask_to_cidr(netmask: str) -> int:
     return ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
 
