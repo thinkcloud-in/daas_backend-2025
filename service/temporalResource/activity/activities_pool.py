@@ -71,11 +71,15 @@ async def create_pool_activity(request: dict) -> dict:
                 "count": num_allocated,
                 "ip_list": ip_list,
             }
-            response = await clone_vm(clone_payload_dict)
-           
+            # Use correct clone function based on cluster type
+            cluster_type = (cluster_data.type or "").lower() if cluster_data else ""
+            if cluster_type in ("hyper-v", "hyperv"):
+                response = await clone_vm_for_single_node(clone_payload_dict, db)
+            else:
+                response = await clone_vm(clone_payload_dict)
 
             assigned_vms = response.get("vms", [])
-            pool.pool_vmids = [str(vm["vmid"]) for vm in assigned_vms]
+            pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
             db.commit()
             db.refresh(pool)
  
@@ -96,8 +100,7 @@ async def create_pool_activity(request: dict) -> dict:
                 except Exception as e:
                     db.rollback()
                     raise e
-                    
-                
+                           
                 try:
                       
                     workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
