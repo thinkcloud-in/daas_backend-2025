@@ -49,6 +49,8 @@ async def create_pool_activity(request: dict) -> dict:
         machines_json = []
         if pool.pool_type == "Automated":
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            print(f"Cluster Data: {cluster_data}")
+            print("Cluster Data:", cluster_data.__dict__)
             nodes = node if isinstance(node, list) else [node]
  
             
@@ -71,11 +73,27 @@ async def create_pool_activity(request: dict) -> dict:
                 "count": num_allocated,
                 "ip_list": ip_list,
             }
+            # clone_payload_HyperV = {
+            #     "cluster_id": str(cluster_data.id),
+            #     "node": nodes,
+            #     "template_vm_id": template_vm_id,
+            #     "name_template": name_template,
+            #     "ip_pool_names": ip_pool_assignments,
+            #     "count": num_allocated,
+            #     # "ip_list": ip_list,
+            # }
             # Use correct clone function based on cluster type
-            cluster_type = (cluster_data.type or "").lower() if cluster_data else ""
+            cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
+            print(f"Cluster type for clone decision: {cluster_type}")
             if cluster_type in ("hyper-v", "hyperv"):
+                print("Calling clone_vm_for_single_node for Hyper-V cluster")
+                print("Clone Payload Dict:", clone_payload_dict)
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
+            elif cluster_type == "proxmox":
+                print("Calling clone_vm for proxmox cluster")
+                response = await clone_vm(clone_payload_dict)
             else:
+                print(f"Unknown cluster type '{cluster_type}', defaulting to clone_vm")
                 response = await clone_vm(clone_payload_dict)
 
             assigned_vms = response.get("vms", [])

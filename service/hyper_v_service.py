@@ -118,7 +118,18 @@ async def get_vms():
 async def clone_vm_for_single_node(request, db):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
     number_of_vms = getattr(request, "count", 1)
-    base_vm_name = request.vm_name
+    print("request in clone_vm_for_single_node:", request)
+
+    template = request.get("template_vm_id", {})
+    print("template in clone_vm_for_single_node:", template)
+
+    vhdPath = template.get("vhdPath")
+    PvhdPath = template.get("PvhdPath")
+    generation = template.get("generation")
+    memory = template.get("memory")
+    switch = template.get("switch")
+    
+    base_vm_name = request.get("name_template", "cloned_vm")
 
     # Only fetch existing VM names from Hyper-V
     try:
@@ -134,6 +145,7 @@ async def clone_vm_for_single_node(request, db):
 
     # Generate unique VM names using only Hyper-V names
     new_names = generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+    print("Generated VM names:", new_names)
 
     if not new_names:
         return {"error": "No unique VM names available for cloning."}
@@ -142,12 +154,13 @@ async def clone_vm_for_single_node(request, db):
     for vm_name in new_names:
         payload = {
             "vm_name": vm_name,
-            "memory": request.memory,
-            "vhdPath": request.vhdPath,
-            "switch": request.switch,
-            "generation": request.generation,
-            "PvhdPath": request.PvhdPath,
+            "memory": memory,
+            "vhdPath": vhdPath,
+            "switch": switch,
+            "generation": generation,
+            "PvhdPath": PvhdPath,
         }
+        print("Payload for clone_vm_for_single_node:", payload)
         async with httpx.AsyncClient(timeout=120.0) as client:
             response = await client.post(url, json=payload)
         data = response.json()
