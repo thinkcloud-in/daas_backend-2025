@@ -2,7 +2,7 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_pool
-from fastapi import HTTPException
+# Workflows should not raise FastAPI HTTPException; re-raise original exceptions
 
 @workflow.defn(sandboxed=False)
 class PoolCreationWorkflow:
@@ -24,9 +24,9 @@ class PoolCreationWorkflow:
             )
             
             return result
-        except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+        except Exception:
+            # Re-raise the original exception so Temporal preserves the activity failure
+            raise
         
 
 @workflow.defn(sandboxed=False)
@@ -98,9 +98,8 @@ class RetrievePoolDataWorkflow:
             )
             
             return result
-        except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+        except Exception:
+             raise Exception(500, detail="Error in workflow")
         
     
 @workflow.defn(sandboxed=False)
@@ -122,9 +121,8 @@ class GetListofPoolNamesWorkflow:
             )
             
             return result
-        except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+        except Exception:
+             raise Exception(500, detail="Error in workflow")
         
 
 @workflow.defn(sandboxed=False)
@@ -146,9 +144,8 @@ class get_all_pools_workflow:
             )
             
             return result
-        except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+        except Exception:
+             raise Exception(500, detail="Error in workflow")
         
 
 @workflow.defn(sandboxed=False)
