@@ -160,7 +160,7 @@ class Pool(Base):
     
     pool_date_created = Column(DateTime, default=datetime.datetime.utcnow)
       #newly added fields by pushpa
-    pool_vmids = Column(ARRAY(Integer),nullable=True)  # List of VM IDs associated with the pool
+    pool_vmids = Column(ARRAY(String),nullable=True)  # List of VM IDs associated with the pool
     cluster_id = Column(String,  nullable=True)
     pool_ip_pool_names = Column(ARRAY(String), nullable=True)  # List of IP pools associated with the pool
     pool_number_of_vms = Column(Integer, nullable=True)  # Number of VMs in the pool
@@ -307,7 +307,7 @@ class CreatePoolBase(BaseModel):
     # -------------------------------------
     pool_date_created: Optional[str] = None
     #new added fields by pushpa
-    pool_vmids: Optional[List[int]] = None  # List of VM IDs associated with the pool
+    pool_vmids: Optional[List[str]] = None  # List of VM IDs associated with the pool
     cluster_id: Optional[str] = None  # Foreign key to Cluster model
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
     pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
@@ -458,7 +458,7 @@ class UpdatePoolBase(BaseModel):
 
 #declarative base model for machine
      #new added fields by pushpa
-    pool_vmids: Optional[List[int]] = None  # List of VM IDs associated with the pool
+    pool_vmids: Optional[List[str]] = None  # List of VM IDs associated with the pool
     cluster_id: Optional[str] = None  # Foreign key to Cluster model
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
     pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
@@ -468,9 +468,9 @@ class UpdatePoolBase(BaseModel):
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
 
 class Machine(Base):
-    __tablename__ = 'machines'
+    __tablename__ = 'machines_clone'
     id = Column(Integer, Sequence('machine_id_seq'), primary_key=True)
-    vm_id = Column(Integer, nullable=True)
+    vm_id = Column(String, nullable=True)
     # General fields
     # disable_audio = Column(Boolean, nullable=True)
     os_type = Column(String, nullable=True)
@@ -624,7 +624,7 @@ class Machine(Base):
 
 #pydantic model for creating machine
 class CreateMachineBase(BaseModel):
-    vm_id: Optional[int] = None
+    vm_id: Optional[str] = None
     os_type: Optional[str] = None
     email: Optional[str] = None
     disable_audio:Optional[bool] = None
@@ -765,7 +765,7 @@ class CreateMachineBase(BaseModel):
     workflow_status: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 #pydantic model to update machine
 class UpdateMachineBase(BaseModel):
-    vm_id: Optional[int] = None
+    vm_id: Optional[str] = None
     email: Optional[str] = None
     os_type: Optional[str] = None
     disable_audio:Optional[bool] = None

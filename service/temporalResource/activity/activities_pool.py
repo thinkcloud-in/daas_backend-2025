@@ -94,7 +94,7 @@ async def create_pool_activity(request: dict) -> dict:
                 response = await clone_vm(clone_payload_dict)
             else:
                 print(f"Unknown cluster type '{cluster_type}', defaulting to clone_vm")
-                response = await clone_vm(clone_payload_dict)
+                # response = await clone_vm(clone_payload_dict)
 
             assigned_vms = response.get("vms", [])
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
