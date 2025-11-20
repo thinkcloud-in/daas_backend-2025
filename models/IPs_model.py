@@ -33,11 +33,11 @@ class IPEntry(Base):
     pool_id = Column(Integer, ForeignKey("Ips_pools.id"), nullable=False)
     ip = Column(String, nullable=False)
     status = Column(String, nullable=False, default="unused")
-    vm_id = Column(Integer, nullable=True)  
+    vm_id = Column(String, nullable=True)  
 
 class IPEntryOut(BaseModel):
     id: int
     pool_id: int
     ip: str
     status: str
-    vm_id: int | None = None
+    vm_id: str | None = None

@@ -322,11 +322,38 @@ async def rebuild_vm_endpoint(
 
 def get_cluster_by_id(db: Session, vm_id: int) -> Cluster:
     try:
-        machine_data = db.query(Machine).filter(Machine.vm_id == vm_id).first()
-        pool_data = db.query(Pool).filter(Pool.id == machine_data.pool_id).first() if machine_data else None
-        cluster_id = pool_data.cluster_id.split('_')[1] 
-        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        vm_id_str = str(vm_id)
+        machine_data = db.query(Machine).filter(Machine.vm_id == vm_id_str).first()
+        if not machine_data:
+            raise HTTPException(status_code=404, detail=f"Machine with vm_id {vm_id} not found")
+
+        pool_id = machine_data.pool_id
+        if pool_id is None:
+            raise HTTPException(status_code=404, detail=f"Machine {vm_id} has no pool_id assigned")
+
+        pool_data = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool_data:
+            raise HTTPException(status_code=404, detail=f"Pool with id {pool_id} not found for machine {vm_id}")
+
+        # Expect cluster_id stored in pool as something like '<something>_<clusterId>'
+        if not pool_data.cluster_id or '_' not in str(pool_data.cluster_id):
+            raise HTTPException(status_code=500, detail=f"Invalid cluster_id on pool {pool_id}: {pool_data.cluster_id}")
+
+        cluster_id = pool_data.cluster_id.split('_')[1]
+        # convert cluster_id to int when querying Cluster.id
+        try:
+            cluster_id_int = int(cluster_id)
+        except Exception:
+            raise HTTPException(status_code=500, detail=f"Cluster id parsed from pool is not an integer: '{cluster_id}'")
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id_int).first()
+        if not cluster_data:
+            raise HTTPException(status_code=404, detail=f"Cluster with id {cluster_id_int} not found")
+
         return cluster_data
+    except HTTPException:
+        # re-raise HTTPExceptions so FastAPI handles them as intended
+        raise
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))
 

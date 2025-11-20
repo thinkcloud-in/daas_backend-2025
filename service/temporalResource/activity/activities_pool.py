@@ -84,49 +84,46 @@ async def create_pool_activity(request: dict) -> dict:
             # }
             # Use correct clone function based on cluster type
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
-            print(f"Cluster type for clone decision: {cluster_type}")
             if cluster_type in ("hyper-v", "hyperv"):
-                print("Calling clone_vm_for_single_node for Hyper-V cluster")
-                print("Clone Payload Dict:", clone_payload_dict)
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
             elif cluster_type == "proxmox":
                 print("Calling clone_vm for proxmox cluster")
                 response = await clone_vm(clone_payload_dict)
             else:
-                print(f"Unknown cluster type '{cluster_type}', defaulting to clone_vm")
                 response = await clone_vm(clone_payload_dict)
 
             assigned_vms = response.get("vms", [])
+
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
             db.commit()
             db.refresh(pool)
  
-            for vm in assigned_vms:
-                name = vm["name"]
-                vmid = vm["vmid"]
-                node = vm["node"]
-                upid = vm["upid"]
-                ip = vm["ip"]
+            for idx, vm in enumerate(assigned_vms):
+                name = vm.get("name") or f"vm-{vm.get('vmid','') }"
+                vmid = vm.get("vmid")
+                node = vm.get("node") or (nodes[0] if nodes else None)
+                upid = vm.get("upid")
+                ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
+
                 try:
-                    ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                    if ip_entry:
-                        ip_entry.status = "used"
-                        ip_entry.vm_id = int(vmid)
-                         
+                    ip_entry = None
+                    if ip:
+                        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+                        if ip_entry:
+                            ip_entry.status = "used"
+                            ip_entry.vm_id = str(vmid)
                     db.commit()
-                    
                 except Exception as e:
                     db.rollback()
                     raise e
-                           
+
                 try:
-                      
                     workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                    workflow_ids = [wid for wid in workflow_ids if wid]  
+                    workflow_ids = [wid for wid in workflow_ids if wid]
                     machine_data = {
-                        "vm_id": int(vmid),
+                        "vm_id": str(vmid) if vmid is not None else None,
                         "name": name,
-                        "hostname": ip,
+                        "hostname": ip or "",
                         "port": pool.pool_port,
                         "protocol": pool.pool_protocol,
                         "guacd_port": pool.pool_guacd_port,
@@ -221,10 +218,7 @@ async def create_pool_activity(request: dict) -> dict:
                     machine_data_obj = CreateMachineBase(**machine_data)
                     machine_result = await controllers.create_machine(machine_data_obj)
                     machines_json.append(jsonable_encoder(machine_result))
-                    
-                    
                 except Exception as e:
-                    
                     db.rollback()
        
             msg = f"pool, {num_allocated} VM(s) created successfully."
@@ -447,8 +441,12 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             }
 
             try:
-                response = await clone_vm(clone_payload_dict)
-                
+                # Use the appropriate clone function based on cluster type
+                if cluster_type in ("hyper-v", "hyperv"):
+                    response = await clone_vm_for_single_node(clone_payload_dict, db)
+                else:
+                    response = await clone_vm(clone_payload_dict)
+
                 if isinstance(response, dict) and "error" in response:
                     err_msg = response["error"]
                     if "Template VM" in err_msg and "not found in cluster" in err_msg:
@@ -496,7 +494,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
                     if ip_entry:
                         ip_entry.status = "used"
-                        ip_entry.vm_id = int(vmid)
+                        ip_entry.vm_id = str(vmid)
                         db.commit()
                 except Exception as e:
                     db.rollback()
@@ -507,7 +505,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     workflow_ids = [wid for wid in workflow_ids if wid]  
                     
                     machine_data = {
-                        "vm_id": int(vmid),
+                        "vm_id": str(vmid),
                         "name": name,
                         "hostname": ip,
                         "port": db_pool.pool_port,
@@ -664,24 +662,22 @@ async def delete_pool_activity(pool_id: int) -> dict:
                 raise RuntimeError(str(e))
             cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
 
-            
             for vmid in pool_vmids:
                 if vmid:
                     try:
                         await delete_proxmox_vm(vmid, cluster_data)
-                        vmid_int = int(vmid)
-                        ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_int, IPEntry.status == "used").all()
-                        
+                        vmid_str = str(vmid)
+                        ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
+
                         for ip_entry in ip_entries:
                             ip_entry.status = "unused"
                             ip_entry.vm_id = None
-                        
+
                         db.commit()
-                        
-                        
+
                         for ip_entry in ip_entries:
                             db.refresh(ip_entry)
-                            
+
                     except Exception as e:
                         db.rollback()
                         
