@@ -117,7 +117,7 @@ async def get_vms():
  
 async def clone_vm_for_single_node(request, db):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
-
+    print("Clone VM Request:", request)
     template = request.get("template_vm_id", {})
 
     vhdPath = template.get("vhdPath")
@@ -197,7 +197,7 @@ async def get_switches():
         data = response.json()
         return data['data']
     
-async def delete_vm(vm_id):
+async def delete_hyperv_vm(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.delete(url)
@@ -221,8 +221,8 @@ async def handle_action(request, db):
         else:
             return data.get('msg', 'Unknown error occurred')
         
-async def delete_disk(request, db):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={request.disk_path}"
+async def delete_hyperv_disk(disk_path):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={disk_path}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.delete(url)
         data = response.json()

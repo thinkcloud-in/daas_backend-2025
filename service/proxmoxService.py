@@ -197,11 +197,11 @@ async def clone_vm(clone_payload: dict):
         return {"error": str(e)}
     
 
-async def delete_proxmox_vm(vmid: int, cluster_data):
+async def delete_proxmox_vm(vmid, cluster_data):
     db: Session = next(get_db())
     if not Cluster:
         raise HTTPException(status_code=404, detail="No Proxmox cluster found in the database.")
-
+    vmid=int(vmid)
     api_token = get_api_token(db, cluster_data.name)
     headers = {"Authorization": f"PVEAPIToken={api_token}"}
     nodes = get_all_nodes(cluster_data)
