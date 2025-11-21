@@ -17,6 +17,7 @@ from service.gucamoleService import startup_event_client
 from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
+from service.temporalResource.workers import worker_hyper_v
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
@@ -64,11 +65,13 @@ def start_async_worker(target):
         finally:
             loop.close()
     threading.Thread(target=run, daemon=True).start()
+
 @app.on_event("startup")
 def start_workers():
     start_async_worker(workers_cluster.combined_worker)
     start_async_worker(worker_pollingStatus.status_poller_worker)
     start_async_worker(worker_proxmox.vm_power_worker)
     start_async_worker(worker_proxmox.vm_rebuild_worker)
+    start_async_worker(worker_hyper_v.cloneVm_SingleNode_HyperV_worker)
     start_async_worker(listen_for_machine_changes)
 

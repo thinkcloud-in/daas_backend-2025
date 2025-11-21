@@ -86,6 +86,8 @@ async def create_pool_activity(request: dict) -> dict:
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
+                print("Response from Hyper-V clone_vm_for_single_node:", response)
+                
             elif cluster_type == "proxmox":
                 print("Calling clone_vm for proxmox cluster")
                 response = await clone_vm(clone_payload_dict)
@@ -93,7 +95,8 @@ async def create_pool_activity(request: dict) -> dict:
                 response = await clone_vm(clone_payload_dict)
 
             assigned_vms = response.get("vms", [])
-
+            print("Assigned VMs:", assigned_vms)
+    
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
             db.commit()
             db.refresh(pool)

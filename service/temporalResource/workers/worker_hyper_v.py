@@ -11,20 +11,15 @@ from service.temporalResource.activity import activities_proxmox
 async def cloneVm_SingleNode_HyperV_worker():
     client = await connectionWithClient()
     if client is None:
-        
-        return 
+        return
+    
     print("Clone VM Single Node HyperV Worker started...")
     worker = Worker(
         client,
-        task_queue="clone_vm_for_single_node-task-queue",
-        workflows=[workflows_hyper_v.CloneVMSingleNodeHyperVWorkflow,
-
-         ], 
-        activities=[
-            activities_hyper_v.clone_vm_singleNode_hyper_v_activity,
-        ],
-    )
-    
+        task_queue="clonevmhyperv-task-queue",
+        workflows=[workflows_hyper_v.CloneVMHyperVWorkflow], 
+        activities=[activities_hyper_v.clone_vm_single_node_activity],
+    )   
     try:
         await worker.run()
         print("Clone VM Single Node HyperV Worker stopped.")

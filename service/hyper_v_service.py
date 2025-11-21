@@ -1,4 +1,7 @@
 
+import uuid
+from fastapi import HTTPException
+from fastapi.encoders import jsonable_encoder
 import httpx
 import os
 from datetime import datetime
@@ -29,168 +32,120 @@ async def get_vms():
         data = response.json()
         return data['data']
 
+ 
+from service.temporalResource.workers import worker_hyper_v
+from service.temporalResource.workflows import workflows_hyper_v
+
+async def clone_vm_for_single_node(request, db=None) -> dict:
+    req_dict = jsonable_encoder(request)
+    workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
+
+    client = await connectionWithClient()
+    if client is None:
+        logger.error("Temporal client connection failed")
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    try:
+        logger.info("Starting workflow %s with payload keys: %s", workflow_id, list(req_dict.keys()))
+        handle = await client.start_workflow(
+            workflows_hyper_v.CloneVMHyperVWorkflow.run,
+            args=[req_dict],
+            id=workflow_id,
+            task_queue="clonevmhyperv-task-queue",
+        )
+    except Exception as e:
+        logger.exception("Failed to start workflow %s: %s", workflow_id, e)
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+
+    result =  await handle.result()
+    print("Workflow result:", result)
+    return result 
+
+    
+# async def clone_vm_for_single_node(request,db) -> dict:
+#     req_dict = jsonable_encoder(request)
+#     uniqueId = unique_id()
+#     client = await connectionWithClient()
+#     # pool_name = pool_data.get("pool_name", "UnknownPool")
+#     # userName = pool_data.get('email', "UnknownUser")
+#     workflow_id = f"clone_vm_hyperv-{uniqueId}"
+#     handle = await client.start_workflow(
+#         workflows_hyper_v.CloneVMHyperVWorkflow.run,
+#         args=[req_dict],
+#         id=workflow_id,
+#         task_queue= "clonevmhyperv-task-queue",
+#     )
+#     result =  await handle.result()
+#     return result 
 
 # async def clone_vm_for_single_node(request, db):
 #     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
-#     async with httpx.AsyncClient(timeout=20.0) as client:
-#         response = await client.post(url, json=request.dict())
-#         data = response.json()
-
-#         if data.get('code') == 200:
-#             return data['data']
-#         else:
-#             return data.get('msg', 'Unknown error occurred')
-
-# async def clone_vm_for_single_node(request, db:AsyncSession):
-#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
-#     number_of_vms = getattr(request, "number_of_vms", 1)
-#     base_vm_name = request.vm_name
  
-#     vm_clone_list = []
-#     for i in range(1, number_of_vms + 1):
-#         suffix = f"_{i:03d}"
-#         vm_name = f"{base_vm_name}{suffix}" if number_of_vms > 1 else base_vm_name
+#     template = request.get("template_vm_id", {})
  
-#         vm_clone_list.append({
+#     vhdPath = template.get("vhdPath")
+#     PvhdPath = template.get("PvhdPath")
+#     generation = template.get("generation")
+#     memory = template.get("memory")
+#     switch = template.get("switch")
+#     number_of_vms = request.get("count")
+   
+#     base_vm_name = request.get("name_template", "cloned_vm")
+#     # Only fetch existing VM names from Hyper-V
+#     try:
+#         hyperv_vms = await get_vms()
+#         hyperv_names = []
+#         for vm in hyperv_vms:
+#             name = vm.get("VMName") or vm.get("Name")
+#             if name:
+#                 hyperv_names.append(name)
+#     except Exception:
+#         hyperv_names = []
+#     new_names = generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+#     if not new_names:
+#         return {"error": "No unique VM names available for cloning."}
+ 
+#     result_vms = []
+#     for vm_name in new_names:
+#         payload = {
 #             "vm_name": vm_name,
-#             "memory": request.memory,
-#             "vhdPath": request.vhdPath,
-#             "switch": request.switch,
-#             "generation": request.generation,
-#             "PvhdPath": request.PvhdPath,
-#         })
- 
-#     async with httpx.AsyncClient(timeout=120.0) as client:
-#         response = await client.post(url, json=vm_clone_list)
- 
-#     data = response.json()
- 
-#     if data.get('code') != 200:
-#         raise RuntimeError(data.get('msg', 'Unknown error occurred'))
- 
-#     vm_array = data.get('data', [])
-#     if not vm_array:
-#         raise RuntimeError("No VM data returned from Hyper-V")
- 
-#     pool_template_vm_json = []
- 
-#     new_pool = Pool(
-#         pool_failover_only=request.failover_only,
-#         pool_guacd_hostname=request.guacd_hostname,
-#         pool_guacd_encryption=request.guacd_encryption,
-#         pool_template_vm_id=[]
-#     )
-#     db.add(new_pool)
-#     await db.commit()
-#     await db.refresh(new_pool)
- 
-#     for vm_item in vm_array:
-#         vm_data = vm_item.get('VM', {})
-#         vhd_data = vm_item.get('VHD', {})
- 
-#         pool_template_vm_json.append({
-#             "vm": {
-#                 "id": vm_data.get("VMId"),
-#                 "name": vm_data.get("VMName"),
-#                 "file_location": vm_data.get("CheckpointFileLocation"),
-#             },
-#             "vhd": {
-#                 "path": vhd_data.get("Path"),
-#                 "format": vhd_data.get("VhdFormat"),
-#                 "type": vhd_data.get("VhdType"),
-#                 "parent_path": vhd_data.get("ParentPath"),
-#                 "disk_identifier": vhd_data.get("DiskIdentifier"),
-#             },
-#         })
- 
-#         new_machine = Machine(
-#             vm_id=str(vm_data.get("VMId")),
-#             name=str(vm_data.get("VMName")),
-#             failover_only=request.failover_only,
-#             guacd_hostname=request.guacd_hostname,
-#             guacd_encryption=request.guacd_encryption,
-#             pool_id=new_pool.id
-#         )
-#         db.add(new_machine)
- 
-#     new_pool.pool_template_vm_id = pool_template_vm_json
- 
-#     db.add(new_pool)
-#     await db.commit()
-#     await db.refresh(new_pool)
- 
+#             "memory": memory,
+#             "vhdPath": vhdPath,
+#             "switch": switch,
+#             "generation": generation,
+#             "PvhdPath": PvhdPath,
+#         }
+#         print("Payload for clone_vm_for_single_node:", payload)
+#         async with httpx.AsyncClient(timeout=120.0) as client:
+#             response = await client.post(url, json=payload)
+#         data = response.json()
+#         # print("Agent Response:", data)
+#         if data.get('code') != 200:
+#             continue
+#         # The agent response may have 'data' as a dict with 'VM' key, or as a list of dicts
+#         if isinstance(data.get('data'), dict) and "VM" in data.get('data'):
+#             vm_info = data['data']['VM']
+#             result_vms.append({
+#                 "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+#                 "vmid": vm_info.get("Id") or vm_info.get("VMId")
+#             })
+#         elif isinstance(data.get('data'), list):
+#             for vm_item in data.get('data'):
+#                 if isinstance(vm_item, dict) and "VM" in vm_item:
+#                     vm_info = vm_item['VM']
+#                     result_vms.append({
+#                         "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+#                         "vmid": vm_info.get("Id") or vm_info.get("VMId")
+#                     })
+#         else:
+#             # Fallback: just append the name
+#             result_vms.append({"name": vm_name})
 #     return {
-#         "pool_id": new_pool.id,
-#         "machines_created": len(new_pool.pool_template_vm_id),
+#         "machines_created": len(result_vms),
+#         "created_names": new_names,
+#         "vms": result_vms,
 #     }
  
-async def clone_vm_for_single_node(request, db):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
-
-    template = request.get("template_vm_id", {})
-
-    vhdPath = template.get("vhdPath")
-    PvhdPath = template.get("PvhdPath")
-    generation = template.get("generation")
-    memory = template.get("memory")
-    switch = template.get("switch")
-    number_of_vms = request.get("count")
-    
-    base_vm_name = request.get("name_template", "cloned_vm")
-    # Only fetch existing VM names from Hyper-V
-    try:
-        hyperv_vms = await get_vms()
-        hyperv_names = []
-        for vm in hyperv_vms:
-            name = vm.get("VMName") or vm.get("Name")
-            if name:
-                hyperv_names.append(name)
-    except Exception:
-        hyperv_names = []
-    new_names = generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
-    if not new_names:
-        return {"error": "No unique VM names available for cloning."}
-
-    result_vms = []
-    for vm_name in new_names:
-        payload = {
-            "vm_name": vm_name,
-            "memory": memory,
-            "vhdPath": vhdPath,
-            "switch": switch,
-            "generation": generation,
-            "PvhdPath": PvhdPath,
-        }
-        print("Payload for clone_vm_for_single_node:", payload)
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(url, json=payload)
-        data = response.json()
-        # print("Agent Response:", data)
-        if data.get('code') != 200:
-            continue
-        # The agent response may have 'data' as a dict with 'VM' key, or as a list of dicts
-        if isinstance(data.get('data'), dict) and "VM" in data.get('data'):
-            vm_info = data['data']['VM']
-            result_vms.append({
-                "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                "vmid": vm_info.get("Id") or vm_info.get("VMId")
-            })
-        elif isinstance(data.get('data'), list):
-            for vm_item in data.get('data'):
-                if isinstance(vm_item, dict) and "VM" in vm_item:
-                    vm_info = vm_item['VM']
-                    result_vms.append({
-                        "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                        "vmid": vm_info.get("Id") or vm_info.get("VMId")
-                    })
-        else:
-            # Fallback: just append the name
-            result_vms.append({"name": vm_name})
-    return {
-        "machines_created": len(result_vms),
-        "created_names": new_names,
-        "vms": result_vms,
-    }
         
 async def get_vm_info(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_id}"
