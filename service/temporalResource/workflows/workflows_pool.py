@@ -1,4 +1,5 @@
 from datetime import timedelta
+from http.client import HTTPException
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_pool

@@ -167,6 +167,7 @@ async def get_proxmox_vm_status_activity():
         }
         for node in Nodes:
             for vmid in vm_ids:
+                vmid = int(vmid)
                 url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
                 try:
                     response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)

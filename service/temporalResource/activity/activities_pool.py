@@ -11,7 +11,7 @@ from models.IPs_model import IPEntry
 from service.proxmoxService import clone_vm
 from service.hyper_v_service import clone_vm_for_single_node
 import json
-
+from service.hyper_v_service import delete_hyperv_vm,delete_hyperv_disk
 
 
 @activity.defn()
@@ -52,18 +52,20 @@ async def create_pool_activity(request: dict) -> dict:
             print(f"Cluster Data: {cluster_data}")
             print("Cluster Data:", cluster_data.__dict__)
             nodes = node if isinstance(node, list) else [node]
- 
-            
+            print("Nodes:", nodes)
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
+            print("Allocated IPs:", allocated_ips)
             num_allocated = len(allocated_ips)
             num_requested = vm_count
             num_missing = num_requested - num_allocated
- 
+            print("Number of missing IPs:", num_missing)
             if num_allocated == 0:
                 raise Exception("No available IPs in the selected IP pools to create any VMs.")
 
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
+            print("Allocated IPs:", ip_list)
+            print("IP Pool Assignments:", ip_pool_assignments)
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),
                 "node": nodes,
@@ -91,9 +93,6 @@ async def create_pool_activity(request: dict) -> dict:
             elif cluster_type == "proxmox":
                 print("Calling clone_vm for proxmox cluster")
                 response = await clone_vm(clone_payload_dict)
-            else:
-                response = await clone_vm(clone_payload_dict)
-
             assigned_vms = response.get("vms", [])
             print("Assigned VMs:", assigned_vms)
     
@@ -487,23 +486,23 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
         
         if is_automated and added_count > 0 and vms:
             
-            for vm in vms:
-                
-                name = vm["name"]
-                vmid = vm["vmid"]
-                ip = vm["ip"]
+            for idx, vm in enumerate(vms):
+                # align with create flow: use safe getters and fall back to allocated IPs
+                name = vm.get("name") or f"vm-{vm.get('vmid','') }"
+                vmid = vm.get("vmid")
+                ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
 
                 try:
-                    ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                    if ip_entry:
-                        ip_entry.status = "used"
-                        ip_entry.vm_id = str(vmid)
-                        db.commit()
+                    if ip:
+                        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+                        if ip_entry:
+                            ip_entry.status = "used"
+                            ip_entry.vm_id = str(vmid)
+                            db.commit()
                 except Exception as e:
                     db.rollback()
 
                 try:
-                    
                     workflow_ids = [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
                     workflow_ids = [wid for wid in workflow_ids if wid]  
                     
@@ -666,12 +665,19 @@ async def delete_pool_activity(pool_id: int) -> dict:
             cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
 
             for vmid in pool_vmids:
+                machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
                 if vmid:
                     try:
-                        await delete_proxmox_vm(vmid, cluster_data)
+                        if cluster_data.type.lower()=="proxmox":
+                            await delete_proxmox_vm(vmid, cluster_data)
+                        elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
+                            vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
+                            vhdpath += machine.name
+                            response = await delete_hyperv_vm(vmid)
+                            if response:
+                                await delete_hyperv_disk(vhdpath)
                         vmid_str = str(vmid)
                         ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
-
                         for ip_entry in ip_entries:
                             ip_entry.status = "unused"
                             ip_entry.vm_id = None

@@ -334,13 +334,10 @@ def get_cluster_by_id(db: Session, vm_id: int) -> Cluster:
         pool_data = db.query(Pool).filter(Pool.id == pool_id).first()
         if not pool_data:
             raise HTTPException(status_code=404, detail=f"Pool with id {pool_id} not found for machine {vm_id}")
-
-        # Expect cluster_id stored in pool as something like '<something>_<clusterId>'
         if not pool_data.cluster_id or '_' not in str(pool_data.cluster_id):
             raise HTTPException(status_code=500, detail=f"Invalid cluster_id on pool {pool_id}: {pool_data.cluster_id}")
 
         cluster_id = pool_data.cluster_id.split('_')[1]
-        # convert cluster_id to int when querying Cluster.id
         try:
             cluster_id_int = int(cluster_id)
         except Exception:
@@ -352,7 +349,6 @@ def get_cluster_by_id(db: Session, vm_id: int) -> Cluster:
 
         return cluster_data
     except HTTPException:
-        # re-raise HTTPExceptions so FastAPI handles them as intended
         raise
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))

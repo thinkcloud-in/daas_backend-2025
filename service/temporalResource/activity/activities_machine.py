@@ -11,6 +11,7 @@ from service import proxmoxService
 from models.IPs_model import IPEntry
 from service.pollingStatus import update_workflow_status, ensure_status_poller_running
 from db_configuration.config import get_db
+from service import hyper_v_service
 
 logger = logging.getLogger("create_machine_activity")
 load_dotenv()
@@ -161,7 +162,14 @@ async def delete_machine_activity(machine_identifier: str):
             id_cluster = cluster_pool_id.split("_")[1]
             cluster_data = db.query(model.Cluster).filter(model.Cluster.id == id_cluster).first()
             try:
-                await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
+                if cluster_data.type.lower() == "proxmox":
+                    await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
+                elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
+                    response = await hyper_v_service.delete_hyperv_vm(vmid)
+                    if response:
+                        vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
+                        vhdpath += machine.name
+                        await hyper_v_service.delete_hyperv_disk(vhdpath)
                 logger.info(f"VM with VMID {vmid} deleted from Proxmox.")
             except Exception as e:
                 logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")
