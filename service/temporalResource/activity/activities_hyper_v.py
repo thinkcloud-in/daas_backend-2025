@@ -1,7 +1,7 @@
 from temporalio import activity
 import httpx
 import os
-from service.proxmoxService import generate_machine_name
+from service import proxmoxService
 from service import hyper_v_service
 import logging
 
@@ -40,7 +40,7 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
     except Exception:
         hyperv_names = []
 
-    new_names = generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+    new_names =proxmoxService.generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
     if not new_names:
         return {"error": "No unique VM names available for cloning."}
 

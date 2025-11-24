@@ -669,10 +669,11 @@ async def delete_pool_activity(pool_id: int) -> dict:
                 if vmid:
                     try:
                         if cluster_data.type.lower()=="proxmox":
+                            
                             await delete_proxmox_vm(vmid, cluster_data)
                             vmid_str = str(vmid)
                         elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
-                            vmid_str = vmid
+                            vmid_str =vmid
                             vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
                             vhdpath += machine.name
                             response = await delete_hyperv_vm(vmid)

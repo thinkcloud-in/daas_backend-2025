@@ -9,7 +9,6 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models.models import Machine, Pool
-from service.proxmoxService import generate_machine_name
 import asyncio
 from service.gucamoleService import connectionWithClient
 from service.temporalResource.workflows import workflows_hyper_v
@@ -81,12 +80,20 @@ async def delete_hyperv_vm(vm_id):
         data = response.json()
         return data['data']
     
-async def get_status(vm_id):
+# async def get_status(vm_id):
+#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
+#     async with httpx.AsyncClient(timeout=20.0) as client:
+#         response = await client.get(url)
+#         data = response.json()
+#         return data['data']
+
+async def get_status(vm_id: str) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url)
+        response.raise_for_status()
         data = response.json()
-        return data['data']
+        return data.get("data", {})
     
 async def handle_action(request, db):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
