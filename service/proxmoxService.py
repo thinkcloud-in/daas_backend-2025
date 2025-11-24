@@ -357,6 +357,7 @@ def vm_start(PROXMOX_HOST, node, vmid, headers):
         return False
     return True
 def vm_stop(PROXMOX_HOST, node, vmid, headers):
+    
     stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop"
     resp = requests.post(stop_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):

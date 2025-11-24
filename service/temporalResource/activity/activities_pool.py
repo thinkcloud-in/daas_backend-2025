@@ -670,13 +670,15 @@ async def delete_pool_activity(pool_id: int) -> dict:
                     try:
                         if cluster_data.type.lower()=="proxmox":
                             await delete_proxmox_vm(vmid, cluster_data)
+                            vmid_str = str(vmid)
                         elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
+                            vmid_str = vmid
                             vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
                             vhdpath += machine.name
                             response = await delete_hyperv_vm(vmid)
                             if response:
                                 await delete_hyperv_disk(vhdpath)
-                        vmid_str = str(vmid)
+                        
                         ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
                         for ip_entry in ip_entries:
                             ip_entry.status = "unused"
