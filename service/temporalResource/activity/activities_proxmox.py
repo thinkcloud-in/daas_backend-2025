@@ -626,44 +626,8 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
             resp = requests.post(clone_url, headers=headers, data=payload, verify=False)
             resp.raise_for_status()
             upid = resp.json()["data"]
-            
-
-            
-            
-     
             return {"status": "success", "upid": upid, "node": node, "cluster_id": cluster_id,"machine_name": machine.name,"ip_address": machine.hostname}
         except Exception as e:
             return {"status": "error", "error": "Cloning failed" }
     finally:
         db.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 
- 

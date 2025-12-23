@@ -35,10 +35,10 @@ async def create_pool_activity(request: dict) -> dict:
             pool = Pool(**pool_data)
             db.add(pool)
             db.commit()
-            db.refresh(pool)
+            db.refresh(pool)    
             id_pool = pool.id
             if pool_data.get("cluster_id"):
-                pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
+                pool["cluster_id"] = f"{id_pool}_{pool_data.get('cluster_id')}"
                 db.commit()
                 db.refresh(pool)
         else:
@@ -49,23 +49,18 @@ async def create_pool_activity(request: dict) -> dict:
         machines_json = []
         if pool.pool_type == "Automated":
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-            print(f"Cluster Data: {cluster_data}")
-            print("Cluster Data:", cluster_data.__dict__)
+            if not cluster_data:
+                raise HTTPException(status_code=404, detail="Cluster not found")
             nodes = node if isinstance(node, list) else [node]
-            print("Nodes:", nodes)
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
-            print("Allocated IPs:", allocated_ips)
             num_allocated = len(allocated_ips)
             num_requested = vm_count
             num_missing = num_requested - num_allocated
-            print("Number of missing IPs:", num_missing)
             if num_allocated == 0:
                 raise Exception("No available IPs in the selected IP pools to create any VMs.")
 
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
-            print("Allocated IPs:", ip_list)
-            print("IP Pool Assignments:", ip_pool_assignments)
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),
                 "node": nodes,
@@ -88,13 +83,10 @@ async def create_pool_activity(request: dict) -> dict:
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
-                print("Response from Hyper-V clone_vm_for_single_node:", response)
                 
             elif cluster_type == "proxmox":
-                print("Calling clone_vm for proxmox cluster")
                 response = await clone_vm(clone_payload_dict)
             assigned_vms = response.get("vms", [])
-            print("Assigned VMs:", assigned_vms)
     
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
             db.commit()

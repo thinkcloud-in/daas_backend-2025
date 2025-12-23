@@ -8,7 +8,9 @@ from models.proxmox_model import MetricServer
 from sqlalchemy.orm import Session
 from fastapi.encoders import jsonable_encoder
 import requests
-import os 
+import os
+
+from utils.exception_handler import ClusterAlreadyExistsException 
 
 NEW_USER_ID = os.getenv("PROXMOX_NEW_USER_ID")
 NEW_TOKEN_ID = os.getenv("PROXMOX_NEW_TOKEN_ID")
@@ -62,7 +64,6 @@ async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str,
     }
     response = requests.put(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     response.raise_for_status()
-    
 
 @activity.defn
 async def create_cluster_activity(cluster_data: dict):
@@ -80,12 +81,13 @@ async def create_cluster_activity(cluster_data: dict):
         existing_cluster = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
 
         if existing_cluster:
-            raise Exception("Cluster already exists")
+            raise ClusterAlreadyExistsException("Cluster already exists.")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
-        db.commit()
-        db.refresh(cluster)
+        db.flush()
+        # db.commit()
+        # db.refresh(cluster)
 
         if cluster_data_obj.type.lower() == "vmware":
             create_telegraf_vsphere_input_plugin(
@@ -101,20 +103,21 @@ async def create_cluster_activity(cluster_data: dict):
             proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
             node_ips = [node["ip"] for node in proxmox_nodes]
             cluster.ip = ",".join(node_ips)
-            db.commit()
-            db.refresh(cluster)
             
         elif cluster_data_obj.type.lower() == "hyper-v":
             pass
         
+        db.commit()
+        db.refresh(cluster)
         return {
             "cluster": {
                 **model_to_dict(cluster),
                 "ip": cluster.ip.split(",") if cluster.ip else []
             }
         }
-        
-            
+    except ClusterAlreadyExistsException as e:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
         raise Exception("Error occurred while creating cluster: " + str(e))
@@ -133,7 +136,6 @@ async def delete_cluster_activity(cluster_id: str):
 
         if cluster.type.lower() == "vmware":
             db.delete(cluster)
-            db.commit()
             delete_telegraf_vsphere_input_plugin(cluster_id)
             msg_parts.append("Cluster and any metric server integration deleted from DB.")
         elif cluster.type.lower() == "proxmox":
@@ -145,19 +147,17 @@ async def delete_cluster_activity(cluster_id: str):
                     else:
                         msg_parts.append("Custom InfluxDB integration deleted from Proxmox.")
                 db.delete(ms)
-                db.commit()
                 msg_parts.append("Metric server integration deleted from DB.")
-            clusterService.delete_cluster_proxmox(cluster,db) #proxmox deletion
-            
+            clusterService.delete_cluster_proxmox(cluster,db)
             db.delete(cluster) # db deletion
-            db.commit()
             
             msg_parts.append("Cluster deleted successfully.")
         elif cluster.type.lower() == "hyper-v":
+            if ms:
+                db.delete(ms)
             db.delete(cluster)
-            db.commit()
             msg_parts.append("Hyper-V Cluster deleted successfully from DB.")
-
+        db.commit()
         clusters = db.query(Cluster).all()
         return jsonable_encoder({
             "msg": " ".join(msg_parts),
@@ -165,7 +165,7 @@ async def delete_cluster_activity(cluster_id: str):
         })
     except Exception as e:
         db.rollback()
-        raise Exception("Error occurred while deleting cluster")
+        raise Exception("Error occurred while deleting cluster: " + str(e))
 
 @activity.defn
 async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: str):

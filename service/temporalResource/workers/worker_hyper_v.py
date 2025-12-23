@@ -12,8 +12,8 @@ async def cloneVm_SingleNode_HyperV_worker():
     client = await connectionWithClient()
     if client is None:
         return
-    
-    print("Clone VM Single Node HyperV Worker started...")
+
+    logging.info("Clone VM Single Node HyperV Worker started...")
     worker = Worker(
         client,
         task_queue="clonevmhyperv-task-queue",
@@ -22,7 +22,7 @@ async def cloneVm_SingleNode_HyperV_worker():
     )   
     try:
         await worker.run()
-        print("Clone VM Single Node HyperV Worker stopped.")
-        
+        logging.info("Clone VM Single Node HyperV Worker stopped.")
+
     except Exception as e:
         raise Exception(f"Error in clone VM worker: {e}")

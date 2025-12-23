@@ -166,7 +166,11 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
         return proxmox_user
 async def create_cluster_proxmox(cluster_data):
     db = next(get_db())
-    PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"  # Use the first IP
+    try:
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
+    except Exception as e:
+        raise Exception(str(e))
+    # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
     ROOT_USERNAME = cluster_data.username
     ROOT_PASSWORD = cluster_data.password
     cluster_data_dict = cluster_data.dict()

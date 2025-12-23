@@ -1,13 +1,44 @@
+# fastapi==0.115.2
+# pandas==2.1.4
+# SQLAlchemy==2.0.36
+# uvicorn==0.32.0
+# temporalio==1.8.0
+# asyncpg==0.30.0
+# requests==2.32.3
+# psycopg2==2.9.9
+# psycopg2-binary==2.9.10
+
+
+# Core FastAPI dependencies
 fastapi==0.115.2
-pandas==2.1.4
-SQLAlchemy==2.0.36
 uvicorn==0.32.0
-temporalio==1.8.0
+pydantic==2.9.2
+starlette==0.40.0
+aiohttp-retry==2.9.1
+reportlab==4.2.5
+httpx==0.26.0
+influxdb-client==1.41.0
+
+# Database dependencies
+SQLAlchemy==2.0.36
 asyncpg==0.30.0
+psycopg2-binary==2.9.10
+
+# Data processing
+pandas==2.1.4
+
+# HTTP client
 requests==2.32.3
 
-# reportlab==4.2.5
-# SQLAlchemy-Utils==0.41.1
-# psycopg2-binary==2.9.7
-# python-multipart==0.0.6
+# Authentication & Security
+PyJWT==2.9.0
+python-keycloak==3.9.0
+
+# Temporal workflow
+temporalio==1.8.0
+
+# Utilities
+python-dotenv==1.0.1
+python-multipart==0.0.9
+typing_extensions==4.12.2
 
