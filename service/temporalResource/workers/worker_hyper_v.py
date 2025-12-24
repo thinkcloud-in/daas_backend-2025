@@ -1,28 +1,37 @@
 from service.gucamoleService import connectionWithClient
-from temporalio.client import Client
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_hyper_v
 from service.temporalResource.activity import activities_hyper_v
-from service.temporalResource.workflows import workflows_proxmox
 
 import logging
-from service.temporalResource.activity import activities_proxmox
 
-async def cloneVm_SingleNode_HyperV_worker():
+async def hyperv_worker():
     client = await connectionWithClient()
     if client is None:
         return
 
-    logging.info("Clone VM Single Node HyperV Worker started...")
+    logging.info("Hyper-V Worker started...")
+
     worker = Worker(
         client,
-        task_queue="clonevmhyperv-task-queue",
-        workflows=[workflows_hyper_v.CloneVMHyperVWorkflow], 
-        activities=[activities_hyper_v.clone_vm_single_node_activity],
-    )   
+        task_queue="hyperv-task-queue",
+
+        workflows=[
+            workflows_hyper_v.CloneVMHyperVWorkflow,
+            workflows_hyper_v.DeleteVMHyperVWorkflow,
+            workflows_hyper_v.HandleActionHyperVWorkflow,
+            workflows_hyper_v.DeleteHyperVDiskWorkflow,
+        ],
+
+        activities=[
+            activities_hyper_v.clone_vm_single_node_activity,
+            activities_hyper_v.delete_vm_single_node_activity,
+            activities_hyper_v.handle_action_activity,
+            activities_hyper_v.delete_hyperv_disk_activity,
+        ],
+    )
+
     try:
         await worker.run()
-        logging.info("Clone VM Single Node HyperV Worker stopped.")
-
     except Exception as e:
-        raise Exception(f"Error in clone VM worker: {e}")
+        raise Exception(f"Error in Hyper-V worker: {e}")

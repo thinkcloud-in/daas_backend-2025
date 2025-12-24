@@ -72,6 +72,6 @@ def start_workers():
     start_async_worker(worker_pollingStatus.status_poller_worker)
     start_async_worker(worker_proxmox.vm_power_worker)
     start_async_worker(worker_proxmox.vm_rebuild_worker)
-    start_async_worker(worker_hyper_v.cloneVm_SingleNode_HyperV_worker)
+    start_async_worker(worker_hyper_v.hyperv_worker)
     start_async_worker(listen_for_machine_changes)
 

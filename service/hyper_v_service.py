@@ -30,13 +30,11 @@ async def get_vms():
         data = response.json()
         return data['data']
 
- 
 from service.temporalResource.workers import worker_hyper_v
-
 
 async def clone_vm_for_single_node(request, db=None) -> dict:
     req_dict = jsonable_encoder(request)
-    workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
+    # workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
 
     client = await connectionWithClient()
     if client is None:
@@ -44,21 +42,20 @@ async def clone_vm_for_single_node(request, db=None) -> dict:
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
     try:
-        logger.info("Starting workflow %s with payload keys: %s", workflow_id, list(req_dict.keys()))
+        logger.info("Starting workflow %s with payload keys: %s", list(req_dict.keys()))
         handle = await client.start_workflow(
             workflows_hyper_v.CloneVMHyperVWorkflow.run,
             args=[req_dict],
-            id=workflow_id,
-            task_queue="clonevmhyperv-task-queue",
+            # id=workflow_id,
+            task_queue="hyperv-task-queue",
         )
     except Exception as e:
-        logger.exception("Failed to start workflow %s: %s", workflow_id, e)
+        logger.exception("Failed to start workflow %s: %s", e)
         raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
 
     result =  await handle.result()
     return result 
 
-      
 async def get_vm_info(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -72,14 +69,41 @@ async def get_switches():
         response = await client.get(url)
         data = response.json()
         return data['data']
-    
-async def delete_hyperv_vm(vm_id):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.delete(url)
-        data = response.json()
-        return data['data']
-    
+
+async def delete_vm(vm_id: str) -> dict:
+    # workflow_id = f"delete_vm_hyperv-{uuid.uuid4().hex}"
+
+    client = await connectionWithClient()
+    if client is None:
+        logger.error("Temporal client connection failed")
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    request = {"vm_id": vm_id}
+
+    try:
+        logger.info("Starting workflow %s with payload keys: %s", request)
+        handle = await client.start_workflow(
+            workflows_hyper_v.DeleteVMHyperVWorkflow.run,
+            args=[request],
+            # id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+    except Exception as e:
+        logger.exception("Failed to start delete VM workflow")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start delete workflow: {str(e)}"
+        )
+
+    result = await handle.result()
+    return result
+# async def delete_hyperv_vm(vm_id):
+#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
+#     async with httpx.AsyncClient(timeout=20.0) as client:
+#         response = await client.delete(url)
+#         data = response.json()
+#         return data['data']
+
 # async def get_status(vm_id):
 #     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
 #     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -95,22 +119,70 @@ async def get_status(vm_id: str) -> dict:
         data = response.json()
         return data.get("data", {})
     
-async def handle_action(request, db):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.post(url, json=request.dict())
-        data = response.json()
-        if data.get('code') == 200:
-            return data['data']
-        else:
-            return data.get('msg', 'Unknown error occurred')
+# async def handle_action(request, db):
+#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
+#     async with httpx.AsyncClient(timeout=20.0) as client:
+#         response = await client.post(url, json=request.dict())
+#         data = response.json()
+#         if data.get('code') == 200:
+#             return data['data']
+#         else:
+#             return data.get('msg', 'Unknown error occurred')
+async def handle_action(request) -> dict:
+    # workflow_id = f"hyperv-handle-action-{uuid.uuid4().hex}"
+    client = await connectionWithClient()
+
+    payload = request.dict() if hasattr(request, "dict") else request
+
+    if client is None:
+        logger.info("Starting workflow %s with payload keys: %s", payload)
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    try:
+        handle = await client.start_workflow(
+            workflows_hyper_v.HandleActionHyperVWorkflow.run,
+            args=[payload],
+            # id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+    except Exception as e:
+        logger.exception("Failed to start handle_action workflow")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to start workflow: {str(e)}"
+        )
+
+    result = await handle.result()
+    return result
         
-async def delete_hyperv_disk(disk_path):
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={disk_path}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.delete(url)
-        data = response.json()
-        if data.get('code') == 200:
-            return data['data']
-        else:
-            return data.get('msg', 'Unknown error occurred')
+# async def delete_hyperv_disk(disk_path):
+#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={disk_path}"
+#     async with httpx.AsyncClient(timeout=20.0) as client:
+#         response = await client.delete(url)
+#         data = response.json()
+#         if data.get('code') == 200:
+#             return data['data']
+#         else:
+#             return data.get('msg', 'Unknown error occurred')
+async def delete_hyperv_disk(disk_path: str) -> dict:
+    # workflow_id = f"delete_hyperv_disk-{uuid.uuid4().hex}"
+
+    client = await connectionWithClient()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    request = {"disk_path": disk_path}
+
+    try:
+        handle = await client.start_workflow(
+            workflows_hyper_v.DeleteHyperVDiskWorkflow.run,
+            args=[request],
+            # id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+    except Exception as e:
+        logger.exception("Failed to start delete disk workflow")
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+
+    result = await handle.result()
+    return result
