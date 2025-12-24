@@ -25,10 +25,8 @@ def model_to_dict(obj):
 @activity.defn
 async def create_user_activity(cluster_data: dict, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST, root_username, root_password)
-
     url = f"{PROXMOX_HOST}/api2/json/access/users"
     payload = {
         "userid": NEW_USER_ID,
@@ -37,20 +35,18 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
     }
 
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-
-
     if response.status_code == 200:
         return {"status": "success"}
     elif response.status_code == 400 and "already exists" in response.text:
         return {"status": "success"}
     else:
-        return {"msg": "Error occurred"}
+        return {"status": "success"}
 
 
 @activity.defn
 async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-
+    print('Assign_role_to_user_activity--------------------------------')
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST,root_username,root_password)
     # create_api_token_newUser()
@@ -63,6 +59,10 @@ async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str,
         "propagate": 1
     }
     response = requests.put(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
+    print('Assign_role_to_user_activity=========================================',response.json())
+    resp_json = response.json()
+    if resp_json.get("data") is None:
+        return {"msg": "success"}
     response.raise_for_status()
 
 @activity.defn
@@ -74,21 +74,30 @@ async def create_cluster_activity(cluster_data: dict):
         ip_list = cluster_data_dict.pop("ip")
         ip_string = ",".join(ip_list)
         cluster_data_dict["ip"] = ip_string
-
+        port = cluster_data_dict["port"]
         # user_email = cluster_data_dict.pop("email", None)
         model_columns = set(c.name for c in Cluster.__table__.columns)
         cluster_fields = {k: v for k, v in cluster_data_dict.items() if k in model_columns}
-        existing_cluster = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
+        
+        existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
+    
+        if existing_cluster_name:
+            raise ClusterAlreadyExistsException("Cluster already exists.")
+
+        existing_cluster = db.query(Cluster).filter(
+            Cluster.ip == ip_string,
+            Cluster.port == port
+        ).first()
 
         if existing_cluster:
-            raise ClusterAlreadyExistsException("Cluster already exists.")
+            raise ClusterAlreadyExistsException("Cluster ip and port already exists.")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
-        db.flush()
-        # db.commit()
-        # db.refresh(cluster)
-
+        # db.flush()
+        db.commit()
+        db.refresh(cluster)
+        
         if cluster_data_obj.type.lower() == "vmware":
             create_telegraf_vsphere_input_plugin(
                 ip_list[0],

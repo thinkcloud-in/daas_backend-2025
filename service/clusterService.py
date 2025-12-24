@@ -54,7 +54,6 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
     uniqueId = unique_id()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
-    
     handle = await client.start_workflow(
         workflows_cluster.CreateUserWorkflow.run,
         args=[cluster_data, root_username, root_password],
@@ -66,12 +65,11 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
             "UserName": [userName]
         },
     )
-
     result = await handle.result()
-
+    
     if result.get('status') != 'success':
         raise Exception("User creation failed in workflow.")
-
+    
     return result
 
 
@@ -80,7 +78,7 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     uniqueId = unique_id()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
-
+    
     handle = await client.start_workflow(
         workflows_cluster.AssignRoleToUserWorkflow.run,
         args=[cluster_data, role, path, root_username, root_password],
@@ -92,6 +90,7 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
             "UserName": [userName]
         },
     )
+    
     result = await handle.result()
     return result
 def new_user_proxmox_login(PROXMOX_HOST):
@@ -131,9 +130,11 @@ def get_api_token(db: Session, cluster_name: str):
     return data.get("api_token", "")
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
+    
     existing_user = db.query(Proxmox).filter(
         Proxmox.cluster_name == cluster_name
     ).first()
+    
  
     if existing_user:
         # Update existing fields
@@ -147,39 +148,56 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
  
         db.commit()
         db.refresh(existing_user)
+        
         return existing_user
     else:
-        proxmox_user = Proxmox(
-            user=NEW_USER_ID,
-            cluster_name=cluster_name,
-            new_password="",
-            token_id=NEW_TOKEN_ID,
-            full_token=full_token,
-            secret_key=secret,
-            api_token=api_token,
-            role=role,
-            path=path
-        )
-        db.add(proxmox_user)
-        db.commit()
-        db.refresh(proxmox_user)
-        return proxmox_user
+        try:
+            proxmox_user = Proxmox(
+                user=NEW_USER_ID,
+                cluster_name=cluster_name,
+                new_password="",
+                token_id=NEW_TOKEN_ID,
+                full_token=full_token,
+                secret_key=secret,
+                api_token=api_token,
+                role=role,
+                path=path
+            )
+            
+            db.add(proxmox_user)
+            
+            db.commit()
+            
+            db.refresh(proxmox_user)
+            
+            return proxmox_user
+        except Exception as e:
+            
+            db.rollback()
+            raise
+
 async def create_cluster_proxmox(cluster_data):
     db = next(get_db())
     try:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
     except Exception as e:
         raise Exception(str(e))
+    
     # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
     ROOT_USERNAME = cluster_data.username
     ROOT_PASSWORD = cluster_data.password
     cluster_data_dict = cluster_data.dict()
+    
     await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
+    
     api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
+    
     role = "Administrator"
     path = "/"
     await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
+    
     store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
+    
  
 def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
     if isinstance(cluster_data, dict):

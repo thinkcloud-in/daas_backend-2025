@@ -72,7 +72,6 @@ class CreateClusterWorkflow:
         
         try:
             logger.info("Running workflow to create cluster...")
-
             result = await workflow.execute_activity(
                 activities_cluster.create_cluster_activity,
                 args=[cluster_data],

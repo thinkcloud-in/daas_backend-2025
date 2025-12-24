@@ -433,7 +433,7 @@ async def create_cluster(cluster_data: CreateClusterBase,db):
     client = await connectionWithClient()
     cluster_name = cluster_data['name']
     userName = cluster_data.get('email', "UnknownUser")
-
+    
     handle = await client.start_workflow(
         workflows_cluster.CreateClusterWorkflow.run,
         cluster_data,
