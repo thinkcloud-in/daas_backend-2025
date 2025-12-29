@@ -1,5 +1,7 @@
 import requests, json, os
 from fastapi import Request, APIRouter
+# from dotenv import load_dotenv
+# load_dotenv()
 
 router = APIRouter(prefix='/grafana', tags=['Grafana'])
 
@@ -72,7 +74,25 @@ async def query_grafana(request: Request):
                 "Authorization": f"Bearer {TOKEN}"
             }
         )
+        print('===================',f"{GRAFANA_URL}/api/ds/query")
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as err:
         return {"error": f"Request failed: {err}"}
+
+
+@router.get("/api/dashboards/uid/vsphereOverview")
+def get_dashboard():
+    print('-----------------',GRAFANA_URL)
+    try:
+        response = requests.get(
+            f"{GRAFANA_URL}/api/dashboards/uid/vsphereOverview",
+            headers={
+                "Authorization": f"Bearer {TOKEN}",
+                "Content-Type": "application/json"
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        return {"error": str(e)}

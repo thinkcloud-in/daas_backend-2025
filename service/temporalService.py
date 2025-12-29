@@ -10,11 +10,11 @@ from email.mime.application import MIMEApplication
 from datetime import timedelta, datetime
 from typing import Dict, List
 from urllib.parse import quote
-from dotenv import load_dotenv
+
 import os
 from temporalio.common import RetryPolicy
-
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 TEMPORAL_SERVER = os.getenv('TEMPORAL_SERVER')
 

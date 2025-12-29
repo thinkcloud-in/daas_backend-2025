@@ -1,14 +1,11 @@
 import os
 from temporalio.client import Client
 from temporalio.worker import Worker
-
-
 from service.temporalResource.workflows import workflows_retentionPeriod
 from service.temporalResource.activity import activities_retentionPeriod
+# from dotenv import load_dotenv
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# load_dotenv()
 
 async def connectionWithTemporal():
     

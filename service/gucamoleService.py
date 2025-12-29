@@ -7,7 +7,6 @@ from fastapi import HTTPException
 import  requests
 import json
 import os
-from dotenv import load_dotenv
 import psycopg2
 from .temporalResource.workflows import workflows_guacmole
 from temporalio.client import Client
@@ -21,14 +20,14 @@ from starlette.responses import StreamingResponse
 from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workflows import workflows_RBAC
 import logging
-import time
-
+# import time
+# from dotenv import load_dotenv
+# load_dotenv()
 logger = logging.getLogger(__name__)
 
 _temporal_client = None 
 
-#  Load the dotenv file
-load_dotenv()
+
 
 def unique_id():
     unique_id = datetime.now()
