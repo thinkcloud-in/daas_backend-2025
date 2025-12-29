@@ -3,7 +3,6 @@ import os
 import aiohttp
 from fastapi.encoders import jsonable_encoder
 from temporalio import  activity
-from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 from models import models as model
 from service import gucamoleService
@@ -14,7 +13,8 @@ from db_configuration.config import get_db
 from service import hyper_v_service
 
 logger = logging.getLogger("create_machine_activity")
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,

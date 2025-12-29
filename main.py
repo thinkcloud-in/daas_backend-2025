@@ -4,8 +4,7 @@ from fastapi import FastAPI
 from middleware.Grafana_init import router as grafana_router
 from controllers.routes import router
 from router.guacamole_router import guacamole_router
-from service.change_machine_guacamole import listen_for_machine_changes
-from dotenv import load_dotenv  
+from service.change_machine_guacamole import listen_for_machine_changes 
 from fastapi.middleware.cors import CORSMiddleware
 from router.schedule_router import schedule_router
 from router.smtp_router import smtp_router
@@ -22,12 +21,13 @@ from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from middleware.request_logger import RequestLoggerMiddleware
-
+# from dotenv import load_dotenv 
+# load_dotenv()
 app = FastAPI()
 
 app = FastAPI(on_startup=[startup_event_client])
 
-load_dotenv()
+
  
 app.add_middleware(
     CORSMiddleware,

@@ -5,11 +5,10 @@ import json
 import requests
 import os
 from fastapi import HTTPException
-from dotenv import load_dotenv
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workflows import workflows_ldap
- 
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 def get_login_from_keycloak():
     try:
         resp = requests.post(

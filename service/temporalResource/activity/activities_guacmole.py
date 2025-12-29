@@ -7,15 +7,14 @@ import aiohttp
 import logging  
 import psycopg2
 from temporalio import  activity
-from dotenv import load_dotenv
 import service.gucamoleService as service
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph,Image
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
-
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 
 logging.basicConfig(

@@ -12,10 +12,10 @@ from temporalio.client import (
     Client,
     ScheduleActionExecutionStartWorkflow,
 )
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 import os
 
-load_dotenv()
+# load_dotenv()
 GUACAMOLE_REPORT_URL = os.getenv('GUACAMOLE_REPORT_URL')
 
 HORIZON_REPORT_URL = os.getenv('HORIZON_REPORT_URL')

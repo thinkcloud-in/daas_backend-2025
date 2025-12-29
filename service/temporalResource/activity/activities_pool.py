@@ -79,6 +79,7 @@ async def create_pool_activity(request: dict) -> dict:
             #     # "ip_list": ip_list,
             # }
             # Use correct clone function based on cluster type
+            
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict, db)

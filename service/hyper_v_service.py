@@ -121,7 +121,6 @@ async def delete_vm(vm_id: str) -> dict:
 
     result = await handle.result()
     return result
-
 async def delete_hyperv_vm(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
