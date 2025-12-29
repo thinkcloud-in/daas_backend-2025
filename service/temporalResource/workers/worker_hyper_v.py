@@ -15,14 +15,12 @@ async def hyperv_worker():
     worker = Worker(
         client,
         task_queue="hyperv-task-queue",
-
         workflows=[
             workflows_hyper_v.CloneVMHyperVWorkflow,
             workflows_hyper_v.DeleteVMHyperVWorkflow,
             workflows_hyper_v.HandleActionHyperVWorkflow,
             workflows_hyper_v.DeleteHyperVDiskWorkflow,
         ],
-
         activities=[
             activities_hyper_v.clone_vm_single_node_activity,
             activities_hyper_v.delete_vm_single_node_activity,

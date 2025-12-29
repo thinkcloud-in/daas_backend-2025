@@ -16,19 +16,15 @@ class PoolCreationWorkflow:
             maximum_attempts=5,
         )
         try:
-            
             result = await workflow.execute_activity(
                 activities_pool.create_pool_activity,
                 pool_data,  
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            
             return result
         except Exception:
-            # Re-raise the original exception so Temporal preserves the activity failure
             raise
-        
 
 @workflow.defn(sandboxed=False)
 class PoolUpdateWorkflow:

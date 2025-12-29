@@ -214,7 +214,7 @@ async def create_pool_activity(request: dict) -> dict:
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
                     db.rollback()
-       
+
             msg = f"pool, {num_allocated} VM(s) created successfully."
             if num_missing > 0:
                 msg += f" {num_missing} VM(s) not created due to insufficient available IPs in the selected pools."

@@ -8,14 +8,16 @@ class CloneVMRequest(BaseModel):
     switch: str = Field(..., description="Virtual switch name")
     generation: int = Field(..., ge=1, le=2, description="VM generation (1 or 2)")
     PvhdPath: str = Field(..., description="Path of parent VHD")
-    # failover_only: bool = Field(..., description="Indicates if the clone is for failover only")
-    # guacd_hostname: str = Field(..., description="Guacd hostname for remote access")
-    # guacd_encryption: str = Field(..., description="Guacd encryption method")
     count: int = Field(..., ge=1, le=50, description="Number of VM clones to create (required)")
+    # os_type: str
+    # mac_add: str
+    # gateway: str
+    # password: str
+    # ip: str
 
 class HandleActionRequest(BaseModel):
     vm_name: str = Field(..., description="Name of the VM")
     action: str = Field(..., description="Action to perform on the VM")
-    
+
 class HandleDeleteDiskRequest(BaseModel):
     disk_path: str = Field(..., description="Path of the disk to be deleted")

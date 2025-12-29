@@ -1,19 +1,11 @@
-
-import uuid
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
 import httpx
 import os
 from datetime import datetime
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from models.models import Machine, Pool
-import asyncio
 from service.gucamoleService import connectionWithClient
 from service.temporalResource.workflows import workflows_hyper_v
 import logging
-import traceback
 # from models.hyper_v_model import Hyper_V
 
 logger = logging.getLogger(__name__)
@@ -29,8 +21,6 @@ async def get_vms():
         response = await client.get(url)
         data = response.json()
         return data['data']
-
-from service.temporalResource.workers import worker_hyper_v
 
 async def clone_vm_for_single_node(request, db=None) -> dict:
     req_dict = jsonable_encoder(request)
@@ -54,7 +44,40 @@ async def clone_vm_for_single_node(request, db=None) -> dict:
         raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
 
     result =  await handle.result()
-    return result 
+    return result
+
+async def generate_mac_activity() -> str:
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/generate_mac_add"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(url)
+        data = resp.json()
+        return data["data"]
+
+async def create_iso_activity(payload: dict) -> str:
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/create_iso"
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(url, json=payload)
+        data = resp.json()
+        return data["data"]["iso_path"]
+
+async def get_switches_activity() -> str:
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_switches"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+        data = resp.json()
+        return data["data"][0]["name"]
+
+async def clone_vm_activity(payload: dict) -> dict:
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
+    async with httpx.AsyncClient(timeout=120) as client:
+        resp = await client.post(url, json=payload)
+        return resp.json()["data"]
+
+async def attach_iso_activity(payload: dict) -> dict:
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/attach_iso"
+    async with httpx.AsyncClient(timeout=20) as client:
+        resp = await client.post(url, json=payload)
+        return resp.json()["data"]
 
 async def get_vm_info(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_id}"
