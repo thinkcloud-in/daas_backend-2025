@@ -6,6 +6,7 @@ from datetime import datetime
 from service.gucamoleService import connectionWithClient
 from service.temporalResource.workflows import workflows_hyper_v
 import logging
+import uuid
 # from models.hyper_v_model import Hyper_V
 
 logger = logging.getLogger(__name__)
@@ -24,7 +25,7 @@ async def get_vms():
 
 async def clone_vm_for_single_node(request, db=None) -> dict:
     req_dict = jsonable_encoder(request)
-    # workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
+    workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
 
     client = await connectionWithClient()
     if client is None:
@@ -36,7 +37,7 @@ async def clone_vm_for_single_node(request, db=None) -> dict:
         handle = await client.start_workflow(
             workflows_hyper_v.CloneVMHyperVWorkflow.run,
             args=[req_dict],
-            # id=workflow_id,
+            id=workflow_id,
             task_queue="hyperv-task-queue",
         )
     except Exception as e:
@@ -51,7 +52,7 @@ async def generate_mac_activity() -> str:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.post(url)
         data = resp.json()
-        return data["data"]
+        return data["data"]["MAC_Add"]
 
 async def create_iso_activity(payload: dict) -> str:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/create_iso"
@@ -65,7 +66,7 @@ async def get_switches_activity() -> str:
     async with httpx.AsyncClient(timeout=10) as client:
         resp = await client.get(url)
         data = resp.json()
-        return data["data"][0]["name"]
+        return data["data"]["Name"]
 
 async def clone_vm_activity(payload: dict) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
@@ -120,12 +121,13 @@ async def delete_vm(vm_id: str) -> dict:
 
     result = await handle.result()
     return result
-# async def delete_hyperv_vm(vm_id):
-#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
-#     async with httpx.AsyncClient(timeout=20.0) as client:
-#         response = await client.delete(url)
-#         data = response.json()
-#         return data['data']
+
+async def delete_hyperv_vm(vm_id):
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        response = await client.delete(url)
+        data = response.json()
+        return data['data']
 
 # async def get_status(vm_id):
 #     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
