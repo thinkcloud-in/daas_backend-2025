@@ -26,6 +26,10 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
     generation = template.get("generation")
     memory = template.get("memory")
     switch = template.get("switch")
+    os_type = template.get("os_type")
+    ip_list = request.get('ip_list')
+    password = template.get('password')
+    gateway = template.get('gateway')
     number_of_vms = request.get("count", 1)
 
     base_vm_name = request.get("name_template", "cloned_vm")
@@ -46,7 +50,7 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
         return {"error": "No unique VM names available for cloning."}
 
     result_vms = []
-    for vm_name in new_names:
+    for vm_name, ip in zip(new_names, ip_list):
         payload = {
             "vm_name": vm_name,
             "memory": memory,
@@ -54,6 +58,10 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
             "switch": switch,
             "generation": generation,
             "PvhdPath": PvhdPath,
+            "ip": ip,
+            "password": password,
+            "gateway": gateway,
+            "os_type": os_type
         }
         logger.debug("Payload for clone_vm_for_single_node: %s", payload)
         async with httpx.AsyncClient(timeout=120.0) as client:

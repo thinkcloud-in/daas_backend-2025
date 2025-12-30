@@ -9,9 +9,8 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-from service.hyper_v_service import clone_vm_for_single_node
+from service.hyper_v_service import clone_vm_for_single_node,delete_hyperv_vm,delete_hyperv_disk
 import json
-from service.hyper_v_service import delete_hyperv_vm,delete_hyperv_disk
 
 
 @activity.defn()
@@ -29,6 +28,9 @@ async def create_pool_activity(request: dict) -> dict:
         node = pool_data.get("pool_selected_nodes")
         template_vm_id = pool_data.get("pool_template_vm_id")
         name_template = pool_data.get("pool_naming_pattern")
+        # os_type = pool_data.get("os_type")
+        # password = pool_data.get("password")
+        # gateway = pool_data.get("gateway")
     try:
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
         if existing_pool is None:
@@ -38,7 +40,7 @@ async def create_pool_activity(request: dict) -> dict:
             db.refresh(pool)    
             id_pool = pool.id
             if pool_data.get("cluster_id"):
-                pool["cluster_id"] = f"{id_pool}_{pool_data.get('cluster_id')}"
+                pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
                 db.commit()
                 db.refresh(pool)
         else:
@@ -58,7 +60,6 @@ async def create_pool_activity(request: dict) -> dict:
             num_missing = num_requested - num_allocated
             if num_allocated == 0:
                 raise Exception("No available IPs in the selected IP pools to create any VMs.")
-
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
             clone_payload_dict = {
@@ -69,6 +70,9 @@ async def create_pool_activity(request: dict) -> dict:
                 "ip_pool_names": ip_pool_assignments,
                 "count": num_allocated,
                 "ip_list": ip_list,
+                # "password": password,
+                # "gateway": gateway,
+                # "os_type": os_type
             }
             # clone_payload_HyperV = {
             #     "cluster_id": str(cluster_data.id),
@@ -84,7 +88,6 @@ async def create_pool_activity(request: dict) -> dict:
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
-                
             elif cluster_type == "proxmox":
                 response = await clone_vm(clone_payload_dict)
             assigned_vms = response.get("vms", [])
@@ -645,18 +648,16 @@ async def delete_pool_activity(pool_id: int) -> dict:
         pool = db.query(Pool).filter(Pool.id == pool_id).first()
         if not pool:
             return {"msg": f"Pool not found with id - {pool_id}"}
-        
         pool_machines = pool.pool_machines or []
         pool_vmids = pool.pool_vmids or []
         cluster_pool_id = pool.cluster_id
         if pool.pool_type == "Automated":
             try:
-                id_cluster = cluster_pool_id.split("_")[1]
+                parts = cluster_pool_id.split("_")
+                id_cluster = parts[1] if len(parts) >= 2 else parts[0]
             except Exception as e:
-                
                 raise RuntimeError(str(e))
             cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
-
             for vmid in pool_vmids:
                 machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
                 if vmid:
@@ -672,7 +673,6 @@ async def delete_pool_activity(pool_id: int) -> dict:
                             response = await delete_hyperv_vm(vmid)
                             if response:
                                 await delete_hyperv_disk(vhdpath)
-                        
                         ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
                         for ip_entry in ip_entries:
                             ip_entry.status = "unused"
@@ -682,12 +682,9 @@ async def delete_pool_activity(pool_id: int) -> dict:
 
                         for ip_entry in ip_entries:
                             db.refresh(ip_entry)
-
                     except Exception as e:
                         db.rollback()
-                        
 
-        
         for machine_item in pool_machines:
             machine = db.query(Machine).filter(Machine.identifier == machine_item).first()
             if machine:
@@ -697,7 +694,6 @@ async def delete_pool_activity(pool_id: int) -> dict:
                     db.commit()
                 except Exception as e:
                     db.rollback()
-
         db.delete(pool)
         db.commit()
         all_pools = db.query(Pool).all()

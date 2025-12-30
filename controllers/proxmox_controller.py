@@ -363,7 +363,6 @@ def proxmox_all_vm_details(
         vm_infos = service.get_all_vm_details(db, cluster_data)
         return vm_infos
 
-
 async def proxmox_vm_details(vm_id: int, db):
         cluster_data = get_cluster_by_id(db, vm_id)
         if not cluster_data:
