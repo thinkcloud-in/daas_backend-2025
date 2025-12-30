@@ -3,9 +3,9 @@ from temporalio.worker import Worker
 from temporalio.client import Client
 from service.temporalResource.activity import activities_machine
 from service.temporalResource.workflows import workflows_machine
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 
-# load_dotenv()
+load_dotenv()
 
 async def connectionWithTemporal():
     

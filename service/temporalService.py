@@ -13,8 +13,8 @@ from urllib.parse import quote
 
 import os
 from temporalio.common import RetryPolicy
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 TEMPORAL_SERVER = os.getenv('TEMPORAL_SERVER')
 

@@ -21,8 +21,8 @@ from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workflows import workflows_RBAC
 import logging
 # import time
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 logger = logging.getLogger(__name__)
 
 _temporal_client = None 

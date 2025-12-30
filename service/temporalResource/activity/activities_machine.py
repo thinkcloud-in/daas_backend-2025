@@ -13,8 +13,8 @@ from db_configuration.config import get_db
 from service import hyper_v_service
 
 logger = logging.getLogger("create_machine_activity")
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,

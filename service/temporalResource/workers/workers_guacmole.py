@@ -3,9 +3,9 @@ from temporalio.worker import Worker
 from temporalio.client import Client
 from service.temporalResource.activity import activities_guacmole
 from service.temporalResource.workflows import workflows_guacmole
-# from dotenv import load_dotenv
+from dotenv import load_dotenv
 
-# load_dotenv()
+load_dotenv()
 
 async def connectionWithTemporal():
     

@@ -9,9 +9,8 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-from service.hyper_v_service import clone_vm_for_single_node
+from service.hyper_v_service import clone_vm_for_single_node,delete_hyperv_vm,delete_hyperv_disk
 import json
-from service.hyper_v_service import delete_hyperv_vm,delete_hyperv_disk
 
 
 @activity.defn()
@@ -29,6 +28,9 @@ async def create_pool_activity(request: dict) -> dict:
         node = pool_data.get("pool_selected_nodes")
         template_vm_id = pool_data.get("pool_template_vm_id")
         name_template = pool_data.get("pool_naming_pattern")
+        # os_type = pool_data.get("os_type")
+        # password = pool_data.get("password")
+        # gateway = pool_data.get("gateway")
     try:
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
         if existing_pool is None:
@@ -68,6 +70,9 @@ async def create_pool_activity(request: dict) -> dict:
                 "ip_pool_names": ip_pool_assignments,
                 "count": num_allocated,
                 "ip_list": ip_list,
+                # "password": password,
+                # "gateway": gateway,
+                # "os_type": os_type
             }
             # clone_payload_HyperV = {
             #     "cluster_id": str(cluster_data.id),
