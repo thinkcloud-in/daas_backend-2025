@@ -21,8 +21,8 @@ from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from middleware.request_logger import RequestLoggerMiddleware
-# from dotenv import load_dotenv 
-# load_dotenv()
+from dotenv import load_dotenv 
+load_dotenv()
 app = FastAPI()
 
 app = FastAPI(on_startup=[startup_event_client])

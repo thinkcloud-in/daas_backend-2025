@@ -1,7 +1,7 @@
 import requests, json, os
 from fastapi import Request, APIRouter
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 
 router = APIRouter(prefix='/grafana', tags=['Grafana'])
 

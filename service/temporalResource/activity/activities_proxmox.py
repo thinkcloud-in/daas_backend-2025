@@ -11,7 +11,7 @@ from service import proxmoxService
 from influxdb_client import InfluxDBClient, Point, WriteOptions
 import dotenv
 import os
-# dotenv.load_dotenv()
+dotenv.load_dotenv()
 
 # @activity.defn
 # async def clone_vm_activity(clone_payload: dict):

@@ -7,8 +7,8 @@ import os
 from fastapi import HTTPException
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workflows import workflows_ldap
-# from dotenv import load_dotenv
-# load_dotenv()
+from dotenv import load_dotenv
+load_dotenv()
 def get_login_from_keycloak():
     try:
         resp = requests.post(
