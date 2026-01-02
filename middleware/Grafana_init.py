@@ -3,7 +3,7 @@ from fastapi import Request, APIRouter
 from dotenv import load_dotenv
 load_dotenv()
 
-router = APIRouter(prefix='/grafana', tags=['Grafana'])
+router = APIRouter(prefix='/v1/grafana', tags=['Grafana'])
 
 GRAFANA_URL = os.getenv('GRAFANA_URL')
 TOKEN = os.getenv('GRAFANA_TOKEN')
