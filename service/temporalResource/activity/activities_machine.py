@@ -169,7 +169,7 @@ async def delete_machine_activity(machine_identifier: str):
                     if response:
                         vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
                         vhdpath += machine.name
-                        await hyper_v_service.delete_hyperv_disk(vhdpath)
+                        await hyper_v_service.delete_disk(vhdpath)
                
             except Exception as e:
                 logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")
