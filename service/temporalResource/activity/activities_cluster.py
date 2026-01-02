@@ -59,7 +59,6 @@ async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str,
         "propagate": 1
     }
     response = requests.put(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-    print('Assign_role_to_user_activity=========================================',response.json())
     resp_json = response.json()
     if resp_json.get("data") is None:
         return {"msg": "success"}
@@ -82,7 +81,8 @@ async def create_cluster_activity(cluster_data: dict):
         existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
     
         if existing_cluster_name:
-            raise ClusterAlreadyExistsException("Cluster already exists.")
+            return { "msg": "Cluster name already exists."}
+            #raise ClusterAlreadyExistsException("Cluster already exists.")
 
         existing_cluster = db.query(Cluster).filter(
             Cluster.ip == ip_string,
@@ -90,7 +90,8 @@ async def create_cluster_activity(cluster_data: dict):
         ).first()
 
         if existing_cluster:
-            raise ClusterAlreadyExistsException("Cluster ip and port already exists.")
+            return { "msg": "Cluster ip and port already exists."}
+            #raise ClusterAlreadyExistsException("Cluster ip and port already exists.")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
