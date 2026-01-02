@@ -81,7 +81,7 @@ async def create_cluster_activity(cluster_data: dict):
         existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
     
         if existing_cluster_name:
-            return { "msg": "Cluster name already exists."}
+            return { "msg": "Cluster already exists."}
             #raise ClusterAlreadyExistsException("Cluster already exists.")
 
         existing_cluster = db.query(Cluster).filter(
