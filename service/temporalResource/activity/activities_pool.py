@@ -9,7 +9,7 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-from service.hyper_v_service import clone_vm_for_single_node,delete_hyperv_vm,delete_hyperv_disk
+from service.hyper_v_service import clone_vm_for_single_node,delete_hyperv_vm,delete_disk
 import json
 
 
