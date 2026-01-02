@@ -188,8 +188,8 @@ async def handle_action(request) -> dict:
 #             return data['data']
 #         else:
 #             return data.get('msg', 'Unknown error occurred')
-async def delete_hyperv_disk(disk_path: str) -> dict:
-    # workflow_id = f"delete_hyperv_disk-{uuid.uuid4().hex}"
+async def delete_disk(disk_path: str) -> dict:
+    workflow_id = f"delete_hyperv_disk-{uuid.uuid4().hex}"
 
     client = await connectionWithClient()
     if client is None:
@@ -201,7 +201,7 @@ async def delete_hyperv_disk(disk_path: str) -> dict:
         handle = await client.start_workflow(
             workflows_hyper_v.DeleteHyperVDiskWorkflow.run,
             args=[request],
-            # id=workflow_id,
+            id=workflow_id,
             task_queue="hyperv-task-queue",
         )
     except Exception as e:

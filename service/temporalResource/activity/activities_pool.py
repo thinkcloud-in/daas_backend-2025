@@ -37,7 +37,7 @@ async def create_pool_activity(request: dict) -> dict:
             pool = Pool(**pool_data)
             db.add(pool)
             db.commit()
-            db.refresh(pool)    
+            db.refresh(pool)
             id_pool = pool.id
             if pool_data.get("cluster_id"):
                 pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
@@ -59,7 +59,8 @@ async def create_pool_activity(request: dict) -> dict:
             num_requested = vm_count
             num_missing = num_requested - num_allocated
             if num_allocated == 0:
-                raise Exception("No available IPs in the selected IP pools to create any VMs.")
+                return {"msg": "No available IPs in the selected IP pools to create any VMs."}
+                #raise Exception("No available IPs in the selected IP pools to create any VMs.")
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
             clone_payload_dict = {

@@ -100,6 +100,5 @@ def allocate_ips_across_pools(db: Session, pool_names, count):
         remaining -= len(ips)
         if remaining <= 0:
             break
-
     db.commit()
     return jsonable_encoder(allocated) # [[{'pool_id': 14, 'vm_id': None, 'ip': '10.1.2.132', 'status': 'used', 'id': 61}, 'Proxmox-testing'], [{'pool_id': 14, 'vm_id': None, 'ip': '10.1.2.134', 'status': 'used', 'id': 63}, 'Proxmox-testing']]
