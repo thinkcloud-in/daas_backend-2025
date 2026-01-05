@@ -12,36 +12,29 @@ logger = logging.getLogger("create_machine_workflow")
 
 @workflow.defn(sandboxed=False)
 class CreateMachineWorkflow:
-    
     @workflow.run
     async def run(self, machine_data: dict):
-        
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(seconds=30),
             maximum_attempts=5,
         )
-        
         try:
             logger.info("Running workflow to create machine...")
-
-            
             result = await workflow.execute_activity(
                 activities_machine.create_machine_activity,
                 args=[machine_data],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
-            
             logger.info("Workflow completed successfully.")
             return result
-        
         except Exception as e:
+            print("Exception in CreateMachineWorkflow:", str(e))
             logger.error(f"Error occurred in workflow: {str(e)}", exc_info=True)
             raise e
 
-        
 @workflow.defn(sandboxed=False)
 class DeleteMachineWorkflow:
     

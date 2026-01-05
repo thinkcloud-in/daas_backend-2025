@@ -74,7 +74,6 @@ async def query_grafana(request: Request):
                 "Authorization": f"Bearer {TOKEN}"
             }
         )
-        print('===================',f"{GRAFANA_URL}/api/ds/query")
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as err:
@@ -83,7 +82,6 @@ async def query_grafana(request: Request):
 
 @router.get("/api/dashboards/uid/vsphereOverview")
 def get_dashboard():
-    print('-----------------',GRAFANA_URL)
     try:
         response = requests.get(
             f"{GRAFANA_URL}/api/dashboards/uid/vsphereOverview",

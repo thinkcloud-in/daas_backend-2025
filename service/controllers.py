@@ -91,7 +91,6 @@ async def create_machine(machine_data: CreateMachineBase):
     machine_name = machine_data.name
     userName = machine_data.email
     Pool_data = db.query(Pool).filter(Pool.id == machine_data.pool_id).first()
-    print("::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::", Pool_data.pool_type)
 
     create_machine_wfid = f"{machine_name}create-{uniqueId}"
     workflowId_list = [create_machine_wfid]
@@ -100,14 +99,14 @@ async def create_machine(machine_data: CreateMachineBase):
     if Pool_data.pool_type == "Automated":
         logger.info("Pool type is Automated, processing workflow IDs.")
         clone_wfid = getattr(machine_data, "clone_workflow_id", None) 
-        print("......................................................", clone_wfid)
+        
         if clone_wfid:
             if isinstance(clone_wfid, list):
                 workflowId_list.extend(clone_wfid)
             else:
                 workflowId_list.append(str(clone_wfid))
         existing_wfids = getattr(machine_data, "workflowId", None)
-        print("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", existing_wfids)
+        
         if existing_wfids:
             if isinstance(existing_wfids, list):
                 for wf in existing_wfids:
@@ -116,7 +115,6 @@ async def create_machine(machine_data: CreateMachineBase):
             elif existing_wfids not in workflowId_list:
                 workflowId_list.append(str(existing_wfids))
         workflow_status_map = {wfid: {"status": "running", "error": None} for wfid in workflowId_list}
-        print("workflow_status_map:::::::::::::::::::::::::::::::", workflow_status_map)
     else:
         logger.info("Pool type is Manual, skipping additional workflow IDs.")
         workflow_status_map = None

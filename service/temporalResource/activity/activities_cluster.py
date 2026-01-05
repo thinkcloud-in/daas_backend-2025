@@ -46,7 +46,6 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
 @activity.defn
 async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-    print('Assign_role_to_user_activity--------------------------------')
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST,root_username,root_password)
     # create_api_token_newUser()
