@@ -33,7 +33,6 @@ logger = logging.getLogger("create_machine_activity")
 
 
 async def create_pool(pool_data: dict, db) -> dict:
-    print("1111111111111111111111111111111111111111111111111111111111111")
     uniqueId = unique_id()
     client = await connectionWithClient()
     pool_name = pool_data.get("pool_name", "UnknownPool")

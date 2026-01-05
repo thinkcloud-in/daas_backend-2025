@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 from temporalio import activity
 from models.models import CreateClusterBase,Cluster,UpdateClusterBase
-from db_configuration.config import get_db
+from db_configuration.config import SessionLocal, get_db
 from service.telegrafService import create_telegraf_vsphere_input_plugin,delete_telegraf_vsphere_input_plugin,modify_telegraf_vsphere_input_plugin
 from service import clusterService
 from models.proxmox_model import MetricServer
@@ -78,10 +78,9 @@ async def create_cluster_activity(cluster_data: dict):
         cluster_fields = {k: v for k, v in cluster_data_dict.items() if k in model_columns}
         
         existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
-
         if existing_cluster_name:
             return { "msg": "Cluster already exists."}
-            #raise ClusterAlreadyExistsException("Cluster already exists.")
+            # raise Exception("Cluster already exists.")
 
         existing_cluster = db.query(Cluster).filter(
             Cluster.ip == ip_string,
@@ -90,13 +89,13 @@ async def create_cluster_activity(cluster_data: dict):
 
         if existing_cluster:
             return { "msg": "Cluster ip and port already exists."}
-            #raise ClusterAlreadyExistsException("Cluster ip and port already exists.")
+            # raise Exception("Cluster ip and port already exists.")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
-        # db.flush()
-        db.commit()
-        db.refresh(cluster)
+        db.flush()
+        # db.commit()
+        # db.refresh(cluster)
         
         if cluster_data_obj.type.lower() == "vmware":
             create_telegraf_vsphere_input_plugin(
@@ -130,6 +129,8 @@ async def create_cluster_activity(cluster_data: dict):
     except Exception as e:
         db.rollback()
         raise Exception("Error occurred while creating cluster: " + str(e))
+    finally:
+        db.close()
 
 
 @activity.defn

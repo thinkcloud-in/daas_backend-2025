@@ -177,25 +177,26 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
             raise
 
 async def create_cluster_proxmox(cluster_data):
-    db = next(get_db())
+    # db = next(get_db())
+    db = SessionLocal()
     try:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
     except Exception as e:
+        db.rollback()
         raise Exception(str(e))
+        # return({"msg": f"Error getting Proxmox host: {str(e)}"})
+    finally:
+        db.close()
     
     # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
     ROOT_USERNAME = cluster_data.username
     ROOT_PASSWORD = cluster_data.password
     cluster_data_dict = cluster_data.dict()
-    
     await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
-    
     api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
-    
     role = "Administrator"
     path = "/"
     await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
-    
     store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
     
  
@@ -213,10 +214,8 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
         ip_list = [ip.strip() for ip in ip_field if isinstance(ip, str) and ip.strip()]
     else:
         raise ValueError("Cluster IPs must be provided as a comma-separated string or list.")
-
     if not ip_list:
         raise ValueError("No valid IPs found in provided cluster IPs.")
-
     for ip in ip_list:
         url = f"https://{ip}:{port}"
         try:
@@ -224,7 +223,6 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
             return url
         except Exception:
             continue
-
     raise ValueError("No reachable Proxmox host found in provided IPs.")
 
 

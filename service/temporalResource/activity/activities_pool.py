@@ -18,7 +18,6 @@ async def create_pool_activity(request: dict) -> dict:
     db: Session = next(get_db())
     pool_data = {key: request[key] for key in CreatePoolBase.__annotations__.keys() if key in request}
     email = pool_data.pop("email", None)
-    print("pool_data:::::::::::::::::::::::::::::::")
     ip_pool_names = pool_data.get("pool_ip_pool_names")
     if pool_data.get("pool_type") == "Automated":
         if not ip_pool_names or not isinstance(ip_pool_names, list) or not ip_pool_names:
@@ -50,19 +49,15 @@ async def create_pool_activity(request: dict) -> dict:
             return {
                     "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
                 }
-        print("pool_data...............................")
         machines_json = []
         if pool.pool_type == "Automated":
-            print("cccccccccccccccccccccccccccccccccccccccccccccccccccc", cluster_id)
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-            print("dddddddddddddddddddddddddddddddddddddddddddddddddddddd", cluster_data)
             if not cluster_data:
                 return {
                     "msg": f"Cluster not found for id: {cluster_id}"
                 }
                 # raise HTTPException(status_code=404, detail="Cluster not found")
             nodes = node if isinstance(node, list) else [node]
-            print("pool_dataaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
             num_allocated = len(allocated_ips)
             num_requested = vm_count
@@ -96,13 +91,10 @@ async def create_pool_activity(request: dict) -> dict:
             # Use correct clone function based on cluster type
             
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
-            print("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict, db)
             elif cluster_type == "proxmox":
-                print("cluster_type1111111111111111111111111111111111111111111111111111")
                 response = await clone_vm(clone_payload_dict)
-                print("response222222222222222222222222222222222222222222222222222222")
             assigned_vms = response.get("vms", [])
     
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
@@ -226,11 +218,8 @@ async def create_pool_activity(request: dict) -> dict:
                         "email": email,
                         "clone_workflow_id": workflow_ids,
                     }
-                    print("machine_data333333333333333333333333333333333333333333333333333333333333333333", machine_data)
                     machine_data_obj = CreateMachineBase(**machine_data)
-                    print("machine_data_obj4444444444444444444444444444444444444444444444444444444444444444444444444444", machine_data_obj)
                     machine_result = await controllers.create_machine(machine_data_obj)
-                    print("machine_result555555555555555555555555555555555555555555555555555555555555555555555555555555555", machine_result)
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
                     db.rollback()

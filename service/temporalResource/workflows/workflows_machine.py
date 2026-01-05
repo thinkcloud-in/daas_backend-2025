@@ -31,7 +31,6 @@ class CreateMachineWorkflow:
             logger.info("Workflow completed successfully.")
             return result
         except Exception as e:
-            print("Exception in CreateMachineWorkflow:", str(e))
             logger.error(f"Error occurred in workflow: {str(e)}", exc_info=True)
             raise e
 

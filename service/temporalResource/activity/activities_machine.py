@@ -113,7 +113,6 @@ async def create_machine_activity(machine_data: dict):
             poller_result = await ensure_status_poller_running()
             logger.info(f"Status poller result: {poller_result}")
         except Exception as e:
-            print("Error ensuring status poller:", str(e))
             logger.warning(f"Could not ensure status poller: {e}")
 
         serialized_machine = jsonable_encoder(machine)
@@ -125,7 +124,6 @@ async def create_machine_activity(machine_data: dict):
             "pools": serialized_pools,
         }
     except Exception as e:
-        print("Error in create_machine_activity:", str(e))
         logger.error(f"An error occurred while creating the machine: {str(e)}", exc_info=True)
         db.rollback()
         try:
