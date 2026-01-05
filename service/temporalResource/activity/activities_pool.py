@@ -22,7 +22,10 @@ async def create_pool_activity(request: dict) -> dict:
     ip_pool_names = pool_data.get("pool_ip_pool_names")
     if pool_data.get("pool_type") == "Automated":
         if not ip_pool_names or not isinstance(ip_pool_names, list) or not ip_pool_names:
-            raise HTTPException(status_code=400, detail="No IP pools selected for automated assignment. Please select at least one IP pool.")
+            return {
+                "msg": "No IP pools selected for automated assignment. Please select at least one IP pool."
+            }
+            # raise HTTPException(status_code=400, detail="No IP pools selected for automated assignment. Please select at least one IP pool.")
         vm_count = pool_data.get("pool_number_of_vms", 0)
         cluster_id = pool_data.get("cluster_id")
         node = pool_data.get("pool_selected_nodes")
