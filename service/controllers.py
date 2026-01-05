@@ -85,6 +85,7 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
  
 async def create_machine(machine_data: CreateMachineBase):
+    print("1111111111111111111111111111111111111111111111111111111111111")
     logger.info(f"Received machine_data for creation: {machine_data}")
     uniqueId = unique_id()
     client = await connectionWithClient()

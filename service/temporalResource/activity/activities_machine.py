@@ -113,6 +113,7 @@ async def create_machine_activity(machine_data: dict):
             poller_result = await ensure_status_poller_running()
             logger.info(f"Status poller result: {poller_result}")
         except Exception as e:
+            print("Error ensuring status poller:", str(e))
             logger.warning(f"Could not ensure status poller: {e}")
 
         serialized_machine = jsonable_encoder(machine)
