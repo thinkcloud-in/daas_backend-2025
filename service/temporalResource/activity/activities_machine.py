@@ -123,8 +123,8 @@ async def create_machine_activity(machine_data: dict):
             "machine": serialized_machine,
             "pools": serialized_pools,
         }
-
     except Exception as e:
+        logger.error(f"An error occurred while creating the machine: {str(e)}", exc_info=True)
         db.rollback()
         try:
             if 'machine' in locals() and pool and pool.pool_type == "Automated":

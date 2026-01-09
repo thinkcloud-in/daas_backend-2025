@@ -23,7 +23,7 @@ async def get_vms():
         data = response.json()
         return data['data']
 
-async def clone_vm_for_single_node(request, db=None) -> dict:
+async def clone_vm_for_single_node(request) -> dict:
     req_dict = jsonable_encoder(request)
     workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
 

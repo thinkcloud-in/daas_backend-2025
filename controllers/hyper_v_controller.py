@@ -34,7 +34,3 @@ async def handle_action(request):
 async def delete_disk(request):
     result = await service.delete_disk(request)
     return success_response(200, "Successfully deleted disk from Hyper-V VM", result)
-
-#Git
-
-#stash 1

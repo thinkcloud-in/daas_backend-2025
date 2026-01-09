@@ -18,11 +18,13 @@ async def create_pool_activity(request: dict) -> dict:
     db: Session = next(get_db())
     pool_data = {key: request[key] for key in CreatePoolBase.__annotations__.keys() if key in request}
     email = pool_data.pop("email", None)
-
     ip_pool_names = pool_data.get("pool_ip_pool_names")
     if pool_data.get("pool_type") == "Automated":
         if not ip_pool_names or not isinstance(ip_pool_names, list) or not ip_pool_names:
-            raise HTTPException(status_code=400, detail="No IP pools selected for automated assignment. Please select at least one IP pool.")
+            return {
+                "msg": "No IP pools selected for automated assignment. Please select at least one IP pool."
+            }
+            # raise HTTPException(status_code=400, detail="No IP pools selected for automated assignment. Please select at least one IP pool.")
         vm_count = pool_data.get("pool_number_of_vms", 0)
         cluster_id = pool_data.get("cluster_id")
         node = pool_data.get("pool_selected_nodes")
@@ -33,32 +35,34 @@ async def create_pool_activity(request: dict) -> dict:
         # gateway = pool_data.get("gateway")
     try:
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
-        if existing_pool is None:
-            pool = Pool(**pool_data)
-            db.add(pool)
-            db.commit()
-            db.refresh(pool)
-            id_pool = pool.id
-            if pool_data.get("cluster_id"):
-                pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
-                db.commit()
-                db.refresh(pool)
-        else:
+        if existing_pool:
             return {
-                    "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
-                }
-    
+                "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
+            }
+        
+        pool = Pool(**pool_data)
+        db.add(pool)
+        db.flush()
+
+        id_pool = pool.id
+        if pool_data.get("cluster_id"):
+            pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
+
         machines_json = []
         if pool.pool_type == "Automated":
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster_data:
-                raise HTTPException(status_code=404, detail="Cluster not found")
+                return {
+                    "msg": f"Cluster not found for id: {cluster_id}"
+                }
+                # raise HTTPException(status_code=404, detail="Cluster not found")
             nodes = node if isinstance(node, list) else [node]
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
             num_allocated = len(allocated_ips)
             num_requested = vm_count
             num_missing = num_requested - num_allocated
             if num_allocated == 0:
+                db.rollback()
                 return {"msg": "No available IPs in the selected IP pools to create any VMs."}
                 #raise Exception("No available IPs in the selected IP pools to create any VMs.")
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
@@ -88,7 +92,7 @@ async def create_pool_activity(request: dict) -> dict:
             
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
-                response = await clone_vm_for_single_node(clone_payload_dict, db)
+                response = await clone_vm_for_single_node(clone_payload_dict)
             elif cluster_type == "proxmox":
                 response = await clone_vm(clone_payload_dict)
             assigned_vms = response.get("vms", [])
@@ -96,7 +100,7 @@ async def create_pool_activity(request: dict) -> dict:
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
             db.commit()
             db.refresh(pool)
- 
+
             for idx, vm in enumerate(assigned_vms):
                 name = vm.get("name") or f"vm-{vm.get('vmid','') }"
                 vmid = vm.get("vmid")
@@ -229,12 +233,15 @@ async def create_pool_activity(request: dict) -> dict:
                 "pool": jsonable_encoder(pool),
                 "machines": machines_json
             }
+
+        db.commit()
+        db.refresh(pool)
+
         return {
             "msg": "Pool created successfully",
             "pool": jsonable_encoder(pool),
             "machines": machines_json
         }
- 
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Pool creation failed: {str(e)}")

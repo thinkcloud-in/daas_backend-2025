@@ -7,6 +7,7 @@ import requests
 import urllib3
 from db_configuration.config import SessionLocal, get_db
 from models.proxmox_model import Proxmox
+from models.models import Cluster
 from sqlalchemy.orm import Session
 from service.gucamoleService import connectionWithClient
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -40,7 +41,9 @@ logger = logging.getLogger("create_machine_activity")
 def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": ROOT_USERNAME, "password": ROOT_PASSWORD}
+    
     response = requests.post(url, data=payload, verify=VERIFY_SSL)
+    
     response.raise_for_status()
     data = response.json()["data"]
     headers = {"CSRFPreventionToken": data["CSRFPreventionToken"]}
@@ -64,7 +67,7 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
             "Action": ["User-Creation"],
             "UserName": [userName]
         },
-    )
+    ) # type: ignore
     result = await handle.result()
     
     if result.get('status') != 'success':
@@ -96,7 +99,9 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
 def new_user_proxmox_login(PROXMOX_HOST):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": NEW_USER_ID, "password": NEW_PASSWORD}
+    
     response = requests.post(url, data=payload, verify=VERIFY_SSL)
+    
     response.raise_for_status()
     data = response.json()["data"]
     headers = {"CSRFPreventionToken": data["CSRFPreventionToken"]}
@@ -106,15 +111,22 @@ def new_user_proxmox_login(PROXMOX_HOST):
 # Step 5: Create API token as the new user
 def create_api_token_newUser(PROXMOX_HOST):
     headers, cookies = new_user_proxmox_login(PROXMOX_HOST)
+    payload = {
+    "privsep": 0,
+    "comment": "automation token"
+    }
     url = f"{PROXMOX_HOST}/api2/json/access/users/{NEW_USER_ID}/token/{NEW_TOKEN_ID}"
-    response = requests.post(url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
+    response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     response.raise_for_status()
     data = response.json()["data"]
     full_token = data["full-tokenid"]
     secret = data["value"]
     api_token = f"{full_token}={secret}"
+    
+    
+    
     return api_token,full_token,secret
- 
+
  #--------------------------------------------helper functions--------------------------------------------#
 def model_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
@@ -127,6 +139,7 @@ def get_all_proxmox_users(db: Session):
 def get_api_token(db: Session, cluster_name: str):
     obj = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_name).first()
     data = model_to_dict(obj) if obj else {}
+    
     return data.get("api_token", "")
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
@@ -165,9 +178,7 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
             )
             
             db.add(proxmox_user)
-            
             db.commit()
-            
             db.refresh(proxmox_user)
             
             return proxmox_user
@@ -177,26 +188,27 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
             raise
 
 async def create_cluster_proxmox(cluster_data):
-    db = next(get_db())
+    # db = next(get_db())
+    db = SessionLocal()
     try:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
+        # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
+        ROOT_USERNAME = cluster_data.username
+        ROOT_PASSWORD = cluster_data.password
+        cluster_data_dict = cluster_data.dict()
+        await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
+        role = "Administrator"
+        path = "/"
+        await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
+        api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
+        store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
+
     except Exception as e:
+        db.rollback()
         raise Exception(str(e))
-    
-    # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
-    ROOT_USERNAME = cluster_data.username
-    ROOT_PASSWORD = cluster_data.password
-    cluster_data_dict = cluster_data.dict()
-    
-    await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
-    
-    api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
-    
-    role = "Administrator"
-    path = "/"
-    await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
-    
-    store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
+        # return({"msg": f"Error getting Proxmox host: {str(e)}"})
+    finally:
+        db.close()
     
  
 def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
@@ -213,10 +225,8 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
         ip_list = [ip.strip() for ip in ip_field if isinstance(ip, str) and ip.strip()]
     else:
         raise ValueError("Cluster IPs must be provided as a comma-separated string or list.")
-
     if not ip_list:
         raise ValueError("No valid IPs found in provided cluster IPs.")
-
     for ip in ip_list:
         url = f"https://{ip}:{port}"
         try:
@@ -224,7 +234,6 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
             return url
         except Exception:
             continue
-
     raise ValueError("No reachable Proxmox host found in provided IPs.")
 
 
@@ -232,6 +241,7 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
 def get_all_nodes(cluster_data):
     db = next(get_db())
     api_token = get_api_token(db, cluster_data.name)
+    
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
@@ -242,6 +252,7 @@ def get_all_nodes(cluster_data):
         url = f"{PROXMOX_HOST}/api2/json/cluster/status"
         try:
             response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+            
             response.raise_for_status()
             data = response.json()
  
@@ -254,9 +265,10 @@ def get_all_nodes(cluster_data):
                 for node in data["data"]
                 if node.get("type") == "node" and node.get("online", 0) == 1
             ]
-
+            
             return nodes
         except Exception as e:
+            
             last_exception = e
             continue
  

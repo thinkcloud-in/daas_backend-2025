@@ -99,12 +99,14 @@ async def create_machine(machine_data: CreateMachineBase):
     if Pool_data.pool_type == "Automated":
         logger.info("Pool type is Automated, processing workflow IDs.")
         clone_wfid = getattr(machine_data, "clone_workflow_id", None) 
+        
         if clone_wfid:
             if isinstance(clone_wfid, list):
                 workflowId_list.extend(clone_wfid)
             else:
                 workflowId_list.append(str(clone_wfid))
         existing_wfids = getattr(machine_data, "workflowId", None)
+        
         if existing_wfids:
             if isinstance(existing_wfids, list):
                 for wf in existing_wfids:
@@ -113,7 +115,6 @@ async def create_machine(machine_data: CreateMachineBase):
             elif existing_wfids not in workflowId_list:
                 workflowId_list.append(str(existing_wfids))
         workflow_status_map = {wfid: {"status": "running", "error": None} for wfid in workflowId_list}
-        
     else:
         logger.info("Pool type is Manual, skipping additional workflow IDs.")
         workflow_status_map = None

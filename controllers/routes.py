@@ -18,7 +18,6 @@ router = APIRouter(prefix="/v1")
 
 TEMPORAL_SERVER = os.getenv("TEMPORAL_SERVER")
 
- 
 @router.post( '/create_pool', response_model=APIResponse)
 async def create_pool_endpoint(pool_data: models.CreatePoolBase, db: Session = Depends(get_db)):
     pool_data_dict = pool_data.dict()
