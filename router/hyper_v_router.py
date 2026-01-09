@@ -35,9 +35,9 @@ async def get_status(vm_id: str):
         return await controller.get_status(vm_id)
 
 @hyper_v_router.post("/handle_action", response_model=APIResponse[Any])
-async def handle_action(request: HandleActionRequest, db: Session = Depends(get_db)):
-        return await controller.handle_action(request, db)
+async def handle_action(request: HandleActionRequest):
+        return await controller.handle_action(request)
 
 @hyper_v_router.delete("/delete_disk", response_model=APIResponse[Any])
-async def delete_disk(request: HandleDeleteDiskRequest, db: Session = Depends(get_db)):
-        return await controller.delete_disk(request, db)
+async def delete_disk(request: HandleDeleteDiskRequest):
+        return await controller.delete_disk(request)

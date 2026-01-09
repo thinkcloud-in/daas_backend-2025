@@ -1,3 +1,4 @@
+import json
 from fastapi import HTTPException
 from temporalio import activity
 from models.models import CreateClusterBase,Cluster,UpdateClusterBase
@@ -25,21 +26,65 @@ def model_to_dict(obj):
 @activity.defn
 async def create_user_activity(cluster_data: dict, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
+
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST, root_username, root_password)
-    url = f"{PROXMOX_HOST}/api2/json/access/users"
+    
+    # Check user existence
+    check_url = f"{PROXMOX_HOST}/api2/json/access/users/{NEW_USER_ID}"
+    check_response = requests.get(
+        check_url,
+        headers=headers,
+        cookies=cookies,
+        verify=VERIFY_SSL
+    )
+    if check_response.status_code == 200:
+        return {
+            "status": "skipped",
+            "message": f"User {NEW_USER_ID} already exists"
+        }
+    if check_response.status_code == 500:
+        try:
+            data = check_response.json()
+            message = (data.get("message") or "").lower()
+            if "no such user" not in message:
+        
+                pass
+        except ValueError:
+    
+            raise Exception(f"Unexpected error checking user: {check_response.text}")
+    elif check_response.status_code != 404:
+
+        raise Exception(
+            f"Failed to check user existence "
+            f"(status={check_response.status_code}): {check_response.text}"
+        )
+        
+    # create new user
+    create_url = f"{PROXMOX_HOST}/api2/json/access/users"
     payload = {
         "userid": NEW_USER_ID,
         "password": NEW_PASSWORD,
         "enable": 1
     }
-    response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-    if response.status_code == 200:
-        return {"status": "success"}
-    elif response.status_code == 400 and "already exists" in response.text:
-        return {"status": "success"}
-    else:
-        return {"status": "success"}
+
+    response = requests.post(
+        create_url,
+        headers=headers,
+        cookies=cookies,
+        data=payload,
+        verify=VERIFY_SSL
+    )
+
+    if response.status_code in (200, 201):
+        return {
+            "status": "success",
+            "message": f"User {NEW_USER_ID} created successfully"
+        }
+    raise Exception(
+        f"Failed to create user {NEW_USER_ID} "
+        f"(status={response.status_code}): {response.text}"
+    )
 
 
 @activity.defn
@@ -53,13 +98,17 @@ async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str,
         "path": path,
         "roles": role,
         "users": NEW_USER_ID,
-        "tokens":f"{NEW_USER_ID}!{NEW_TOKEN_ID}",
+        # "token":f"{NEW_USER_ID}!{NEW_TOKEN_ID}",
         "propagate": 1
     }
-    response = requests.put(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
-    resp_json = response.json()
-    if resp_json.get("data") is None:
-        return {"msg": "success"}
+    response = requests.put(url, headers=headers, cookies=cookies, json=payload, verify=VERIFY_SSL)
+    # response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
+    if response.status_code == 200:
+        return {"status": "success"}
+
+    if response.status_code == 400 and "already exists" in response.text:
+        return {"status": "success"}
+
     response.raise_for_status()
 
 @activity.defn
@@ -78,7 +127,7 @@ async def create_cluster_activity(cluster_data: dict):
         
         existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
         if existing_cluster_name:
-            return { "msg": "Cluster already exists."}
+            return "Cluster name already exists."
             # raise Exception("Cluster already exists.")
 
         existing_cluster = db.query(Cluster).filter(
@@ -87,14 +136,13 @@ async def create_cluster_activity(cluster_data: dict):
         ).first()
 
         if existing_cluster:
-            return { "msg": "Cluster ip and port already exists."}
+            return "Cluster IP already exists."
             # raise Exception("Cluster ip and port already exists.")
 
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
-        db.flush()
-        # db.commit()
-        # db.refresh(cluster)
+        db.commit()
+        db.refresh(cluster)
         
         if cluster_data_obj.type.lower() == "vmware":
             create_telegraf_vsphere_input_plugin(
@@ -106,10 +154,16 @@ async def create_cluster_activity(cluster_data: dict):
                 cluster.id
             )
         elif cluster_data_obj.type.lower() == "proxmox":
-            await clusterService.create_cluster_proxmox(cluster_data_obj)
-            proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
-            node_ips = [node["ip"] for node in proxmox_nodes]
-            cluster.ip = ",".join(node_ips)
+            try:
+                await clusterService.create_cluster_proxmox(cluster_data_obj) #here
+
+                proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
+                node_ips = [node["ip"] for node in proxmox_nodes]
+                cluster.ip = ",".join(node_ips)
+            except Exception as e:
+                db.delete(cluster)
+                db.commit()
+                raise Exception("Error creating Proxmox cluster: " + str(e))
             
         elif cluster_data_obj.type.lower() == "hyper-v":
             pass
@@ -122,9 +176,7 @@ async def create_cluster_activity(cluster_data: dict):
                 "ip": cluster.ip.split(",") if cluster.ip else []
             }
         }
-    except ClusterAlreadyExistsException as e:
-        db.rollback()
-        raise
+
     except Exception as e:
         db.rollback()
         raise Exception("Error occurred while creating cluster: " + str(e))

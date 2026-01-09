@@ -79,7 +79,6 @@ async def query_grafana(request: Request):
     except requests.exceptions.RequestException as err:
         return {"error": f"Request failed: {err}"}
 
-
 @router.get("/api/dashboards/uid/vsphereOverview")
 def get_dashboard():
     try:

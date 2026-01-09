@@ -96,7 +96,7 @@ async def create_pool_activity(request: dict) -> dict:
             
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
-                response = await clone_vm_for_single_node(clone_payload_dict, db)
+                response = await clone_vm_for_single_node(clone_payload_dict)
             elif cluster_type == "proxmox":
                 response = await clone_vm(clone_payload_dict)
             assigned_vms = response.get("vms", [])

@@ -31,7 +31,6 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
     password = template.get('password')
     gateway = template.get('gateway')
     number_of_vms = request.get("count", 1)
-
     base_vm_name = request.get("name_template", "cloned_vm")
 
     # Only fetch existing VM names from Hyper-V
@@ -44,7 +43,6 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
                 hyperv_names.append(name)
     except Exception:
         hyperv_names = []
-
     new_names =proxmoxService.generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
     if not new_names:
         return {"error": "No unique VM names available for cloning."}
