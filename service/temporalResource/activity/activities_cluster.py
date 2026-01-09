@@ -33,7 +33,6 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
         "password": NEW_PASSWORD,
         "enable": 1
     }
-
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     if response.status_code == 200:
         return {"status": "success"}

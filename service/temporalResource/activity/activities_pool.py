@@ -42,11 +42,15 @@ async def create_pool_activity(request: dict) -> dict:
         
         pool = Pool(**pool_data)
         db.add(pool)
-        db.flush()
+        # db.flush()
+        db.commit()
+        db.refresh(pool)
 
         id_pool = pool.id
         if pool_data.get("cluster_id"):
             pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
+            db.commit()
+            db.refresh(pool)
 
         machines_json = []
         if pool.pool_type == "Automated":
@@ -234,8 +238,8 @@ async def create_pool_activity(request: dict) -> dict:
                 "machines": machines_json
             }
 
-        db.commit()
-        db.refresh(pool)
+        # db.commit()
+        # db.refresh(pool)
 
         return {
             "msg": "Pool created successfully",
