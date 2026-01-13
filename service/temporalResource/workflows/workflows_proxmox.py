@@ -73,8 +73,7 @@ class CloneVMWorkflow:
             batch_payload = clone_payload.copy()
             batch_payload["count"] = batch_count
             batch_payload["ip_list"] = batch_ip_list
- 
-        
+            
             logger.info(
                 f"Processing batch {batch_start // BATCH_SIZE + 1}: "
                 f"VMs {batch_start} to {batch_start + batch_count - 1} "

@@ -122,6 +122,8 @@ import os
 import requests
 from sqlalchemy.orm import Session
 
+PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE")
+
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
     db: Session = next(get_db())
@@ -134,7 +136,7 @@ async def clone_vm_activity(clone_payload: dict):
             raise RuntimeError("No reachable Proxmox host found for the cluster.")
 
         # Validate provided storage environment variable
-        storage = os.getenv("PROXMOX_STORAGE")
+        storage = clone_payload['pool_storage']
         if not storage:
             return {"error": "PROXMOX_STORAGE environment variable not set", "error_type": "invalid_config"}
 
@@ -147,7 +149,6 @@ async def clone_vm_activity(clone_payload: dict):
             list(all_existing_names),
             clone_payload['count'],
         )
-
         existing_vmids = {
             int(vm["vmid"]) for vm in all_vms if "vmid" in vm and str(vm["vmid"]).isdigit()
         }
@@ -201,7 +202,6 @@ async def clone_vm_activity(clone_payload: dict):
 
         needed_count = len(new_names)
         free_vmids = get_free_vmids(existing_vmids, needed_count)
-
         nodes_list = clone_payload.get('node') or []
         if not nodes_list:
             return {"error": "No target node(s) provided in clone payload.", "error_type": "invalid_payload"}
@@ -620,7 +620,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
                 "newid": vmid,
                 "name": machine.name,
                 "target": node,
-                "storage": "prxpool01",
+                "storage": PROXMOX_STORAGE,
                 "full": 1
             }
             resp = requests.post(clone_url, headers=headers, data=payload, verify=False)

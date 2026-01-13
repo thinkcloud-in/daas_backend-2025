@@ -10,7 +10,7 @@ from sqlalchemy.ext.mutable import MutableDict
 
 #declarative base model for pool
 class Pool(Base):
-    __tablename__ = 'pools_new'
+    __tablename__ = 'pools_newa_'
 
     id = Column(Integer, Sequence('pool_id_seq'), primary_key=True)
     pool_type = Column(String)
@@ -157,7 +157,7 @@ class Pool(Base):
     pool_exclude_touch_events = Column(Boolean, nullable=True)
     pool_include_key_events = Column(Boolean, nullable=True)
  
-    
+    pool_storage = Column(String, nullable=True)
     pool_date_created = Column(DateTime, default=datetime.datetime.utcnow)
       #newly added fields by pushpa
     pool_vmids = Column(ARRAY(String),nullable=True)  # List of VM IDs associated with the pool
@@ -178,7 +178,7 @@ class CreatePoolBase(BaseModel):
     pool_name: Optional[str] = None
     pool_machines: Optional[List[str]] = None  # <--- add this line!
     pool_os_type: Optional[str] = None
-   
+    pool_storage: Optional[str] = None
     pool_disable_audio:Optional[bool] = None
     pool_guacd_port:Optional[int] = None
     pool_guacd_encryption: Optional[str] = None
@@ -318,6 +318,10 @@ class CreatePoolBase(BaseModel):
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
     pool_status: Optional[str] = None  # Status of the pool
 
+class NodeRequest(BaseModel):
+    nodes: Optional[List[str]] = None
+    cluster_id: Optional[str] = None
+    
 #Pydantic model for update pool
 class UpdatePoolBase(BaseModel):
     pool_type: Optional[str] = None

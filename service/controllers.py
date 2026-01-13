@@ -5,7 +5,9 @@ from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from models.models import Pool, IsCustomeValue, CreateMachineBase,Pool, Machine,CreateClusterBase,Cluster,UpdateClusterBase,UpdateMachineBase
 from fastapi import HTTPException
+from service.clusterService import get_api_token
 from service.gucamoleService import connectionWithClient
+from service.proxmoxService import is_valid_ip
 from utils import response_format
 from .temporalResource.workflows import workflows_machine
 from .temporalResource.workers import workers_machine
@@ -15,6 +17,7 @@ from models import task_models
 from typing import Optional
 from service.temporalResource.workflows import workflows_cluster
 from db_configuration.config import SessionLocal
+import requests
 db=SessionLocal() 
 
 
@@ -31,6 +34,68 @@ logging.basicConfig(
 logger = logging.getLogger("create_machine_activity")
 
 
+async def get_proxmox_storages(payload, db):
+    try:
+        cluster_data = await get_cluster_details(db, payload.cluster_id)
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+        
+        if isinstance(cluster_data.ip, str):
+            ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if is_valid_ip(ip.strip())]
+        else:
+            ip_list = [ip for ip in cluster_data.ip if is_valid_ip(ip)]
+    
+        if not ip_list:
+            raise RuntimeError("No valid IPs found for cluster.")
+        
+        nodes = list({
+            n.strip()
+            for n in (payload.nodes or [])
+            if n and n.strip()
+        })
+
+        if not nodes:
+            raise HTTPException(status_code=400, detail="No nodes provided")
+
+        result = {}
+
+        for ip in ip_list:
+            PROXMOX_BASE_URL = f"https://{ip}:{cluster_data.port}"
+
+            for node in nodes:
+                url = f"{PROXMOX_BASE_URL}/api2/json/nodes/{node}/storage"
+
+                response = requests.get(
+                    url,
+                    headers=headers,
+                    verify=False,
+                    timeout=30
+                )
+
+                if response.status_code != 200:
+                    raise HTTPException(
+                        status_code=response.status_code,
+                        detail=f"Failed to fetch storages for node {node} on {ip}"
+                    )
+
+                data = response.json().get("data", [])
+                for storage in data:
+                    if not storage or not isinstance(storage, dict):
+                        continue
+                    storage_name = storage.get("storage")
+                    if not storage_name:
+                        continue
+                    if storage_name not in result:
+                        result[storage_name] = storage
+
+        return list(result.values())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 async def create_pool(pool_data: dict, db) -> dict:
     uniqueId = unique_id()
@@ -55,6 +120,14 @@ async def create_pool(pool_data: dict, db) -> dict:
         },
     )
     result =  await handle.result()
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise HTTPException(
+            status_code=400,
+            detail={ 
+                "error_type": result.get("error_type"),
+                "error": result.get("error")
+            }
+        )
     return result 
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
