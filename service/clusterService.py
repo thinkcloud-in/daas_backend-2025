@@ -15,10 +15,8 @@ import os
 import logging
 from service.temporalResource.workflows import workflows_cluster
 from models.proxmox_model import Proxmox, MetricServer
+from utils.proxmox_helper import init_proxmox_context
 
-NEW_USER_ID = os.getenv("PROXMOX_NEW_USER_ID")
-NEW_TOKEN_ID = os.getenv("PROXMOX_NEW_TOKEN_ID")
-NEW_PASSWORD = os.getenv("PROXMOX_NEW_PASSWORD")
 VERIFY_SSL = False
 
 INFLUXDB_URL = os.getenv("INFLUXDB_URL")
@@ -55,6 +53,7 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
 _worker_started = False  # Global flag to track if worker has started
 async def create_user(cluster_data: dict, root_username: str, root_password: str):
     uniqueId = unique_id()
+    cred = init_proxmox_context()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
     handle = await client.start_workflow(
@@ -63,7 +62,7 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
         id=f'create-user-{uniqueId}',
         task_queue="cluster-task-queue",
         search_attributes={
-            "Entity": [NEW_USER_ID],
+            "Entity": [cred['username']],
             "Action": ["User-Creation"],
             "UserName": [userName]
         },
@@ -81,14 +80,14 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     uniqueId = unique_id()
     client = await connectionWithClient()
     userName = cluster_data.get('email', "UnknownUser")
-    
+    cred = init_proxmox_context()
     handle = await client.start_workflow(
         workflows_cluster.AssignRoleToUserWorkflow.run,
         args=[cluster_data, role, path, root_username, root_password],
         id=f'assign-role-{uniqueId}',
         task_queue="cluster-task-queue",
         search_attributes={
-            "Entity": [f"{NEW_USER_ID}-{role}"],
+            "Entity": [f"{cred['username']}-{role}"],
             "Action": ["Role-Assignment"],
             "UserName": [userName]
         },
@@ -97,9 +96,10 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     result = await handle.result()
     return result
 def new_user_proxmox_login(PROXMOX_HOST):
+    cred = init_proxmox_context()
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
-    payload = {"username": NEW_USER_ID, "password": NEW_PASSWORD}
-    
+    payload = {"username": cred['username'], "password": cred['password']}
+
     response = requests.post(url, data=payload, verify=VERIFY_SSL)
     
     response.raise_for_status()
@@ -110,21 +110,20 @@ def new_user_proxmox_login(PROXMOX_HOST):
  
 # Step 5: Create API token as the new user
 def create_api_token_newUser(PROXMOX_HOST):
+    cred = init_proxmox_context()
     headers, cookies = new_user_proxmox_login(PROXMOX_HOST)
     payload = {
     "privsep": 0,
     "comment": "automation token"
     }
-    url = f"{PROXMOX_HOST}/api2/json/access/users/{NEW_USER_ID}/token/{NEW_TOKEN_ID}"
+    url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}/token/{cred['token']}"
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     response.raise_for_status()
     data = response.json()["data"]
     full_token = data["full-tokenid"]
     secret = data["value"]
     api_token = f"{full_token}={secret}"
-    
-    
-    
+
     return api_token,full_token,secret
 
  #--------------------------------------------helper functions--------------------------------------------#
@@ -143,7 +142,7 @@ def get_api_token(db: Session, cluster_name: str):
     return data.get("api_token", "")
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
-    
+    cred = init_proxmox_context()
     existing_user = db.query(Proxmox).filter(
         Proxmox.cluster_name == cluster_name
     ).first()
@@ -151,8 +150,8 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
  
     if existing_user:
         # Update existing fields
-        existing_user.new_password = ""
-        existing_user.token_id = NEW_TOKEN_ID
+        existing_user.new_password = cred['password']
+        existing_user.token_id = cred['token']
         existing_user.full_token = full_token
         existing_user.secret_key = secret
         existing_user.api_token = api_token
@@ -166,10 +165,10 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
     else:
         try:
             proxmox_user = Proxmox(
-                user=NEW_USER_ID,
+                user=cred['username'],
                 cluster_name=cluster_name,
-                new_password="",
-                token_id=NEW_TOKEN_ID,
+                new_password=cred['password'],
+                token_id=cred['token'],
                 full_token=full_token,
                 secret_key=secret,
                 api_token=api_token,
@@ -202,7 +201,6 @@ async def create_cluster_proxmox(cluster_data):
         await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
         api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
         store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
-
     except Exception as e:
         db.rollback()
         raise Exception(str(e))
@@ -275,6 +273,7 @@ def get_all_nodes(cluster_data):
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
  
 def delete_cluster_proxmox(cluster_data, db: Session):
+    cred = init_proxmox_context()
 
     ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if ip.strip()]
     any_ip = random.choice(ip_list) if ip_list else None
@@ -287,8 +286,8 @@ def delete_cluster_proxmox(cluster_data, db: Session):
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
     }
-    url = f"{PROXMOX_HOST}/api2/json/access/users/{NEW_USER_ID}"
- 
+    url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}"
+
     try:
         response = requests.delete(url, headers=headers, verify=VERIFY_SSL)
         # Accept 401/404 errors or "no such user" in the error text

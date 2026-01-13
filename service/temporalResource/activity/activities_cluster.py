@@ -8,14 +8,9 @@ from service import clusterService
 from models.proxmox_model import MetricServer
 from sqlalchemy.orm import Session
 from fastapi.encoders import jsonable_encoder
-import requests
-import os
+import requests, os
+from utils.proxmox_helper import init_proxmox_context, cleanup_proxmox_context
 
-from utils.exception_handler import ClusterAlreadyExistsException 
-
-NEW_USER_ID = os.getenv("PROXMOX_NEW_USER_ID")
-NEW_TOKEN_ID = os.getenv("PROXMOX_NEW_TOKEN_ID")
-NEW_PASSWORD = os.getenv("PROXMOX_NEW_PASSWORD")
 VERIFY_SSL = False
 
 def model_to_dict(obj):
@@ -26,12 +21,13 @@ def model_to_dict(obj):
 @activity.defn
 async def create_user_activity(cluster_data: dict, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-
+    creds = init_proxmox_context()
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST, root_username, root_password)
     
     # Check user existence
-    check_url = f"{PROXMOX_HOST}/api2/json/access/users/{NEW_USER_ID}"
+    check_url = f"{PROXMOX_HOST}/api2/json/access/users/{creds['username']}"
+    
     check_response = requests.get(
         check_url,
         headers=headers,
@@ -39,16 +35,16 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
         verify=VERIFY_SSL
     )
     if check_response.status_code == 200:
+        
         return {
             "status": "skipped",
-            "message": f"User {NEW_USER_ID} already exists"
+            "message": f"User {creds['username']} already exists"
         }
     if check_response.status_code == 500:
         try:
             data = check_response.json()
             message = (data.get("message") or "").lower()
             if "no such user" not in message:
-        
                 pass
         except ValueError:
     
@@ -63,10 +59,11 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
     # create new user
     create_url = f"{PROXMOX_HOST}/api2/json/access/users"
     payload = {
-        "userid": NEW_USER_ID,
-        "password": NEW_PASSWORD,
+        "userid": creds['username'],
+        "password": creds['password'],
         "enable": 1
     }
+    
 
     response = requests.post(
         create_url,
@@ -79,10 +76,10 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
     if response.status_code in (200, 201):
         return {
             "status": "success",
-            "message": f"User {NEW_USER_ID} created successfully"
+            "message": f"User {creds['username']} created successfully"
         }
     raise Exception(
-        f"Failed to create user {NEW_USER_ID} "
+        f"Failed to create user {creds['username']} "
         f"(status={response.status_code}): {response.text}"
     )
 
@@ -90,26 +87,33 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
 @activity.defn
 async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
+    
+    creds = init_proxmox_context()
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST,root_username,root_password)
     # create_api_token_newUser()
     url = f"{PROXMOX_HOST}/api2/json/access/acl"
+    
     payload = {
         "path": path,
         "roles": role,
-        "users": NEW_USER_ID,
+        "users": creds['username'],
         # "token":f"{NEW_USER_ID}!{NEW_TOKEN_ID}",
         "propagate": 1
     }
+    
+    
     response = requests.put(url, headers=headers, cookies=cookies, json=payload, verify=VERIFY_SSL)
-    # response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     if response.status_code == 200:
         return {"status": "success"}
 
     if response.status_code == 400 and "already exists" in response.text:
         return {"status": "success"}
-
+    
     response.raise_for_status()
+
+        
+    
 
 @activity.defn
 async def create_cluster_activity(cluster_data: dict):
@@ -155,8 +159,8 @@ async def create_cluster_activity(cluster_data: dict):
             )
         elif cluster_data_obj.type.lower() == "proxmox":
             try:
-                await clusterService.create_cluster_proxmox(cluster_data_obj) #here
-
+                await clusterService.create_cluster_proxmox(cluster_data_obj)
+                
                 proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
                 node_ips = [node["ip"] for node in proxmox_nodes]
                 cluster.ip = ",".join(node_ips)

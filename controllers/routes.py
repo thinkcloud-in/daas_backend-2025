@@ -161,9 +161,9 @@ async def get_machine_details_route(machine_id: str):
 
 # Create cluster
 @router.post('/create_cluster', response_model=APIResponse)
-async def create_cluster_endpoint(cluster_data: models.CreateClusterBase, db: Session = Depends(get_db)):
+async def create_cluster_endpoint(cluster_data: models.CreateClusterBase):
     cluster_data_dict = cluster_data.dict()
-    res = await controller.create_cluster(cluster_data_dict, db)
+    res = await controller.create_cluster(cluster_data_dict)
     return response_format.success_response(200, "Cluster created successfully.", res)
 
 #Route to list all the clusters

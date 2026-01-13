@@ -1,0 +1,5 @@
+from contextvars import ContextVar
+
+PROXMOX_NEW_USER_ID = ContextVar("PROXMOX_NEW_USER_ID")
+PROXMOX_NEW_PASSWORD = ContextVar("PROXMOX_NEW_PASSWORD")
+PROXMOX_NEW_TOKEN_ID = ContextVar("PROXMOX_NEW_TOKEN_ID")

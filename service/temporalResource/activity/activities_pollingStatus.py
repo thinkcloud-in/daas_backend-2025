@@ -16,10 +16,7 @@ from service.hyper_v_service import get_status as get_hyperv_status
 
 @activity.defn
 async def poll_and_update_machine_status_activity():
-    """
-    Main activity: polls workflow status for machines and gathers power-state info
-    from Proxmox and Hyper-V. Returns a dictionary with statuses, errors and power_states.
-    """
+
     statuses = {}
     error_details = []
     power_states = {}

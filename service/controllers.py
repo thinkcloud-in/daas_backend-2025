@@ -429,7 +429,7 @@ async def get_machine_details( machine_id: str):
     
 
 
-async def create_cluster(cluster_data: CreateClusterBase,db):
+async def create_cluster(cluster_data: CreateClusterBase):
     uniqueId = unique_id()
     client = await connectionWithClient()
     cluster_name = cluster_data['name']
@@ -445,7 +445,7 @@ async def create_cluster(cluster_data: CreateClusterBase,db):
             "Entity": [cluster_name],
             "Action": ["Cluster-Creation"],
             "UserName": [userName]
-        },
+        }
     )
     result = await handle.result()
     return result
