@@ -180,7 +180,6 @@ async def clone_vm(clone_payload: dict):
     client = await connectionWithClient()
     workflow_id = f"clonevms-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
-
     try:
         clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(

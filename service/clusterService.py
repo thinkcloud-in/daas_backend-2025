@@ -34,8 +34,8 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
-logger = logging.getLogger("create_machine_activity")
- 
+logger =  logging.getLogger("create_machine_activity")
+
 def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": ROOT_USERNAME, "password": ROOT_PASSWORD}
@@ -47,7 +47,7 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
     headers = {"CSRFPreventionToken": data["CSRFPreventionToken"]}
     cookies = {"PVEAuthCookie": data["ticket"]}
     return headers, cookies
- 
+
 # Step 2: Create a new user
 
 _worker_started = False  # Global flag to track if worker has started
@@ -113,8 +113,8 @@ def create_api_token_newUser(PROXMOX_HOST):
     cred = init_proxmox_context()
     headers, cookies = new_user_proxmox_login(PROXMOX_HOST)
     payload = {
-    "privsep": 0,
-    "comment": "automation token"
+        "privsep": 0,
+        "comment": "automation token"
     }
     url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}/token/{cred['token']}"
     response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)

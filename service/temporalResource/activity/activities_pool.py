@@ -30,6 +30,7 @@ async def create_pool_activity(request: dict) -> dict:
         node = pool_data.get("pool_selected_nodes")
         template_vm_id = pool_data.get("pool_template_vm_id")
         name_template = pool_data.get("pool_naming_pattern")
+        pool_storage = pool_data.get("pool_storage")
         # os_type = pool_data.get("os_type")
         # password = pool_data.get("password")
         # gateway = pool_data.get("gateway")
@@ -39,15 +40,17 @@ async def create_pool_activity(request: dict) -> dict:
             return {
                 "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
             }
-        
         pool = Pool(**pool_data)
         db.add(pool)
-        db.flush()
-
+        # db.flush()
+        db.commit()
+        db.refresh(pool)
         id_pool = pool.id
         if pool_data.get("cluster_id"):
             pool.cluster_id = f"{id_pool}_{pool_data.get('cluster_id')}"
-
+            db.commit()
+            db.refresh(pool)
+        
         machines_json = []
         if pool.pool_type == "Automated":
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -75,6 +78,7 @@ async def create_pool_activity(request: dict) -> dict:
                 "ip_pool_names": ip_pool_assignments,
                 "count": num_allocated,
                 "ip_list": ip_list,
+                "pool_storage": pool_storage,
                 # "password": password,
                 # "gateway": gateway,
                 # "os_type": os_type
@@ -95,6 +99,12 @@ async def create_pool_activity(request: dict) -> dict:
                 response = await clone_vm_for_single_node(clone_payload_dict)
             elif cluster_type == "proxmox":
                 response = await clone_vm(clone_payload_dict)
+                if response.get("error_type") == "clone_failed":
+                    return {
+                        "status": "error",
+                        "error_type": response.get("error_type"),
+                        "error": response.get("error")
+                    }
             assigned_vms = response.get("vms", [])
     
             pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
@@ -234,8 +244,8 @@ async def create_pool_activity(request: dict) -> dict:
                 "machines": machines_json
             }
 
-        db.commit()
-        db.refresh(pool)
+        # db.commit()
+        # db.refresh(pool)
 
         return {
             "msg": "Pool created successfully",
