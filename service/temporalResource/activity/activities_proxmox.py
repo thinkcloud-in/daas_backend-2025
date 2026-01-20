@@ -427,8 +427,8 @@ async def migrate_bucket_new_data_activity(payload: dict):
  
 @activity.defn
 async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
-    db: Session = next(get_db())  
-    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    db: Session = next(get_db())
+    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
  
@@ -442,24 +442,20 @@ async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
     node = details["node"]
     vmid = details["vmid"]
     headers = details["headers"]
- 
     vm_status = proxmoxService.vm_start(PROXMOX_HOST, node, vmid, headers)
     if vm_status is True:
         machine.error_message = "power-on"
         msg = "VM started successfully."
     elif isinstance(vm_status, dict) and vm_status.get("error"):
-        
         msg = f"Start failed: {vm_status['error']}"
- 
     db.commit()
-    
     return {"vm_status": vm_status, "msg": msg}
  
  
 @activity.defn
 async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     db: Session = next(get_db())
-    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
     details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
@@ -489,7 +485,7 @@ async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
 @activity.defn
 async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     db: Session = next(get_db())  
-    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
     details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
@@ -520,7 +516,7 @@ async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
 async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     
     db: Session = next(get_db())
-    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "msg": f"Machine with id {vmid} not found."}
     details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)

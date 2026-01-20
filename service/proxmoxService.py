@@ -308,17 +308,17 @@ def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
 #---------------------------proxmox power state operations---------------------------
 
 def collect_proxmox_details(vmid, pool_id, db):
-    machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "error": f"Machine with vm_id {vmid} not found in DB."}
     if not machine.pool_id:
         return {"status": "error", "error": f"Machine {vmid} has no associated pool."}
-    pool = db.query(Pool).filter(Pool.id == pool_id).first()
+    pool = db.query(Pool).filter(Pool.id == pool_id).one_or_none()
     if not pool or not pool.pool_template_vm_id:
         return {"status": "error", "error": f"Pool {machine.pool_id} not found or has no templateid."}
  
     cluster_id = pool.cluster_id.split("_")[1]
-    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).one_or_none()
     if not cluster_data:
         return {"status": "error", "error": f"Cluster not found for pool {pool.id}."}
  
@@ -386,7 +386,6 @@ async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
     client = await connectionWithClient()
     workflow_id = f"start_vm_proxmox-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
-
     try:
         # clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(
@@ -405,6 +404,7 @@ async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
             return result
         return result 
     except Exception as e:
+        print("Error", str(e))
         return {"error": str(e)}
 
 
