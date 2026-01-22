@@ -100,10 +100,8 @@ async def test_ldap_connection(ldap_data):
         task_queue="TestLdapConnection-task-queue",
     )
     result =  await handle.result()
-    if(result['code'] not in [200,204,201]):
-        return {"code": result['code'], "msg": "LDAP connection failed", "response": result['response']}
-    else:
-        return {"code": result['code'], "msg": result['msg'], "response": result['response']}
+    return result
+    
 
 async def test_ldap_authentication(ldap_data):
     uniqueId = unique_id()

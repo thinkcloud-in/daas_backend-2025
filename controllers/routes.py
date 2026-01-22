@@ -218,13 +218,13 @@ async def get_LDAPs_from_keycloak_endpoint():
 @router.post('/test_ldap_connection', response_model=APIResponse)
 async def test_ldap_connection_endpoint(ldap_data:models.LDAP_test_connection_model):
     res = await key_config.test_ldap_connection(ldap_data)
-    return response_format.success_response(200,res['msg'], res['response'])
+    return res #--------------don't change this format it may break the workflow and response format
 
 #Route to test LDAP authentication
 @router.post('/test_ldap_authentication', response_model=APIResponse)
 async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connection_model):
     res = await key_config.test_ldap_authentication(ldap_data)
-    return response_format.success_response(200,'Authenticated successfully from LDAP', res)
+    return res #--------------don't change this format it may break the workflow and response format
 
 # Route to delete LDAP configuration
 @router.delete('/delete_ldap_configuration/{ldap_id}', response_model=APIResponse)

@@ -4,6 +4,7 @@ import requests
 from temporalio import activity
 from models.models import LDAPCredential,LDAP_test_connection_model
 from keycloak_configration import keycloak_config
+from utils import response_format
 
 @activity.defn()
 async def ad_ldap_configuration_activity(Ldap: LDAPCredential):
@@ -88,66 +89,61 @@ async def get_LDAPs_from_keycloak_activity():
 @activity.defn()
 async def test_ldap_connection_activity(Ldap: LDAP_test_connection_model):
     from keycloak_configration.keycloak_config import get_login_from_keycloak
+
+    headers = get_login_from_keycloak()  # Assuming you have a function to get headers
+    payload={
+        "action":"testConnection",
+        "authType":Ldap.authType,
+        "bindCredential":Ldap.bindCredential,
+        "bindDn":Ldap.bindDn,
+        "connectionTimeout":Ldap.connectionTimeout,
+        "connectionUrl":Ldap.connectionUrl,
+        "startTls":str(Ldap.startTls).lower(),
+        "useTruststoreSpi":Ldap.useTruststoreSpi
+    }
+
+    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
+    response = requests.post(url, headers=headers, json=payload)
+    status_code = response.status_code
     try:
-        headers = get_login_from_keycloak()  # Assuming you have a function to get headers
-        payload={
-            "action":"testConnection",
-            "authType":Ldap.authType,
-            "bindCredential":Ldap.bindCredential,
-            "bindDn":Ldap.bindDn,
-            "connectionTimeout":Ldap.connectionTimeout,
-            "connectionUrl":Ldap.connectionUrl,
-            "startTls":str(Ldap.startTls).lower(),
-            "useTruststoreSpi":Ldap.useTruststoreSpi
-        }
-
-        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-        response = requests.post(url, headers=headers, json=payload)
-        status_code = response.status_code
-        try:
-            response_json = response.json() 
-        except requests.exceptions.JSONDecodeError:
-            response_json = response.text  
+        response_json = response.json() 
+    except requests.exceptions.JSONDecodeError:
+        response_json = response.text  
+    if status_code not in (200, 204, 201):
+        return response_format.error_response(status_code, "LDAP connection failed", response_json)
+    else:
+        return response_format.success_response(status_code, "Successfully connected to LDAP", response_json)
         
-        if status_code == 204:
-            return {"code": status_code, "msg": "Successfully connected to LDAP", "response": response_json}
-
-        return {"code": status_code, "msg": "Unexpected response", "response": response_json}
-    except Exception as e:
-        return {"code": 500,"msg": "Error occurred", "response": str(e)}
 
 @activity.defn()
 async def test_ldap_authentication_activity(Ldap: LDAP_test_connection_model):
     from keycloak_configration.keycloak_config import get_login_from_keycloak
-    try:
-        headers = get_login_from_keycloak()
-     
-        payload={
-            "action":"testAuthentication",
-            "authType":Ldap.authType,
-            "bindCredential":Ldap.bindCredential,
-            "bindDn":Ldap.bindDn,
-            "connectionTimeout":Ldap.connectionTimeout,
-            "connectionUrl":Ldap.connectionUrl,
-            "startTls":str(Ldap.startTls).lower(),
-            "useTruststoreSpi":Ldap.useTruststoreSpi
-        }
-        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-        res=requests.post(url, headers=headers, json=payload)
-        status_code = res.status_code
-        
-        try:
-            response_json = res.json() 
-        except requests.exceptions.JSONDecodeError:
-            response_json = res.text  
-        
-        if status_code==204:
-            return {"code": status_code, "msg":"Successfully connected to LDAP"}
-        else:
-            return {"msg": "Bad Request", "code": status_code, "response": response_json}
-    except Exception as e:
-        return {"msg": "Error occurred", "response": str(e)}
 
+    headers = get_login_from_keycloak()
+    
+    payload={
+        "action":"testAuthentication",
+        "authType":Ldap.authType,
+        "bindCredential":Ldap.bindCredential,
+        "bindDn":Ldap.bindDn,
+        "connectionTimeout":Ldap.connectionTimeout,
+        "connectionUrl":Ldap.connectionUrl,
+        "startTls":str(Ldap.startTls).lower(),
+        "useTruststoreSpi":Ldap.useTruststoreSpi
+    }
+    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
+    res=requests.post(url, headers=headers, json=payload)
+    status_code = res.status_code
+    
+    try:
+        response_json = res.json() 
+    except requests.exceptions.JSONDecodeError:
+        response_json = res.text  
+    
+    if status_code not in (200, 204, 201):
+        return response_format.error_response(status_code, "LDAP authentication failed", response_json)
+    else:
+        return response_format.success_response(status_code, "Authenticated successfully from LDAP", response_json)
 
 @activity.defn()
 async def delete_ldap_config_activity(ldap_id):
