@@ -220,9 +220,9 @@ async def test_ldap_connection_endpoint(ldap_data:models.LDAP_test_connection_mo
     res = await key_config.test_ldap_connection(ldap_data)
     return response_format.success_response(200,res['msg'], res['response'])
 
-#Route to test LDAP authenticaion
-@router.post('/test_ldap_authenticaion', response_model=APIResponse)
-async def test_ldap_authenticaion_endpoind(ldap_data:models.LDAP_test_connection_model):
+#Route to test LDAP authentication
+@router.post('/test_ldap_authentication', response_model=APIResponse)
+async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connection_model):
     res = await key_config.test_ldap_authentication(ldap_data)
     return response_format.success_response(200,'Authenticated successfully from LDAP', res)
 

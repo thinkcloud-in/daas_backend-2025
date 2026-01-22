@@ -1,8 +1,8 @@
 import requests, json, os
 from fastapi import Request, APIRouter
-
 router = APIRouter(prefix='/v1/grafana', tags=['Grafana'])
-
+from dotenv import load_dotenv
+load_dotenv()
 GRAFANA_URL = os.getenv('GRAFANA_URL')
 TOKEN = os.getenv('GRAFANA_TOKEN')
  
@@ -90,4 +90,4 @@ def get_dashboard():
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        return {"error": str(e)}
+        raise Exception({"error": str(e)})
