@@ -2,6 +2,7 @@ from datetime import datetime
 import json
 import random
 from typing import  Optional
+from urllib.parse import urlparse
 from fastapi import logger
 import requests
 import urllib3
@@ -324,7 +325,9 @@ def add_influxdb_metric_server(cluster_data, payload):
     }
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
-    payload = {k: v for k, v in payload.items() if v}
+    
+    payload = {k: v for k, v in payload.items()}
+    
     response = requests.post(url, headers=headers, data=json.dumps(payload), verify=False)
     response.raise_for_status()
     return response.json()
@@ -365,16 +368,20 @@ def get_influxdb_metric_server(cluster_data):
         return {"error": "No InfluxDB metric server found for the cluster."}
  
 def create_and_get_metric_server(cluster_data):   
+    parsed_url = urlparse(INFLUXDB_URL)
     influxdb_payload = {
         "type": "influxdb",
         "id": cluster_data.name,
-        "server": INFLUXDB_URL.split("://")[1].split(":")[0],
-        "port": int(INFLUXDB_URL.split(":")[-1]),
-        "influxdbproto": INFLUXDB_URL.split("://")[0],
+        "server": parsed_url.hostname,
+        "port": parsed_url.port if parsed_url.port else (443 if parsed_url.scheme == "https" else 80),
+        "influxdbproto": parsed_url.scheme,
         "organization": INFLUXDB_ORG,
         "bucket": INFLUXDB_BUCKET,
-        "token": INFLUXDB_TOKEN
+        "token": INFLUXDB_TOKEN,
+        "verify-certificate": 0,
+        # "otel-verify-ssl": False
     }
+    
     add_influxdb_metric_server(cluster_data, influxdb_payload)
     metric_info = get_influxdb_metric_server(cluster_data)
     return metric_info
