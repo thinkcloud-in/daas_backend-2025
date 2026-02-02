@@ -215,9 +215,7 @@ async def get_temporal_status(schedule_id : str):
 
     async def get_schedule_execution_details(schedule_id):
         client = await Client.connect(os.getenv("TEMPORAL_SERVER"))
-        
         schedule_handle = client.get_schedule_handle(schedule_id)
-        
         try:
             description = await schedule_handle.describe()
             latest_action = description.info.recent_actions[-1]
@@ -229,7 +227,8 @@ async def get_temporal_status(schedule_id : str):
                 if workflow_id and run_id:
                     workflow_handle = client.get_workflow_handle(workflow_id)
                     status = await workflow_handle.describe() #status
-                    # 
+                    #
+                    print("::::::::::::::::::::::::::::::::::::::::::::::::::::: Workflow Status:", status, status.status)
                     if status.status == 1:
                         return("RUNNING")
                     elif status.status == 2:
