@@ -4,8 +4,8 @@
 # from temporalio.client import Client
 # from fastapi import HTTPException
 # from datetime import datetime, timezone
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
  
  
 # async def get_temporal_client():

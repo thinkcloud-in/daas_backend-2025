@@ -50,7 +50,7 @@ class get_LDAPs_from_keycloak_workflow:
             return result
         except Exception as e:
             
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
         
         
 @workflow.defn(sandboxed=False)
@@ -74,9 +74,9 @@ class test_ldap_connection_workflow:
             
             return result
         except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
-        
+
+            raise Exception("Error in workflow")
+
 @workflow.defn(sandboxed=False)
 class test_ldap_authentication_workflow:
     @workflow.run
@@ -98,9 +98,9 @@ class test_ldap_authentication_workflow:
             
             return result
         except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
-        
+
+            raise Exception(f"Error in workflow: {str(e)}")
+
 
 @workflow.defn(sandboxed=False)
 class delete_ldap_config_workflow:
