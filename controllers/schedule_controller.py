@@ -56,6 +56,5 @@ async def delete_item(item_id, db):
     return response_format.success_response(200, "Successfully deleted schedule", data)
 
 async def get_status(schedule_id: str):
-    print("::::::::::::::::::::::::::::::::::::::::::::::::::::: Getting status for schedule ID:", schedule_id)
     data = await service.get_temporal_status(schedule_id)
     return response_format.success_response(200, "Successfully retrieved schedule status", data)

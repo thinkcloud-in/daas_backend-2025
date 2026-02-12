@@ -228,7 +228,6 @@ async def get_temporal_status(schedule_id : str):
                     workflow_handle = client.get_workflow_handle(workflow_id)
                     status = await workflow_handle.describe() #status
                     #
-                    print("::::::::::::::::::::::::::::::::::::::::::::::::::::: Workflow Status:", status, status.status)
                     if status.status == 1:
                         return("RUNNING")
                     elif status.status == 2:

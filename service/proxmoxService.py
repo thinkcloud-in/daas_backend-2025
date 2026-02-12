@@ -404,7 +404,6 @@ async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
             return result
         return result 
     except Exception as e:
-        print("Error", str(e))
         return {"error": str(e)}
 
 

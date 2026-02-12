@@ -10,6 +10,7 @@ from email.mime.application import MIMEApplication
 from datetime import timedelta, datetime
 from typing import Dict, List
 from urllib.parse import quote
+import base64
 
 import os
 from temporalio.common import RetryPolicy
@@ -54,16 +55,15 @@ async def fetch_pdf_report(base_url: str, start_time: str, end_time: str, report
         encoded_report_type = quote(report_type)
         encoded_start = quote(start_time)
         encoded_end = quote(end_time)
-        
-
         formatted_url = f"{base_url}/{encoded_start}/{encoded_end}/{encoded_report_type}"       
-        
-        
-        
         async with aiohttp.ClientSession() as session:
             async with session.post(formatted_url) as response:
                 if response.status == 200:
-                    return await response.read()
+                    # return await response.read()
+                    data = await response.json()
+                    pdf_base64 = data["data"]["pdf_data"]
+                    pdf_bytes = base64.b64decode(pdf_base64)
+                    return pdf_bytes
                 raise Exception(f"Failed to fetch PDF. Status: {response.status}, URL: {formatted_url}")
     except Exception as e:
         raise Exception(f"Error fetching PDF report: {e}")
@@ -83,7 +83,6 @@ async def send_email_with_pdf_activity(
         smtp_server = smtp_config.get('serverIP')
         smtp_port = int(smtp_config.get('serverPort', 587))
         conn_option = smtp_config.get('connOption', 'TLS')
-
         if not all([sender_email, password, smtp_server, smtp_port]):
             raise ValueError("Missing required SMTP configuration fields")
 
@@ -104,9 +103,10 @@ async def send_email_with_pdf_activity(
         msg.attach(MIMEText(body, 'plain'))
 
         pdf_content = await fetch_pdf_report(pdf_url, start_time, end_time, report_type)
-        
         pdf_attachment = MIMEApplication(pdf_content, _subtype="pdf")
-        filename = f"{report_type}_{start_time}_to_{end_time}.pdf"
+        safe_start = start_time.replace(":", "-").replace(" ", "_")
+        safe_end = end_time.replace(":", "-").replace(" ", "_")
+        filename = f"{report_type}_{safe_start}_to_{safe_end}.pdf"
         pdf_attachment.add_header('Content-Disposition', 'attachment', filename=filename)
         msg.attach(pdf_attachment)
 
@@ -116,8 +116,9 @@ async def send_email_with_pdf_activity(
             server = smtplib.SMTP(smtp_server, smtp_port)
             server.starttls()
 
-        server.login(sender_email, password)
-        server.sendmail(sender_email, receiver_emails, msg.as_string())
+        smtp_username = sender_email
+        server.login(smtp_username, password)
+        server.sendmail(smtp_username, receiver_emails, msg.as_string())
         
         server.quit()
         
