@@ -22,9 +22,9 @@ SQLALCHEMY_DATABASE_URL = database_url
 
 engine = create_engine(
     database_url,
-    pool_size=20,        
-    max_overflow=10,     
-    pool_timeout=10,     
+    pool_size=50,        
+    max_overflow=50,     
+    pool_timeout=30,     
     pool_recycle=1800,   
     pool_pre_ping=True,  
     echo=False,          

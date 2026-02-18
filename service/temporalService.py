@@ -4,6 +4,7 @@ import aiohttp
 from temporalio import activity, workflow
 from temporalio.worker import Worker
 from temporalio.client import Client, Schedule, ScheduleActionStartWorkflow, ScheduleSpec, ScheduleState, ScheduleCalendarSpec, ScheduleRange
+from utils.temporal_client import TemporalClientManager
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -210,10 +211,9 @@ async def create_pdf_email_schedule(
     except Exception as e:
         raise Exception(f"Error creating schedule: {e}")
         
-async def run_temporal_worker(temporal_server: str):
+async def run_email_worker():
     try:
-        client = await Client.connect(temporal_server)
-        
+        client = await TemporalClientManager.get_temporal_client()
         
         async with Worker(
             client,
@@ -221,7 +221,6 @@ async def run_temporal_worker(temporal_server: str):
             workflows=[EmailWorkflow],
             activities=[send_email_with_pdf_activity, fetch_pdf_report]
         ):
-            
             await asyncio.Future()
     except Exception as e:
         raise Exception(f"Error in Temporal worker: {e}")
@@ -233,11 +232,10 @@ async def temporal_schedules(
     smtp_config: Dict[str, str],
     receiver_emails: List[str],
     pdf_url: str,
-    report_type: str,
-    temporal_server: str = TEMPORAL_SERVER
+    report_type: str
 ) -> str:
     try:
-        client = await Client.connect(temporal_server)
+        client = await TemporalClientManager.get_temporal_client()
         await create_pdf_email_schedule(
             client,
             scheduleId,
@@ -248,8 +246,6 @@ async def temporal_schedules(
             pdf_url,
             report_type
         )
-        await run_temporal_worker(temporal_server)
         return "Schedule created successfully"
     except Exception as e:
-        
         return f"Failed to schedule: {str(e)}"

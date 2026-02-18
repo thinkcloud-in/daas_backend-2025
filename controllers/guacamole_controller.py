@@ -276,7 +276,8 @@ async def post_role(role_name: str):
         data = await service.posting_role(role_name)
         # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(20, "Role created successfully", data)
-
+    except HTTPException as e:
+        return response_format.error_response(e.status_code, "Failed to create role", e.detail)
     except Exception as e:
         return response_format.error_response(500, "Failed to create role", str(e))
     

@@ -11,6 +11,7 @@ import psycopg2
 from .temporalResource.workflows import workflows_guacmole
 from temporalio.client import Client
 from service.temporalResource.workers import workers_guacmole
+from utils.temporal_client import TemporalClientManager
 from dto.machineDto import MachineDto
 from models.models import CreateMachineBase, Machine
 from models.Rbac_models import RoleComponentSubmitRequest,RBACRequest
@@ -25,7 +26,7 @@ from dotenv import load_dotenv
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-_temporal_client = None 
+ 
 
 
 
@@ -34,23 +35,16 @@ def unique_id():
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
 async def connectionWithClient():
-    global _temporal_client
-
-    if _temporal_client is not None:
-        return _temporal_client
     try:
-        logger.info("connecting...")
-        _temporal_client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-        logger.info("Connected to Temporal server successfully")
-        return _temporal_client
+        return await TemporalClientManager.get_temporal_client()
     except Exception as e:
         logger.error("There is an error connecting to the server",exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
         
 async def startup_event_client():
-    global _temporal_client
     logger.info("Starting up FastAPI server...")
-    asyncio.create_task(connectionWithClient())
+    # Initialize the singleton connection
+    await TemporalClientManager.get_temporal_client()
     logger.info("Temporal connection initialization started...")
 
 logging.basicConfig(

@@ -84,7 +84,7 @@ async def creating_role_activity(role_name: str):
         existing_role = db.query(RBAC).filter(RBAC.role == role_name).first()
         if existing_role:
             logger.info("Role already exists in the database...")
-            return("Role Already Exists")
+            return {"status": "Error", "code": 400, "message": "Role already exists in the database"}
             
         
        
@@ -282,4 +282,4 @@ async def delete_role_from_user_activity(request: dict):
     except Exception as e:
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
-        return {"code": 500, "msg": e}
+        return {"code": 500, "msg": str(e)}
