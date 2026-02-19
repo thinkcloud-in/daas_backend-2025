@@ -60,11 +60,15 @@ async def fetch_pdf_report(base_url: str, start_time: str, end_time: str, report
         async with aiohttp.ClientSession() as session:
             async with session.post(formatted_url) as response:
                 if response.status == 200:
-                    # return await response.read()
                     data = await response.json()
-                    pdf_base64 = data["data"]["pdf_data"]
-                    pdf_bytes = base64.b64decode(pdf_base64)
-                    return pdf_bytes
+                    # Validate the response structure before accessing nested keys
+                    response_data = data.get("data") if isinstance(data, dict) else None
+                    if isinstance(response_data, dict) and "pdf_data" in response_data:
+                        pdf_base64 = response_data["pdf_data"]
+                        pdf_bytes = base64.b64decode(pdf_base64)
+                        return pdf_bytes
+                    else:
+                        raise Exception(f"Unexpected response format from report API. 'data.pdf_data' not found. Response: {data}")
                 raise Exception(f"Failed to fetch PDF. Status: {response.status}, URL: {formatted_url}")
     except Exception as e:
         raise Exception(f"Error fetching PDF report: {e}")
