@@ -398,8 +398,15 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
    
     pdf_file = f"{report_type.lower().replace(' ', '_')}.pdf"
     company_data = await service.get_companies_by_report_type(report_type)
-  
+     
+    company_data_ = company_data.json()
+    print('company_data_--------------------------------',company_data_)
+    print('company_data--------------------------------',company_data)
+    print('company_data[0]--------------------------------',company_data[0]) 
+    if not company_data or not isinstance(company_data, list) or len(company_data) == 0:
+        raise Exception(f"No report template found for report type: '{report_type}'. Please configure a report template first.")
     company_name = company_data[0].get('company_name',"unknown company name")
+    print('--------------------------------',company_name)
     logger.info("successfully got {company_name}")
  
     logo_image = None
