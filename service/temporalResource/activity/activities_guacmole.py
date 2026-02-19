@@ -366,10 +366,9 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
             cursor.execute(update_query, (company_name, company_logo, report_type))
 
             if cursor.rowcount == 0:
-                from ...gucamoleService import insert_report
-                await insert_report(company_name, company_logo, report_type)
+                insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
+                cursor.execute(insert_query, (company_name, company_logo, report_type))
             db.commit()
-            
 
     except Exception as error:
         db.rollback()
