@@ -308,47 +308,50 @@ async def wait_for_vm_ready_activity(args: dict):
 @activity.defn
 async def assign_ip_to_vm_activity(args: dict):
     db: Session = next(get_db())
-    vmid = args["vmid"]
-    cluster_id = args["cluster_id"]
-    ip_address = args["ip_address"]
+    try:
+        vmid = args["vmid"]
+        cluster_id = args["cluster_id"]
+        ip_address = args["ip_address"]
  
-    
-    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-    if not cluster_data:
-        raise Exception(f"Cluster {cluster_id} not found")
-    api_token = proxmoxService.get_api_token(db, cluster_data.name)
-    headers = {"Authorization": f"PVEAPIToken={api_token}"}
-    PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
-    nodes = get_all_nodes(cluster_data)
-    
-    ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip_address).first()
-    if not ip_entry:
-        raise Exception(f"IP entry not found for {ip_address}")
-    ip_pool = db.query(IPSModel).filter(IPSModel.id == ip_entry.pool_id).first()
-    if not ip_pool:
-        raise Exception(f"IP pool not found for id {ip_entry.pool_id}")
-    subnet = ip_pool.Subnet
-    gateway = ip_pool.Gateway
-    cidr = netmask_to_cidr(subnet)
-    ip_with_cidr = f"{ip_address}/{cidr}"
-    for node in nodes:
-        node_name = node["name"]
-        vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/status/current"
-        try:
-            resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
-            if resp.status_code == 200:
-                config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/config"
-                payload = {
-                    "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
-                }
-                config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
-                
-                return {
-                    "message": f"IP {ip_with_cidr} assigned successfully on node {node_name}."
-                }
-        except requests.RequestException as ex:
-            continue
-    raise Exception(f"VMID {vmid} not found on any node. Cannot assign IP or reboot.")
+        
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise Exception(f"Cluster {cluster_id} not found")
+        api_token = proxmoxService.get_api_token(db, cluster_data.name)
+        headers = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = proxmoxService.getting_Proxmox_host(cluster_data)
+        nodes = get_all_nodes(cluster_data)
+        
+        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip_address).first()
+        if not ip_entry:
+            raise Exception(f"IP entry not found for {ip_address}")
+        ip_pool = db.query(IPSModel).filter(IPSModel.id == ip_entry.pool_id).first()
+        if not ip_pool:
+            raise Exception(f"IP pool not found for id {ip_entry.pool_id}")
+        subnet = ip_pool.Subnet
+        gateway = ip_pool.Gateway
+        cidr = netmask_to_cidr(subnet)
+        ip_with_cidr = f"{ip_address}/{cidr}"
+        for node in nodes:
+            node_name = node["name"]
+            vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/status/current"
+            try:
+                resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
+                if resp.status_code == 200:
+                    config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/config"
+                    payload = {
+                        "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
+                    }
+                    config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
+                    
+                    return {
+                        "message": f"IP {ip_with_cidr} assigned successfully on node {node_name}."
+                    }
+            except requests.RequestException as ex:
+                continue
+        raise Exception(f"VMID {vmid} not found on any node. Cannot assign IP or reboot.")
+    finally:
+        db.close()
  
  
 RESERVED_TAG_KEYS = {
@@ -428,119 +431,131 @@ async def migrate_bucket_new_data_activity(payload: dict):
 @activity.defn
 async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
     db: Session = next(get_db())
-    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
-    if not machine:
-        return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
+        if not machine:
+            return {"status": "error", "msg": f"Machine with id {vmid} not found."}
  
-    details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
-    if details.get("status") != "success":
-        machine.error_message = f"Start failed: {details.get('error', 'Unknown error')}"
+        details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
+        if details.get("status") != "success":
+            machine.error_message = f"Start failed: {details.get('error', 'Unknown error')}"
+            db.commit()
+            return details
+ 
+        PROXMOX_HOST = details["PROXMOX_HOST"]
+        node = details["node"]
+        vmid = details["vmid"]
+        headers = details["headers"]
+        vm_status = proxmoxService.vm_start(PROXMOX_HOST, node, vmid, headers)
+        if vm_status is True:
+            machine.error_message = "power-on"
+            msg = "VM started successfully."
+        elif isinstance(vm_status, dict) and vm_status.get("error"):
+            msg = f"Start failed: {vm_status['error']}"
         db.commit()
-        return details
- 
-    PROXMOX_HOST = details["PROXMOX_HOST"]
-    node = details["node"]
-    vmid = details["vmid"]
-    headers = details["headers"]
-    vm_status = proxmoxService.vm_start(PROXMOX_HOST, node, vmid, headers)
-    if vm_status is True:
-        machine.error_message = "power-on"
-        msg = "VM started successfully."
-    elif isinstance(vm_status, dict) and vm_status.get("error"):
-        msg = f"Start failed: {vm_status['error']}"
-    db.commit()
-    return {"vm_status": vm_status, "msg": msg}
+        return {"vm_status": vm_status, "msg": msg}
+    finally:
+        db.close()
  
  
 @activity.defn
 async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     db: Session = next(get_db())
-    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
-    if not machine:
-        return {"status": "error", "msg": f"Machine with id {vmid} not found."}
-    details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
-    if details.get("status") != "success":
-        machine.error_message = f"Stop failed: {details.get('error', 'Unknown error')}"
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
+        if not machine:
+            return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+        details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
+        if details.get("status") != "success":
+            machine.error_message = f"Stop failed: {details.get('error', 'Unknown error')}"
+            db.commit()
+            return details
+ 
+        PROXMOX_HOST = details["PROXMOX_HOST"]
+        node = details["node"]
+        vmid = details["vmid"]
+        headers = details["headers"]
+ 
+        vm_status = proxmoxService.vm_stop(PROXMOX_HOST, node, vmid, headers)
+        if vm_status is True:
+            machine.error_message = "power-off"
+            msg = "VM stopped successfully."
+        elif isinstance(vm_status, dict) and vm_status.get("error"):
+            
+            msg = f"Stop failed: {vm_status['error']}"
+ 
         db.commit()
-        return details
- 
-    PROXMOX_HOST = details["PROXMOX_HOST"]
-    node = details["node"]
-    vmid = details["vmid"]
-    headers = details["headers"]
- 
-    vm_status = proxmoxService.vm_stop(PROXMOX_HOST, node, vmid, headers)
-    if vm_status is True:
-        machine.error_message = "power-off"
-        msg = "VM stopped successfully."
-    elif isinstance(vm_status, dict) and vm_status.get("error"):
         
-        msg = f"Stop failed: {vm_status['error']}"
- 
-    db.commit()
-    
-    return {"vm_status": vm_status, "msg": msg}
+        return {"vm_status": vm_status, "msg": msg}
+    finally:
+        db.close()
 
 
 @activity.defn
 async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     db: Session = next(get_db())  
-    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
-    if not machine:
-        return {"status": "error", "msg": f"Machine with id {vmid} not found."}
-    details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
-    if details.get("status") != "success":
-        machine.error_message = f"Reboot failed: {details.get('error', 'Unknown error')}"
-        db.commit()
-        return details
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
+        if not machine:
+            return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+        details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
+        if details.get("status") != "success":
+            machine.error_message = f"Reboot failed: {details.get('error', 'Unknown error')}"
+            db.commit()
+            return details
  
-    PROXMOX_HOST = details["PROXMOX_HOST"]
-    node = details["node"]
-    vmid = details["vmid"]
-    headers = details["headers"]
+        PROXMOX_HOST = details["PROXMOX_HOST"]
+        node = details["node"]
+        vmid = details["vmid"]
+        headers = details["headers"]
  
-    vm_status = proxmoxService.vm_reboot(PROXMOX_HOST, node, vmid, headers)
-    if vm_status.get("status") == "success":
-        machine.error_message = "reboot..."
-        msg = "VM rebooted successfully."
-    elif vm_status.get("error"):
-        
-        msg = f"Reboot failed: {vm_status['error']}"
-   
-    db.commit()
+        vm_status = proxmoxService.vm_reboot(PROXMOX_HOST, node, vmid, headers)
+        if vm_status.get("status") == "success":
+            machine.error_message = "reboot..."
+            msg = "VM rebooted successfully."
+        elif vm_status.get("error"):
+            
+            msg = f"Reboot failed: {vm_status['error']}"
     
-    return {"vm_status": vm_status, "msg": msg}
+        db.commit()
+        
+        return {"vm_status": vm_status, "msg": msg}
+    finally:
+        db.close()
  
  
 @activity.defn
 async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
     
     db: Session = next(get_db())
-    machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
-    if not machine:
-        return {"status": "error", "msg": f"Machine with id {vmid} not found."}
-    details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
-    if details.get("status") != "success":
-        machine.error_message = f"Shutdown failed: {details.get('error', 'Unknown error')}"
-        db.commit()
-        return details
-   
-    PROXMOX_HOST = details["PROXMOX_HOST"]
-    node = details["node"]
-    vmid = details["vmid"]
-    headers = details["headers"]
- 
-    vm_status = proxmoxService.vm_shutdown(PROXMOX_HOST, node, vmid, headers)
-    if vm_status is True:
-        machine.error_message = "shutdown..."
-        msg = "VM shutdown successfully."
-    elif isinstance(vm_status, dict) and vm_status.get("error"):
-        
-        msg = f"Shutdown failed: {vm_status['error']}"
-   
-    db.commit()
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
+        if not machine:
+            return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+        details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
+        if details.get("status") != "success":
+            machine.error_message = f"Shutdown failed: {details.get('error', 'Unknown error')}"
+            db.commit()
+            return details
     
-    return {"vm_status": vm_status, "msg": msg}
+        PROXMOX_HOST = details["PROXMOX_HOST"]
+        node = details["node"]
+        vmid = details["vmid"]
+        headers = details["headers"]
+ 
+        vm_status = proxmoxService.vm_shutdown(PROXMOX_HOST, node, vmid, headers)
+        if vm_status is True:
+            machine.error_message = "shutdown..."
+            msg = "VM shutdown successfully."
+        elif isinstance(vm_status, dict) and vm_status.get("error"):
+            
+            msg = f"Shutdown failed: {vm_status['error']}"
+    
+        db.commit()
+        
+        return {"vm_status": vm_status, "msg": msg}
+    finally:
+        db.close()
 
 @activity.defn
 async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None):

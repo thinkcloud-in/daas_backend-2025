@@ -13,6 +13,7 @@ from router.proxmox_router import proxmox_router
 from router.ip_router import ip_router
 from router.ipmi_router import ipmi_router
 from service.gucamoleService import startup_event_client
+from service.temporalService import run_email_worker
 from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
@@ -74,4 +75,5 @@ def start_workers():
     start_async_worker(worker_proxmox.vm_rebuild_worker)
     start_async_worker(worker_hyper_v.hyperv_worker)
     start_async_worker(listen_for_machine_changes)
+    start_async_worker(run_email_worker)
 

@@ -84,7 +84,7 @@ async def creating_role_activity(role_name: str):
         existing_role = db.query(RBAC).filter(RBAC.role == role_name).first()
         if existing_role:
             logger.info("Role already exists in the database...")
-            return("Role Already Exists")
+            return {"status": "Error", "code": 400, "message": "Role already exists in the database"}
             
         
        
@@ -104,7 +104,8 @@ async def creating_role_activity(role_name: str):
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": str(e)}
-
+    finally:
+        db.close()
 
 @activity.defn
 async def deleting_role_activity(role_name: str):
@@ -132,7 +133,9 @@ async def deleting_role_activity(role_name: str):
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": e}
-    
+    finally:
+        db.close()
+
 @activity.defn
 async def updating_role_component_activity(request: dict):
     try:
@@ -161,7 +164,8 @@ async def updating_role_component_activity(request: dict):
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": e}
-    
+    finally:
+        db.close()
 
 @activity.defn
 async def getting_role_components_activity(role: str):
@@ -183,7 +187,8 @@ async def getting_role_components_activity(role: str):
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": e}
-    
+    finally:
+        db.close()
 
 @activity.defn
 async def assign_user_role_activity(request :dict):
@@ -217,7 +222,8 @@ async def assign_user_role_activity(request :dict):
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": e}
-    
+    finally:
+        db.close()
 
 
 @activity.defn
@@ -253,7 +259,8 @@ async def get_user_permissions_activity(username: str):
     except Exception as e:
         logger.error(f"An error occurred: {e}", exc_info=True)
         return {"status": "Error", "code": 500, "message": e}
-    
+    finally:
+        db.close()
 @activity.defn
 async def delete_role_from_user_activity(request: dict):
     try:
@@ -282,4 +289,6 @@ async def delete_role_from_user_activity(request: dict):
     except Exception as e:
         db.rollback()
         logger.error(f"An error occurred: {e}", exc_info=True)
-        return {"code": 500, "msg": e}
+        return {"code": 500, "msg": str(e)}
+    finally:
+        db.close()

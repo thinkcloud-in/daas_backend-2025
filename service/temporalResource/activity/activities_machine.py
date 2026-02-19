@@ -210,8 +210,8 @@ async def delete_machine_activity(machine_identifier: str):
         db.rollback()
         logger.exception("An error occurred while deleting the machine")
         raise Exception("An error occurred while deleting the machine", str(e))
-
-
+    finally:
+        db.close()
     
 @activity.defn
 async def update_machine_activity(machine_identifier: str, machine_data: dict):
@@ -256,7 +256,8 @@ async def update_machine_activity(machine_identifier: str, machine_data: dict):
         db.rollback()
         logger.error(f"Error occurred updating machine: {e}", exc_info=True)
         raise Exception(e)
-    
+    finally:
+        db.close()
 @activity.defn
 async def get_all_machines_activity():
     try:
@@ -269,6 +270,8 @@ async def get_all_machines_activity():
     except Exception as e:
         logger.error("Error occurred retrieving machines.", exc_info=True)
         raise Exception("An error occurred while getting all machines", str(e))
+    finally:
+        db.close()
 
 @activity.defn
 async def update_is_custom_machine_activity(machine_identifier: str, machine_details: dict):
@@ -295,6 +298,8 @@ async def update_is_custom_machine_activity(machine_identifier: str, machine_det
         db.rollback()
         logger.error(f"Error occurred while updating 'is_custom_machine' for machine {machine_identifier}.", exc_info=True)
         raise Exception(f"An error occurred while updating the custom machine: {str(e)}")
+    finally:
+        db.close()
 
 @activity.defn
 async def add_user_to_machine_activity(machine_identifier: str, username: str):
@@ -375,6 +380,8 @@ async def add_user_to_machine_activity(machine_identifier: str, username: str):
         db.rollback()
         logger.error(f"An error occurred while assigning user '{username}' to machine '{machine_identifier}'.", exc_info=True)
         raise Exception("An error occurred: {str(e)}")
+    finally:
+        db.close()
 
     
 @activity.defn
@@ -433,6 +440,8 @@ async def delete_user_from_machine_activity(machine_identifier: str, user_id: st
     except Exception as e:
         logger.error("An error occurred while deleting the user.", exc_info=True)
         raise e
+    finally:
+        db.close()
 
 
 @activity.defn
@@ -447,6 +456,8 @@ async def list_all_machine_in_pool_activity(pool_id: str):
     except Exception as e:
         logger.error(f"An error occurred retrieving machines in pool {pool_id}.", exc_info=True)
         raise Exception("An error occurred while listing all machines in pool", str(e))
+    finally:
+        db.close()
 
 
 @activity.defn
@@ -466,6 +477,8 @@ async def list_of_asigned_users_activity(machine_id: str):
     except Exception as e:
         logger.error(f"An error occurred while listing assigned users for machine {machine_id}.", exc_info=True)
         raise Exception(f"An error occurred: {str(e)}")
+    finally:
+        db.close()
 
 
 @activity.defn
@@ -485,4 +498,6 @@ async def get_machine_details_activity(machine_id: str):
         return machine_details
     except Exception as e:
         logger.error(f"An error occurred while getting machine details for {machine_id}.", exc_info=True)
-        raise Exception(f"An error occurred: {str(e)}") 
+        raise Exception(f"An error occurred: {str(e)}")
+    finally:
+        db.close()

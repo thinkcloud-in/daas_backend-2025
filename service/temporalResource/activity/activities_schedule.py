@@ -16,7 +16,8 @@ async def get_schedule_data_activity():
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")
-    
+    finally:
+        db.close()
 
 @activity.defn()
 async def get_schedule_data_by_id_activity(item_id: int):
@@ -30,7 +31,8 @@ async def get_schedule_data_by_id_activity(item_id: int):
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching item: {str(e)}")
-
+    finally:
+        db.close()
 
 @activity.defn()
 async def get_schedule_along_report_activity(report:str, limit: int , offset: int):
@@ -52,7 +54,8 @@ async def get_schedule_along_report_activity(report:str, limit: int , offset: in
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching items: {str(e)}")
-   
+    finally:
+        db.close()
  
 # @activity.defn()
 # async def get_schedule_along_report_activity(report:str, limit: int , offset: int):

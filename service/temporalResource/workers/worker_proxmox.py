@@ -14,17 +14,7 @@ from service.temporalResource.activity.activities_proxmox import (
     vm_rebuild_activity
 
 )
-import os
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        
-        return None
     
 async def clone_vm_worker():
     client = await connectionWithClient()

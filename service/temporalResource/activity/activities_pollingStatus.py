@@ -181,60 +181,63 @@ async def get_proxmox_vm_status_activity():
     ]
     """
     db = next(get_db())
-    pool_data = db.query(Pool).all()
-    pool_map = {}
+    try:
+        pool_data = db.query(Pool).all()
+        pool_map = {}
 
-    for pool in pool_data:
-        vm_ids = pool.pool_vmids or []
-        if not vm_ids:
-            continue
-        clusterid = pool.cluster_id.split("_")[1]
-        cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
-        if not cluster_data:
-            raise RuntimeError(f"Cluster with ID {clusterid} not found.")
-        api_token = get_api_token(db, cluster_data.name)
-        headers = {
-            "Authorization": f"PVEAPIToken={api_token}",
-            "Content-Type": "application/json"
-        }
-        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        if not PROXMOX_HOST:
-            raise RuntimeError("No reachable Proxmox host found for the cluster.")
-        Nodes = get_all_nodes(cluster_data)
-        POWER_STATUS_MAP = {
-            "running": "power-on",
-            "stopped": "power-off",
-            "shutdown": "shutdown",
-            "suspended": "suspend",
-        }
-        for node in Nodes:
-            for vmid in vm_ids:
-                url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
-                try:
-                    response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
-                    response.raise_for_status()
-                    data = response.json()
-                    qmp_status = data["data"].get("qmpstatus", "unknown")
-                    mapped_status = POWER_STATUS_MAP.get(qmp_status, "UNKNOWN")
-                    if pool.pool_name not in pool_map:
-                        pool_map[pool.pool_name] = {
-                            "pool_id": pool.id,
-                            "pool": pool.pool_name,
-                            "cluster": cluster_data.name,
-                            "vms": []
-                        }
-                    pool_map[pool.pool_name]["vms"].append({
-                        "vmid": vmid,
-                        "node": node['name'],
-                        "power_status": qmp_status,
-                        "status": mapped_status,
-                    })
-                except requests.RequestException:
-                    continue
-                except Exception:
-                    continue
+        for pool in pool_data:
+            vm_ids = pool.pool_vmids or []
+            if not vm_ids:
+                continue
+            clusterid = pool.cluster_id.split("_")[1]
+            cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
+            if not cluster_data:
+                raise RuntimeError(f"Cluster with ID {clusterid} not found.")
+            api_token = get_api_token(db, cluster_data.name)
+            headers = {
+                "Authorization": f"PVEAPIToken={api_token}",
+                "Content-Type": "application/json"
+            }
+            PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+            if not PROXMOX_HOST:
+                raise RuntimeError("No reachable Proxmox host found for the cluster.")
+            Nodes = get_all_nodes(cluster_data)
+            POWER_STATUS_MAP = {
+                "running": "power-on",
+                "stopped": "power-off",
+                "shutdown": "shutdown",
+                "suspended": "suspend",
+            }
+            for node in Nodes:
+                for vmid in vm_ids:
+                    url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
+                    try:
+                        response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+                        response.raise_for_status()
+                        data = response.json()
+                        qmp_status = data["data"].get("qmpstatus", "unknown")
+                        mapped_status = POWER_STATUS_MAP.get(qmp_status, "UNKNOWN")
+                        if pool.pool_name not in pool_map:
+                            pool_map[pool.pool_name] = {
+                                "pool_id": pool.id,
+                                "pool": pool.pool_name,
+                                "cluster": cluster_data.name,
+                                "vms": []
+                            }
+                        pool_map[pool.pool_name]["vms"].append({
+                            "vmid": vmid,
+                            "node": node['name'],
+                            "power_status": qmp_status,
+                            "status": mapped_status,
+                        })
+                    except requests.RequestException:
+                        continue
+                    except Exception:
+                        continue
 
-    return list(pool_map.values())
+        return list(pool_map.values())
+    finally:
+        db.close()
 
 
 async def get_hyperv_vm_status_activity():
@@ -251,71 +254,74 @@ async def get_hyperv_vm_status_activity():
         in HYPERV_STATE_MAP below.
     """
     db = next(get_db())
-    pool_data = db.query(Pool).all()
-    pool_map = {}
+    try:
+        pool_data = db.query(Pool).all()
+        pool_map = {}
 
-    # Adjust mapping according to your Hyper-V agent semantics.
-    HYPERV_STATE_MAP = {
-        # example values; please adjust to match your Hyper-V agent's State codes
-        2: "power-on",   # sample: State == 3 => running
-        3: "power-off",  # sample: map of other codes
-    }
+        # Adjust mapping according to your Hyper-V agent semantics.
+        HYPERV_STATE_MAP = {
+            # example values; please adjust to match your Hyper-V agent's State codes
+            2: "power-on",   # sample: State == 3 => running
+            3: "power-off",  # sample: map of other codes
+        }
 
-    for pool in pool_data:
-        vm_ids = pool.pool_vmids or []
-        if not vm_ids:
-            continue
-
-        # Try to find the cluster referenced by the pool
-        try:
-            clusterid = pool.cluster_id.split("_")[1]
-        except Exception:
-            # If cluster id pattern differs, skip; you can adapt this line to your schema.
-            continue
-
-        cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
-        if not cluster_data:
-            continue
-
-        # Heuristic to detect Hyper-V cluster. Adjust to your model (e.g. cluster.type == 'hyperv').
-        is_hyperv = False
-        if getattr(cluster_data, "type", None):
-            is_hyperv = str(cluster_data.type).lower() == "hyperv"
-        if not is_hyperv and getattr(cluster_data, "hypervisor", None):
-            is_hyperv = str(cluster_data.hypervisor).lower() == "hyperv"
-        if not is_hyperv and "hyperv" in (getattr(cluster_data, "name", "") or "").lower():
-            is_hyperv = True
-
-        if not is_hyperv:
-            continue
-
-        # For Hyper-V clusters, call the async agent per VM id
-        for vmid in vm_ids:
-            try:
-                # call the async helper which queries your Hyper-V agent
-                data = await get_hyperv_status(vmid)
-                # Expecting the agent response body to include a 'State' integer and a VMName
-                state_value = data.get("State")
-                mapped_status = HYPERV_STATE_MAP.get(state_value, "UNKNOWN")
-                if pool.pool_name not in pool_map:
-                    pool_map[pool.pool_name] = {
-                        "pool_id": pool.id,
-                        "pool": pool.pool_name,
-                        "cluster": cluster_data.name,
-                        "vms": []
-                    }
-                pool_map[pool.pool_name]["vms"].append({
-                    "vmid": vmid,
-                    "node": cluster_data.name,  # Hyper-V doesn't use Proxmox node names; include cluster
-                    "power_status": state_value,
-                    "status": mapped_status,
-                })
-            except Exception as e:
-                # log and continue with other VMs
-                logger.debug(f"Failed to get Hyper-V status for vmid={vmid}: {e}")
+        for pool in pool_data:
+            vm_ids = pool.pool_vmids or []
+            if not vm_ids:
                 continue
 
-    return list(pool_map.values())
+            # Try to find the cluster referenced by the pool
+            try:
+                clusterid = pool.cluster_id.split("_")[1]
+            except Exception:
+                # If cluster id pattern differs, skip; you can adapt this line to your schema.
+                continue
+
+            cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
+            if not cluster_data:
+                continue
+
+            # Heuristic to detect Hyper-V cluster. Adjust to your model (e.g. cluster.type == 'hyperv').
+            is_hyperv = False
+            if getattr(cluster_data, "type", None):
+                is_hyperv = str(cluster_data.type).lower() == "hyperv"
+            if not is_hyperv and getattr(cluster_data, "hypervisor", None):
+                is_hyperv = str(cluster_data.hypervisor).lower() == "hyperv"
+            if not is_hyperv and "hyperv" in (getattr(cluster_data, "name", "") or "").lower():
+                is_hyperv = True
+
+            if not is_hyperv:
+                continue
+
+            # For Hyper-V clusters, call the async agent per VM id
+            for vmid in vm_ids:
+                try:
+                    # call the async helper which queries your Hyper-V agent
+                    data = await get_hyperv_status(vmid)
+                    # Expecting the agent response body to include a 'State' integer and a VMName
+                    state_value = data.get("State")
+                    mapped_status = HYPERV_STATE_MAP.get(state_value, "UNKNOWN")
+                    if pool.pool_name not in pool_map:
+                        pool_map[pool.pool_name] = {
+                            "pool_id": pool.id,
+                            "pool": pool.pool_name,
+                            "cluster": cluster_data.name,
+                            "vms": []
+                        }
+                    pool_map[pool.pool_name]["vms"].append({
+                        "vmid": vmid,
+                        "node": cluster_data.name,  # Hyper-V doesn't use Proxmox node names; include cluster
+                        "power_status": state_value,
+                        "status": mapped_status,
+                    })
+                except Exception as e:
+                    # log and continue with other VMs
+                    logger.debug(f"Failed to get Hyper-V status for vmid={vmid}: {e}")
+                    continue
+
+        return list(pool_map.values())
+    finally:
+        db.close()
 
 
 # from sqlalchemy.orm import Session

@@ -12,6 +12,7 @@ from temporalio.client import (
     Client,
     ScheduleActionExecutionStartWorkflow,
 )
+from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 import os
 
@@ -106,11 +107,8 @@ def unique_id():
 
 async def connectionWithClient():
     try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-        
-        return client
+        return await TemporalClientManager.get_temporal_client()
     except Exception as e:
-        
         raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")  
     
 async def get_data():
