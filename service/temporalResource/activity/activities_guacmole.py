@@ -367,7 +367,7 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
 
             if cursor.rowcount == 0:
                 from ...gucamoleService import insert_report
-                insert_report(company_name, company_logo, report_type)
+                await insert_report(company_name, company_logo, report_type)
             db.commit()
             
 
