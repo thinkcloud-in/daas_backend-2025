@@ -154,6 +154,7 @@ async def update_company(
         company_logo_bytes = None
         if isinstance(company_logo, UploadFile):
             company_logo_bytes = await company_logo.read()
+            print("------------------")
         elif isinstance(company_logo, str):
             company_logo_bytes = base64.b64decode(company_logo)
 

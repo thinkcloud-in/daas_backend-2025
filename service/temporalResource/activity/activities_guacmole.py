@@ -352,6 +352,7 @@ async def delete_report_activity(report_type:str):
 
 @activity.defn
 async def update_report_activity(company_name: str, company_logo: bytes, report_type: str):
+    print(f"---------------[update_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -364,27 +365,34 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
                 WHERE report_type = %s;
             """
             cursor.execute(update_query, (company_name, company_logo, report_type))
+            print(f"[update_report_activity] UPDATE rowcount={cursor.rowcount}")
 
             if cursor.rowcount == 0:
                 insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
                 cursor.execute(insert_query, (company_name, company_logo, report_type))
+                print(f"[update_report_activity] INSERT rowcount={cursor.rowcount}")
             db.commit()
+            print(f"[update_report_activity] Committed successfully")
 
     except Exception as error:
         db.rollback()
-        return ('error',error)
+        print(f"[update_report_activity] ERROR: {error}")
+        raise
     finally:
         db.close()
 
 @activity.defn
 async def insert_report_activity(company_name: str, company_logo: bytes, report_type: str):
+    print(f"[insert_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
             insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
             cursor.execute(insert_query, (company_name, company_logo, report_type))
             db.commit()
+            print(f"[insert_report_activity] Committed successfully, rowcount={cursor.rowcount}")
     except Exception as error:
+        print(f"[insert_report_activity] ERROR: {error}")
         raise error
     finally:
         db.close()
