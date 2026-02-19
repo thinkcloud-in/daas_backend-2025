@@ -216,6 +216,8 @@ async def get_temporal_status(schedule_id : str):
         schedule_handle = client.get_schedule_handle(schedule_id)
         try:
             description = await schedule_handle.describe()
+            if not description.info.recent_actions:
+                return("PENDING")
             latest_action = description.info.recent_actions[-1]
             if isinstance(latest_action.action, ScheduleActionExecutionStartWorkflow):
                 workflow_id = latest_action.action.workflow_id

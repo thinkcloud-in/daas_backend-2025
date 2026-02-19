@@ -404,7 +404,7 @@ class GenerateReportWorkflow:
             return result
         except Exception as e:
             
-            return None
+            raise
         
 
 
