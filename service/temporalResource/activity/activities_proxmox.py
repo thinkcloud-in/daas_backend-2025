@@ -116,11 +116,6 @@ dotenv.load_dotenv()
 from typing import Dict
 import os
 import requests
-from sqlalchemy.orm import Session
-
-import os
-import requests
-from sqlalchemy.orm import Session
 
 PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE")
 
