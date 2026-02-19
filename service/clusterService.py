@@ -239,39 +239,42 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
 
 def get_all_nodes(cluster_data):
     db = next(get_db())
-    api_token = get_api_token(db, cluster_data.name)
-    
-    headers = {
-        "Authorization": f"PVEAPIToken={api_token}",
-        "Content-Type": "application/json"
-    }
-    last_exception = None
-    for ip in cluster_data.ip:
-        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/status"
-        try:
-            response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
-            
-            response.raise_for_status()
-            data = response.json()
+    try:
+        api_token = get_api_token(db, cluster_data.name)
+        
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+        last_exception = None
+        for ip in cluster_data.ip:
+            PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+            url = f"{PROXMOX_HOST}/api2/json/cluster/status"
+            try:
+                response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+                
+                response.raise_for_status()
+                data = response.json()
  
-            nodes = [
-                {
-                    "name": node["name"],
-                    "ip": node["ip"],
-                    "status": "online"
-                }
-                for node in data["data"]
-                if node.get("type") == "node" and node.get("online", 0) == 1
-            ]
-            
-            return nodes
-        except Exception as e:
-            
-            last_exception = e
-            continue
+                nodes = [
+                    {
+                        "name": node["name"],
+                        "ip": node["ip"],
+                        "status": "online"
+                    }
+                    for node in data["data"]
+                    if node.get("type") == "node" and node.get("online", 0) == 1
+                ]
+                
+                return nodes
+            except Exception as e:
+                
+                last_exception = e
+                continue
  
-    raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
+        raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
+    finally:
+        db.close()
  
 def delete_cluster_proxmox(cluster_data, db: Session):
     cred = init_proxmox_context()
@@ -318,54 +321,60 @@ def delete_cluster_proxmox(cluster_data, db: Session):
  
 def add_influxdb_metric_server(cluster_data, payload):
     db = next(get_db())
-    api_token = get_api_token(db, cluster_data.name)
-    headers = {
-        "Authorization": f"PVEAPIToken={api_token}",
-        "Content-Type": "application/json"
-    }
-    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-    url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
-    
-    payload = {k: v for k, v in payload.items()}
-    
-    response = requests.post(url, headers=headers, data=json.dumps(payload), verify=False)
-    response.raise_for_status()
-    return response.json()
+    try:
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
+        
+        payload = {k: v for k, v in payload.items()}
+        
+        response = requests.post(url, headers=headers, data=json.dumps(payload), verify=False)
+        response.raise_for_status()
+        return response.json()
+    finally:
+        db.close()
  
 def get_influxdb_metric_server(cluster_data):
     """
     Get InfluxDB metric server for the given cluster.
     """
     db = next(get_db())
-    api_token = get_api_token(db, cluster_data.name)
-    headers = {
-        "Authorization": f"PVEAPIToken={api_token}",
-        "Content-Type": "application/json"
-    }
-    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-    url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
     try:
-        response = requests.get(url, headers=headers, verify=False)
-        response.raise_for_status()
-        data = response.json().get("data", [])
-    except Exception as e:
-        return {"error": "Failed to fetch metric servers from Proxmox API."}
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
+        try:
+            response = requests.get(url, headers=headers, verify=False)
+            response.raise_for_status()
+            data = response.json().get("data", [])
+        except Exception as e:
+            return {"error": "Failed to fetch metric servers from Proxmox API."}
  
-    if isinstance(data, list) and data:
-        for server in data:
-            if server.get("type") == "influxdb":
-                server_id = server.get("id")
-                if server_id:
-                    detail_url = f"{url}/{server_id}"
-                    try:
-                        detail_resp = requests.get(detail_url, headers=headers, verify=False)
-                        detail_resp.raise_for_status()
-                        return detail_resp.json().get("data", {})
-                    except Exception as e:
-                        return {"error": f"Failed to fetch details for metric server ID {server_id}."}
-        return {"error": "No InfluxDB metric server ID found in the cluster."}
-    else:
-        return {"error": "No InfluxDB metric server found for the cluster."}
+        if isinstance(data, list) and data:
+            for server in data:
+                if server.get("type") == "influxdb":
+                    server_id = server.get("id")
+                    if server_id:
+                        detail_url = f"{url}/{server_id}"
+                        try:
+                            detail_resp = requests.get(detail_url, headers=headers, verify=False)
+                            detail_resp.raise_for_status()
+                            return detail_resp.json().get("data", {})
+                        except Exception as e:
+                            return {"error": f"Failed to fetch details for metric server ID {server_id}."}
+            return {"error": "No InfluxDB metric server ID found in the cluster."}
+        else:
+            return {"error": "No InfluxDB metric server found for the cluster."}
+    finally:
+        db.close()
  
 def create_and_get_metric_server(cluster_data):   
     parsed_url = urlparse(INFLUXDB_URL)
@@ -419,21 +428,23 @@ def save_metric_server_to_db(
 
 def delete_influxdb_metric_server(cluster_data):
     db = next(get_db())
-
-    api_token = get_api_token(db, cluster_data.name)
-    headers = {
-        "Authorization": f"PVEAPIToken={api_token}",
-        "Content-Type": "application/json"
-    }
-
-    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-    url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
     try:
-        response = requests.delete(url, headers=headers, verify=False)
-        response.raise_for_status()
-        return {"status": "success"}
-    except Exception as e:
-        return {"error": f"Failed to delete metric server from Proxmox API: {e}"}
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
+        try:
+            response = requests.delete(url, headers=headers, verify=False)
+            response.raise_for_status()
+            return {"status": "success"}
+        except Exception as e:
+            return {"error": f"Failed to delete metric server from Proxmox API: {e}"}
+    finally:
+        db.close()
 
 def can_delete_metric_server(db, cluster_id):
 
