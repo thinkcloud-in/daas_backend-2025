@@ -375,13 +375,25 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         is_automated = db_pool.pool_type == "Automated"
         old_vm_count = db_pool.pool_number_of_vms if is_automated else 0
-        new_vm_count = pool_data.get("pool_number_of_vms", old_vm_count)
-        if new_vm_count is None:
-            new_vm_count = old_vm_count
-        try:
-            new_vm_count = int(new_vm_count)
-        except Exception:
-            new_vm_count = old_vm_count
+        
+        # Enforce no-decrease policy for Automated pools
+        if is_automated:
+            requested_vm_count = pool_data.get("pool_number_of_vms", old_vm_count)
+            if requested_vm_count is None:
+                requested_vm_count = old_vm_count
+            try:
+                requested_vm_count = int(requested_vm_count)
+            except Exception:
+                requested_vm_count = old_vm_count
+            
+            if requested_vm_count < old_vm_count:
+                # If user tries to decrease, ignore it and keep existing count
+                new_vm_count = old_vm_count
+            else:
+                new_vm_count = requested_vm_count
+        else:
+            new_vm_count = 0
+
         added_count = new_vm_count - old_vm_count
 
         machines_json = []
@@ -415,13 +427,16 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                         pass
             nodes = db_pool.pool_selected_nodes if isinstance(db_pool.pool_selected_nodes, list) else [db_pool.pool_selected_nodes]
             name_template = db_pool.pool_naming_pattern
+            
+            # Fix: Retrieve pool_storage from payload or fallback to DB
+            pool_storage = pool_data.get("pool_storage", db_pool.pool_storage)
 
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, added_count)
             if not allocated_ips:
                 return {
                     "msg": 'No available IPs in the selected IP pools to create any additional VMs.',
                 }
-
+            num_allocated = len(allocated_ips)
             ip_list = [ip_entry['ip'] for ip_entry, _ in allocated_ips]
             ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
 
@@ -430,9 +445,9 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             template_for_clone = template_vm_id
             if cluster_type == "proxmox":
                 if isinstance(template_vm_id, dict):
-                    if "template_vm_id" in template_vm_id:
+                    if "vmid" in template_vm_id:
                         try:
-                            template_for_clone = int(template_vm_id["template_vm_id"])
+                            template_for_clone = int(template_vm_id["vmid"])
                         except Exception:
                             raise HTTPException(status_code=400, detail="Invalid template_vm_id value for Proxmox: must be numeric")
                     else:
@@ -452,8 +467,9 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "template_vm_id": template_for_clone,
                 "name_template": name_template,
                 "ip_pool_names": ip_pool_assignments,
-                "count": added_count,
+                "count": num_allocated,
                 "ip_list": ip_list,
+                "pool_storage": pool_storage,
             }
 
             try:
@@ -482,7 +498,9 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         
         pool_data_excluding_vmcount = dict(pool_data)
-        if is_automated and added_count > 0:
+        if is_automated:
+            # Always prevent overwriting the VM count with the raw request value,
+            # because we manage 'pool_number_of_vms' specifically based on added_count logic.
             pool_data_excluding_vmcount.pop("pool_number_of_vms", None)
 
         for field, value in pool_data_excluding_vmcount.items():
