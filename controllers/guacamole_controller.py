@@ -143,9 +143,9 @@ async def read_companies_by_report_type(report_type: str ):
 
 
 async def update_company(
-    company_name: str = Form(...),
-    company_logo: Union[UploadFile, str, None] = File(...),
-    report_type: str = Form(...),
+    company_name,
+    company_logo,
+    report_type,
 ):
     try:
         company_name_str = str(company_name)
