@@ -121,9 +121,9 @@ async def send_email_with_pdf_activity(
             server = smtplib.SMTP(smtp_server, smtp_port)
             server.starttls()
 
-        smtp_username = sender_email
+        smtp_username = smtp_config.get('userName', sender_email)
         server.login(smtp_username, password)
-        server.sendmail(smtp_username, receiver_emails, msg.as_string())
+        server.sendmail(sender_email, receiver_emails, msg.as_string())
         
         server.quit()
         

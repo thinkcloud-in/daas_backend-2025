@@ -55,6 +55,7 @@ def post_data(item, db):
             raise Exception("Failed to get smtp data")
         smtp_config = {
             "email": smtp_response.email,
+            "userName": smtp_response.userName,
             "password": smtp_response.password,
             "serverIP": smtp_response.serverIP,
             "serverPort": smtp_response.serverPort,
