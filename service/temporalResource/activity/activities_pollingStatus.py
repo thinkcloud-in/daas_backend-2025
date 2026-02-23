@@ -33,21 +33,10 @@ async def poll_and_update_machine_status_activity():
                 "power_states": {}
             }
 
-        # Run Proxmox and Hyper-V power-state collectors concurrently
+        # Run Proxmox and Hyper-V power-state collectors
         try:
-            proxmox_task = get_proxmox_vm_status_activity()
-            hyperv_task = get_hyperv_vm_status_activity()
-            proxmox_vm_status, hyperv_vm_status = await asyncio.gather(
-                proxmox_task, hyperv_task, return_exceptions=True
-            )
-
-            # If a task raised, log and coerce to empty list
-            if isinstance(proxmox_vm_status, Exception):
-                logger.error(f"Failed to fetch Proxmox VM status: {proxmox_vm_status}")
-                proxmox_vm_status = []
-            if isinstance(hyperv_vm_status, Exception):
-                logger.error(f"Failed to fetch Hyper-V VM status: {hyperv_vm_status}")
-                hyperv_vm_status = []
+            proxmox_vm_status = await get_proxmox_vm_status_activity(db=db)
+            hyperv_vm_status = await get_hyperv_vm_status_activity(db=db)
         except Exception as e:
             logger.error(f"Failed to run power-state collectors: {e}")
             proxmox_vm_status = []
@@ -167,20 +156,14 @@ import requests
 VERIFY_SSL = False
 
 @activity.defn
-async def get_proxmox_vm_status_activity():
+async def get_proxmox_vm_status_activity(db: Session = None):
     """
     Existing Proxmox collector (left mostly as-is).
-    Returns a list of pools:
-    [
-      {
-        "pool_id": pool.id,
-        "pool": pool.pool_name,
-        "cluster": cluster_data.name,
-        "vms": [ { "vmid": vmid, "node": node_name, "power_status": qmp_status, "status": mapped_status }, ... ]
-      }, ...
-    ]
     """
-    db = next(get_db())
+    own_db = False
+    if db is None:
+        db = next(get_db())
+        own_db = True
     try:
         pool_data = db.query(Pool).all()
         pool_map = {}
@@ -237,23 +220,19 @@ async def get_proxmox_vm_status_activity():
 
         return list(pool_map.values())
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
-async def get_hyperv_vm_status_activity():
+async def get_hyperv_vm_status_activity(db: Session = None):
     """
     New Hyper-V collector.
-    - Scans Pool rows and for pools that belong to Hyper-V clusters it calls the async
-      hyperv service (get_hyperv_status) per VM id.
-    - Returns the same shaped result as get_proxmox_vm_status_activity so the caller can
-      aggregate them together.
-    Notes:
-      - Detection of Hyper-V clusters: this function attempts common properties (cluster.type,
-        cluster.hypervisor, cluster.name). Adjust the detection logic to match your Cluster model.
-      - Mapping from the Hyper-V 'State' integer to a human readable power-status is configurable
-        in HYPERV_STATE_MAP below.
+    ...
     """
-    db = next(get_db())
+    own_db = False
+    if db is None:
+        db = next(get_db())
+        own_db = True
     try:
         pool_data = db.query(Pool).all()
         pool_map = {}
@@ -321,7 +300,8 @@ async def get_hyperv_vm_status_activity():
 
         return list(pool_map.values())
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 # from sqlalchemy.orm import Session

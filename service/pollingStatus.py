@@ -38,11 +38,6 @@ def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: s
         machine.error_message = "; ".join(errors) if errors else None
     db.commit()
     db.refresh(machine)
-    new_db = next(get_db())
-    try:
-        fresh_machine = new_db.query(Machine).filter(Machine.id == machine_id).first()
-    finally:
-        new_db.close()
     return machine.workflow_status, machine.status, machine.error_message
 
 async def get_workflow_failure_message_simple(workflow_id):
