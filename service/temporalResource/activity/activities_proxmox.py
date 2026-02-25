@@ -556,7 +556,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
 async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None):
     db: Session = next(get_db())
     try:
-        machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
         if not machine:
             return {"status": "error", "error": f"Machine with vm_id {vmid} not found in DB."}
         if not machine.pool_id:
