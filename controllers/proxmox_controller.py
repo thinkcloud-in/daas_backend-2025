@@ -364,13 +364,28 @@ def proxmox_all_vm_details(
         return vm_infos
 
 async def proxmox_vm_details(vm_id: int, db):
-        cluster_data = get_cluster_by_id(db, vm_id)
-        if not cluster_data:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        vm_infos = await service.get_all_vm_details_parallel(db, cluster_data)
-        vm_info = next((vm for vm in vm_infos if vm["vmid"] == vm_id), None)
-        if not vm_info:
-            raise HTTPException(status_code=404, detail="VM not found")
-        return vm_info
+    cluster_data = get_cluster_by_id(db, vm_id)
+    if not cluster_data:
+        raise HTTPException(status_code=404, detail="Cluster not found")
+    
+    vm_infos = await service.get_all_vm_details_parallel(db, cluster_data)
+    # Use string comparison for robustness
+    vm_info = next((vm for vm in vm_infos if str(vm.get("vmid")) == str(vm_id)), None)
+    
+    if not vm_info:
+        # Fallback: check if machine exists in DB
+        machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+        if machine:
+            return {
+                "vmid": vm_id,
+                "name": machine.name,
+                "status": "not_found_in_proxmox",
+                "node": "unknown",
+                "ip_addresses": [machine.hostname] if machine.hostname else [],
+                "agent_enabled": False,
+                "msg": "VM exists in DB but not found in Proxmox (it might be rebuilding or deleted)."
+            }
+        raise HTTPException(status_code=404, detail="VM not found")
+    return vm_info
  
   
