@@ -180,4 +180,19 @@ async def get_machine_details_worker():
         
     except Exception as e:
         raise e
+
+async def combined_machine_worker():
+    import asyncio
+    await asyncio.gather(
+        create_machine_worker(),
+        delete_machine_worker(),
+        update_machine_worker(),
+        get_all_machines_worker(),
+        update_is_custom_machine_worker(),
+        add_user_to_machine_worker(),
+        delete_user_from_machine_worker(),
+        list_all_machine_in_pool_worker(),
+        list_all_asigned_users_worker(),
+        get_machine_details_worker()
+    )
         
