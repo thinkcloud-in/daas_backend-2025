@@ -1,4 +1,3 @@
-import asyncio
 from temporalio.worker import Worker
 from service.temporalResource.activity import activities_pool
 from service.temporalResource.workflows import workflows_pool
@@ -147,6 +146,7 @@ async def get_pool_details_ID_worker():
 
 
 async def combined_pool_worker():
+    import asyncio
     await asyncio.gather(
         create_pool_worker(),
         update_pool_worker(),

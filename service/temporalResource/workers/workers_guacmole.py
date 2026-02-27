@@ -1,5 +1,4 @@
 import os
-import asyncio
 from temporalio.worker import Worker
 from service.temporalResource.activity import activities_guacmole
 from service.temporalResource.workflows import workflows_guacmole

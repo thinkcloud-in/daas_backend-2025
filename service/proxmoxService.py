@@ -22,7 +22,11 @@ from models.proxmox_model import MetricServer
 from service.pollingStatus import update_workflow_status
 import logging, time
 
-# Logging managed by utils.logger
+# Set logging configuration
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 logger = logging.getLogger(__name__)
  
@@ -170,6 +174,11 @@ _worker_started = False
 _vm_rebuild_worker_started = False
 
 async def clone_vm(clone_payload: dict):
+    global _worker_started
+    if not _worker_started:
+        asyncio.create_task(worker_proxmox.clone_vm_worker())
+        _worker_started = True
+
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"clonevms-{uniqueId}"
@@ -251,6 +260,12 @@ async def update_metric_server_token(cluster_id: int, new_token: str):
  
 
 async def migrate_bucket_all_data(migration_payload: dict):
+    global _worker_started
+    if not _worker_started:
+        # Start your worker (if you have a worker runner, or omit if static process)
+        asyncio.create_task(worker_proxmox.migrate_worker())
+        _worker_started = True
+
     uniqueId = unique_id()  # Or use any unique ID generator you have
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"Migration-{uniqueId}"
@@ -540,6 +555,11 @@ def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign
 
 async def vm_rebuild(vmid: int, pool_id: str,email: str):
     db = next(get_db())
+    global _worker_started
+    if not _worker_started:
+        asyncio.create_task(worker_proxmox.vm_rebuild_worker())
+        _worker_started = True
+
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"vmrebuild-{uniqueId}"
