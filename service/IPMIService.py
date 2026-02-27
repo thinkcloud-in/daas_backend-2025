@@ -16,10 +16,7 @@ def unique_id():
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
  
  
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging managed by utils.logger
 logger = logging.getLogger("create_machine_activity")
 
 async def create_ipmi_server(db: Session, ipmi_data: IPMIDeviceRequest):

@@ -1,3 +1,4 @@
+import asyncio
 from temporalio.worker import Worker
 from service.temporalResource.activity import activities_machine
 from service.temporalResource.workflows import workflows_machine
@@ -171,7 +172,6 @@ async def get_machine_details_worker():
         raise e
 
 async def combined_machine_worker():
-    import asyncio
     await asyncio.gather(
         create_machine_worker(),
         delete_machine_worker(),

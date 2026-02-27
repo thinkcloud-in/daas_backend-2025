@@ -1,4 +1,5 @@
 import os
+import asyncio
 from temporalio.worker import Worker
 from service.temporalResource.activity import activities_RBAC
 from service.temporalResource.workflows import workflows_RBAC
@@ -154,4 +155,23 @@ async def delete_role_from_user_worker():
         
     except Exception as e:
         raise e
+
+async def start_all_rbac_workers():
+    client = await connectionWithTemporal()
+    queues = [
+        ("get_client_taskqueue", [workflows_RBAC.GetClientWorkflow], [activities_RBAC.get_client_activity]),
+        ("get_client_roles_taskqueue", [workflows_RBAC.GetClientRolesWorkflow], [activities_RBAC.get_client_roles_activity]),
+        ("creating_role_taskqueue", [workflows_RBAC.CreatingRoleWorkflow], [activities_RBAC.creating_role_activity]),
+        ("deleting_role_taskqueue", [workflows_RBAC.DeletingRoleWorkflow], [activities_RBAC.deleting_role_activity]),
+        ("updating_role_component_taskqueue", [workflows_RBAC.UpdateRoleComponentWorkflow], [activities_RBAC.updating_role_component_activity]),
+        ("getting_role_component_taskqueue", [workflows_RBAC.GetRoleComponentWorkflow], [activities_RBAC.getting_role_components_activity]),
+        ("assign_user_role_taskqueue", [workflows_RBAC.AssignUserRoleworkflow], [activities_RBAC.assign_user_role_activity]),
+        ("get_user_permissions_taskqueue", [workflows_RBAC.GetUserPermissionsWorkflow], [activities_RBAC.get_user_permissions_activity]),
+        ("delete_role_from_user_taskqueue", [workflows_RBAC.DeleteRoleFromUserWorkflow], [activities_RBAC.delete_role_from_user_activity]),
+    ]
+    workers = []
+    for queue_name, wfs, acts in queues:
+        workers.append(Worker(client, task_queue=queue_name, workflows=wfs, activities=acts))
+    
+    await asyncio.gather(*[w.run() for w in workers])
         
