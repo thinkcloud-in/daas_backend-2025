@@ -1,93 +1,23 @@
 import os
+import asyncio
 from temporalio.worker import Worker
-from temporalio.client import Client
 from service.temporalResource.activity import activities_schedule
 from service.temporalResource.workflows import workflows_schedule
+from utils.temporal_client import TemporalClientManager
 
-
-async def connectionWithTemporal():
+async def start_all_schedule_workers():
+    client = await TemporalClientManager.get_temporal_client()
     
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        raise e
-
-async def get_report_data_worker():
-    client = await connectionWithTemporal()
-    worker = Worker(
-        client,
-        task_queue="GetReportData-task-queue",
-        workflows=[workflows_schedule.get_report_data_workflow], 
-        activities=[activities_schedule.get_schedule_data_activity],
-    )
+    queues = [
+        ("GetReportData-task-queue", [workflows_schedule.get_report_data_workflow], [activities_schedule.get_schedule_data_activity]),
+        ("GetReportDataById-task-queue", [workflows_schedule.get_report_data_by_id_workflow], [activities_schedule.get_schedule_data_by_id_activity]),
+        ("GetScheduleDataAlongReport-task-queue", [workflows_schedule.get_report_along_report_workflow], [activities_schedule.get_schedule_along_report_activity]),
+        ("UpdateScheduleDataById-task-queue", [workflows_schedule.update_schedule_data_id_workflow], [activities_schedule.update_schedule_data_id_activity]),
+        ("DeleteScheduleDataById-task-queue", [workflows_schedule.delete_schedule_data_id_workflow], [activities_schedule.delete_schedule_data_id_activity]),
+    ]
     
-    try:
-        await worker.run()
-        
-    except Exception as e:
-        raise e
-
-
-async def get_report_data_by_id_worker():
-    client = await connectionWithTemporal()
-    worker = Worker(
-        client,
-        task_queue="GetReportDataById-task-queue",
-        workflows=[workflows_schedule.get_report_data_by_id_workflow], 
-        activities=[activities_schedule.get_schedule_data_by_id_activity],
-    )
+    workers = []
+    for queue_name, wfs, acts in queues:
+        workers.append(Worker(client, task_queue=queue_name, workflows=wfs, activities=acts))
     
-    try:
-        await worker.run()
-        
-    except Exception as e:
-        raise e
-
-async def get_schedule_data_along_report_worker():
-    client = await connectionWithTemporal()
-    worker = Worker(
-        client,
-        task_queue="GetScheduleDataAlongReport-task-queue",
-        workflows=[workflows_schedule.get_report_along_report_workflow], 
-        activities=[activities_schedule.get_schedule_along_report_activity],
-    )
-    
-    try:
-        await worker.run()
-        
-    except Exception as e:
-        raise e
-\
-
-async def update_schedule_data_id_worker():
-    client = await connectionWithTemporal()
-    worker = Worker(
-        client,
-        task_queue="UpdateScheduleDataById-task-queue",
-        workflows=[workflows_schedule.update_schedule_data_id_workflow], 
-        activities=[activities_schedule.update_schedule_data_id_activity],
-    )
-    
-    try:
-        await worker.run()
-        
-    except Exception as e:
-        raise e
-
-
-async def delete_schedule_data_id_worker():
-    client = await connectionWithTemporal()
-    worker = Worker(
-        client,
-        task_queue="DeleteScheduleDataById-task-queue",
-        workflows=[workflows_schedule.delete_schedule_data_id_workflow], 
-        activities=[activities_schedule.delete_schedule_data_id_activity],
-    )
-    
-    try:
-        await worker.run()
-        
-    except Exception as e:
-        raise e
+    await asyncio.gather(*[w.run() for w in workers])

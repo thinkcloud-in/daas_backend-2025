@@ -1,11 +1,9 @@
 import os
-from dotenv import load_dotenv
 import logging
-
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+
 
 conf_file_path = os.getenv('TELEGRAF_CONF_FILE', '/etc/telegraf/telegraf.conf')
 metrics_file_path = os.getenv('TELEGRAF_METRIC_FILE', '/etc/telegraf/metrics.txt')

@@ -8,7 +8,8 @@ from service import clusterService
 from models.proxmox_model import MetricServer
 from sqlalchemy.orm import Session
 from fastapi.encoders import jsonable_encoder
-import requests, os
+from utils.session_manager import SessionManager
+import os
 from utils.proxmox_helper import init_proxmox_context, cleanup_proxmox_context
 
 VERIFY_SSL = False
@@ -28,7 +29,8 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
     # Check user existence
     check_url = f"{PROXMOX_HOST}/api2/json/access/users/{creds['username']}"
     
-    check_response = requests.get(
+    session = SessionManager.get_session()
+    check_response = session.get(
         check_url,
         headers=headers,
         cookies=cookies,
@@ -65,7 +67,8 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
     }
     
 
-    response = requests.post(
+    session = SessionManager.get_session()
+    response = session.post(
         create_url,
         headers=headers,
         cookies=cookies,
@@ -103,7 +106,8 @@ async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str,
     }
     
     
-    response = requests.put(url, headers=headers, cookies=cookies, json=payload, verify=VERIFY_SSL)
+    session = SessionManager.get_session()
+    response = session.put(url, headers=headers, cookies=cookies, json=payload, verify=VERIFY_SSL)
     if response.status_code == 200:
         return {"status": "success"}
 
@@ -231,6 +235,8 @@ async def delete_cluster_activity(cluster_id: str):
     except Exception as e:
         db.rollback()
         raise Exception("Error occurred while deleting cluster: " + str(e))
+    finally:
+        db.close()
 
 @activity.defn
 async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: str):
@@ -259,5 +265,7 @@ async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: s
     except Exception as e:
         db.rollback()
         return {"msg": "Error occurred: " + str(e)}
+    finally:
+        db.close()
 
 

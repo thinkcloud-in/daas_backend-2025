@@ -1,9 +1,9 @@
 import os
 from temporalio.client import Client
-from dotenv import load_dotenv
+
 import logging
 
-load_dotenv()
+
 
 # Configure logging
 logger = logging.getLogger(__name__)

@@ -1,8 +1,8 @@
-import requests, json, os
+import json, os
+from utils.session_manager import SessionManager
 from fastapi import Request, APIRouter
 router = APIRouter(prefix='/v1/grafana', tags=['Grafana'])
-from dotenv import load_dotenv
-load_dotenv()
+
 GRAFANA_URL = os.getenv('GRAFANA_URL')
 TOKEN = os.getenv('GRAFANA_TOKEN')
  
@@ -54,7 +54,8 @@ async def query_grafana(request: Request):
         query = query.replace("${clustername}", cluster_replacement)
        
     try:
-        response = requests.post(
+        session = SessionManager.get_session()
+        response = session.post(
             url=f"{GRAFANA_URL}/api/ds/query",
             json={
                 "from": from_time,
@@ -74,13 +75,14 @@ async def query_grafana(request: Request):
         )
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException as err:
+    except Exception as err:
         return {"error": f"Request failed: {err}"}
 
 @router.get("/api/dashboards/uid/vsphereOverview")
 def get_dashboard():
     try:
-        response = requests.get(
+        session = SessionManager.get_session()
+        response = session.get(
             f"{GRAFANA_URL}/api/dashboards/uid/vsphereOverview",
             headers={
                 "Authorization": f"Bearer {TOKEN}",
@@ -89,5 +91,5 @@ def get_dashboard():
         )
         response.raise_for_status()
         return response.json()
-    except requests.exceptions.RequestException as e:
+    except Exception as e:
         raise Exception({"error": str(e)})

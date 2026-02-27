@@ -1,17 +1,16 @@
 import asyncio
 from datetime import datetime
-from temporalio.client import Client
-import json
-import requests
 import os
+from utils.session_manager import SessionManager
+from utils.temporal_client import TemporalClientManager
 from fastapi import HTTPException
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workflows import workflows_ldap
-from dotenv import load_dotenv
-load_dotenv()
+
 def get_login_from_keycloak():
     try:
-        resp = requests.post(
+        session = SessionManager.get_session()
+        resp = session.post(
             f"{os.getenv('KEYCLOAK_ROOT_URL')}/realms/master/protocol/openid-connect/token",
             data={
                 "client_id": "admin-cli",
@@ -38,9 +37,7 @@ def unique_id():
 
 async def connectionWithClient():
     try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-       
-        return client
+        return await TemporalClientManager.get_temporal_client()
     except Exception as e:
        
         raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")
@@ -48,10 +45,7 @@ async def connectionWithClient():
 async def configuration_ad(ldap_data: dict) -> dict:
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:   
-        asyncio.create_task(workers_ldap.ad_ldap_configuration_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.ad_ldap_configuration_workflow.run,
         ldap_data,
@@ -65,9 +59,9 @@ async def configuration_ad(ldap_data: dict) -> dict:
 def get_realm_id_from_keycloak(auth_headers):
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole"
-        payload = {}
-        headers = auth_headers  
-        response = requests.get(url, headers=headers, data=payload)
+        headers = auth_headers
+        session = SessionManager.get_session()
+        response = session.get(url, headers=headers)
         data  = response.json()
         return data['id']
     except Exception as e:
@@ -79,7 +73,8 @@ def get_componeant_id_from_keycloak(auth_headers):
 
         payload = {}
         headers = auth_headers 
-        response = requests.get(url, headers=headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=headers, data=payload)
         data  = response.json()
         return data[0]['id']
     except Exception as e:
@@ -89,10 +84,7 @@ def get_componeant_id_from_keycloak(auth_headers):
 async def test_ldap_connection(ldap_data):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.test_ldap_connection_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.test_ldap_connection_workflow.run,
         ldap_data,
@@ -106,10 +98,7 @@ async def test_ldap_connection(ldap_data):
 async def test_ldap_authentication(ldap_data):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.test_ldap_authentication_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.test_ldap_authentication_workflow.run,
         ldap_data,
@@ -123,10 +112,7 @@ async def test_ldap_authentication(ldap_data):
 async def delete_ldap_config(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.delete_ldap_config_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.delete_ldap_config_workflow.run,
         ldap_id,
@@ -140,10 +126,7 @@ async def delete_ldap_config(ldap_id):
 async def get_LDAPs_from_keycloak():
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.get_lDAPS_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.get_LDAPs_from_keycloak_workflow.run,
         id=f"Getting-LDAPs-from-Keycloak-{uniqueId}",
@@ -155,10 +138,7 @@ async def get_LDAPs_from_keycloak():
 async def get_LDAP_by_id(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.get_LDAP_by_id_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.get_LDAP_by_id_workflow.run,
         ldap_id,
@@ -172,10 +152,7 @@ async def get_LDAP_by_id(ldap_id):
 async def update_ldap_config(ldap_data:dict,ldap_id:str) :
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.update_ldap_config_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.update_ldap_config_workflow.run,
         args=[ldap_data,ldap_id],
@@ -188,10 +165,7 @@ async def update_ldap_config(ldap_data:dict,ldap_id:str) :
 async def sync_user_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.sync_user_from_keycloak_Byid_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.sync_user_from_keycloak_Byid_workflow.run,
         ldap_id,
@@ -204,10 +178,7 @@ async def sync_user_from_keycloak(ldap_id):
 async def sync_changed_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.sync_changed_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.sync_changed_users_from_keycloak_workflow.run,
         ldap_id,
@@ -220,10 +191,7 @@ async def sync_changed_users_from_keycloak(ldap_id):
 async def unlink_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.unlink_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.unlink_users_from_keycloak_workflow.run,
         ldap_id,
@@ -237,10 +205,7 @@ async def unlink_users_from_keycloak(ldap_id):
 async def remove_imported_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.remove_imported_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ldap.remove_imported_users_from_keycloak_workflow.run,
         ldap_id,
@@ -257,8 +222,8 @@ def get_Auth_flow_id_browser(auth_flow_headers):
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/browser/executions"
         auth_headers = auth_flow_headers
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=auth_headers)
         data = response.json()
         ids = []
         ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
@@ -270,8 +235,8 @@ def get_Auth_flow_Value_browser():
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/browser/executions"
         auth_headers = get_login_from_keycloak()
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=auth_headers)
         data = response.json()
         if data[5]['requirement'] == "REQUIRED":
             return  True
@@ -308,7 +273,8 @@ def set_otp_for_browser_auth(value):
             "level": 1,
             "index": 1
         })
-        response = requests.request("PUT", url, headers=headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.put(url, headers=headers, data=payload)
         return  response.status_code
     except Exception as e:
         return e
@@ -317,8 +283,8 @@ def get_guacamole_browser_auth_flow(auth_flow_headers):
     try:
         url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
         auth_headers = auth_flow_headers
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=auth_headers)
         data = response.json()
         
         ids = []
@@ -355,7 +321,9 @@ def set_otp_for_guacamole_browser(value):
             "level": 1,
             "index": 1
         })
-        response = requests.request("PUT", url, headers=headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.put(url, headers=headers, data=payload)
+        return response.status_code
     except Exception as e:
         return e
 
@@ -364,8 +332,8 @@ def get_Auth_flow_Value_guacamole_browser():
     try:
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
         auth_headers = get_login_from_keycloak()
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=auth_headers)
         data = response.json()
 
         

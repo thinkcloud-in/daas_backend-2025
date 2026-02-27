@@ -8,7 +8,7 @@ from models import models
 from typing import Any, List
 from service import controllers as controller
 from fastapi import  HTTPException
-from temporalio.client import Client
+from utils.temporal_client import TemporalClientManager
 import os
 import pytz
 from models.API_Response_model import APIResponse
@@ -293,8 +293,7 @@ def get_enable_browser_guacamole_authflow():
 async def get_temporal_client():
     """Establish connection with the Temporal server."""
     try:
-        client = await Client.connect(TEMPORAL_SERVER)
-        return client
+        return await TemporalClientManager.get_temporal_client()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"Cannot connect to Temporal server: {str(e)}")
 
