@@ -25,37 +25,11 @@ from router.hyper_v_router import hyper_v_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv 
 load_dotenv()
-from contextlib import asynccontextmanager
-from utils.temporal_client import TemporalClientManager
-from utils.session_manager import SessionManager
+app = FastAPI()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Startup
-    print("Initializing resources...")
-    await TemporalClientManager.get_temporal_client()
-    SessionManager.get_session()
-    
-    # Start workers as background tasks
-    asyncio.create_task(workers_cluster.combined_worker())
-    asyncio.create_task(worker_pollingStatus.status_poller_worker())
-    asyncio.create_task(worker_proxmox.vm_power_worker())
-    asyncio.create_task(worker_proxmox.vm_rebuild_worker())
-    asyncio.create_task(worker_hyper_v.hyperv_worker())
-    asyncio.create_task(workers_pool.combined_pool_worker())
-    asyncio.create_task(workers_machine.combined_machine_worker())
-    asyncio.create_task(listen_for_machine_changes())
-    asyncio.create_task(run_email_worker())
-    
-    yield
-    
-    # Shutdown
-    print("Cleaning up resources...")
-    await TemporalClientManager.close()
-    SessionManager.close()
+app = FastAPI(on_startup=[startup_event_client])
 
-app = FastAPI(lifespan=lifespan)
- 
+
  
 app.add_middleware(
     CORSMiddleware,
@@ -81,4 +55,28 @@ app.include_router(ipmi_router)
 app.include_router(grafana_router)
 app.include_router(hyper_v_router)
 
+
+def start_async_worker(target):
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(target())
+        except Exception as e:
+            print(f"[Worker Error] {target.__name__}: {e}")
+        finally:
+            loop.close()
+    threading.Thread(target=run, daemon=True).start()
+
+@app.on_event("startup")
+def start_workers():
+    start_async_worker(workers_cluster.combined_worker)
+    start_async_worker(worker_pollingStatus.status_poller_worker)
+    start_async_worker(worker_proxmox.vm_power_worker)
+    start_async_worker(worker_proxmox.vm_rebuild_worker)
+    start_async_worker(worker_hyper_v.hyperv_worker)
+    start_async_worker(workers_pool.combined_pool_worker)
+    start_async_worker(workers_machine.combined_machine_worker)
+    start_async_worker(listen_for_machine_changes)
+    start_async_worker(run_email_worker)
 
