@@ -100,4 +100,13 @@ async def vm_rebuild_worker():
         
     except Exception as e:
         raise Exception(f"Error in VM rebuild worker: {e}")
+
+async def start_all_proxmox_workers():
+    import asyncio
+    await asyncio.gather(
+        clone_vm_worker(),
+        migrate_worker(),
+        vm_power_worker(),
+        vm_rebuild_worker()
+    )
         

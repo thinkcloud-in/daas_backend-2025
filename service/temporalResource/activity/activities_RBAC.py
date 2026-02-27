@@ -7,10 +7,7 @@ import service.gucamoleService as service
 from db_configuration.config import get_db
 from sqlalchemy.orm import Session
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging managed by utils.logger
 
 
 

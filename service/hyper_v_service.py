@@ -9,6 +9,8 @@ import logging
 import uuid
 # from models.hyper_v_model import Hyper_V
 
+from utils.session_manager import SessionManager
+
 logger = logging.getLogger(__name__)
 
 HYPER_V_AGENT_URL = os.getenv('HYPER_V_AGENT_URL')
@@ -18,10 +20,10 @@ def unique_id():
 
 async def get_vms():
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vms"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        data = response.json()
-        return data['data']
+    client = SessionManager.get_async_client()
+    response = await client.get(url, timeout=20.0)
+    data = response.json()
+    return data['data']
 
 async def clone_vm_for_single_node(request) -> dict:
     req_dict = jsonable_encoder(request)
@@ -49,50 +51,50 @@ async def clone_vm_for_single_node(request) -> dict:
 
 async def generate_mac_activity() -> str:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/generate_mac_add"
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(url)
-        data = resp.json()
-        return data["data"]["MAC_Add"]
+    client = SessionManager.get_async_client()
+    resp = await client.post(url, timeout=10)
+    data = resp.json()
+    return data["data"]["MAC_Add"]
 
 async def create_iso_activity(payload: dict) -> str:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/create_iso"
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(url, json=payload)
-        data = resp.json()
-        return data["data"]["iso_path"]
+    client = SessionManager.get_async_client()
+    resp = await client.post(url, json=payload, timeout=30)
+    data = resp.json()
+    return data["data"]["iso_path"]
 
 async def get_switches_activity() -> str:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_switches"
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
-        return data["data"]["Name"]
+    client = SessionManager.get_async_client()
+    resp = await client.get(url, timeout=10)
+    data = resp.json()
+    return data["data"]["Name"]
 
 async def clone_vm_activity(payload: dict) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, json=payload)
-        return resp.json()["data"]
+    client = SessionManager.get_async_client()
+    resp = await client.post(url, json=payload, timeout=120)
+    return resp.json()["data"]
 
 async def attach_iso_activity(payload: dict) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/attach_iso"
-    async with httpx.AsyncClient(timeout=20) as client:
-        resp = await client.post(url, json=payload)
-        return resp.json()["data"]
+    client = SessionManager.get_async_client()
+    resp = await client.post(url, json=payload, timeout=20)
+    return resp.json()["data"]
 
 async def get_vm_info(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_vm_info/{vm_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        data = response.json()
-        return data['data']
+    client = SessionManager.get_async_client()
+    response = await client.get(url, timeout=20.0)
+    data = response.json()
+    return data['data']
     
 async def get_switches():
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_switches"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        data = response.json()
-        return data['data']
+    client = SessionManager.get_async_client()
+    response = await client.get(url, timeout=20.0)
+    data = response.json()
+    return data['data']
 
 async def delete_vm(vm_id: str) -> dict:
     # workflow_id = f"delete_vm_hyperv-{uuid.uuid4().hex}"
@@ -123,10 +125,10 @@ async def delete_vm(vm_id: str) -> dict:
     return result
 async def delete_hyperv_vm(vm_id):
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.delete(url)
-        data = response.json()
-        return data['data']
+    client = SessionManager.get_async_client()
+    response = await client.delete(url, timeout=20.0)
+    data = response.json()
+    return data['data']
 
 # async def get_status(vm_id):
 #     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
@@ -137,11 +139,11 @@ async def delete_hyperv_vm(vm_id):
 
 async def get_status(vm_id: str) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("data", {})
+    client = SessionManager.get_async_client()
+    response = await client.get(url, timeout=20.0)
+    response.raise_for_status()
+    data = response.json()
+    return data.get("data", {})
     
 # async def handle_action(request, db):
 #     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
