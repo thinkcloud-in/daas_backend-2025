@@ -151,3 +151,15 @@ async def get_pool_details_ID_worker():
     
 
 
+
+async def combined_pool_worker():
+    import asyncio
+    await asyncio.gather(
+        create_pool_worker(),
+        update_pool_worker(),
+        delete_pool_worker(),
+        retrieve_pool_data_worker(),
+        get_all_pool_names_worker(),
+        get_all_pools_worker(),
+        get_pool_details_ID_worker()
+    )
