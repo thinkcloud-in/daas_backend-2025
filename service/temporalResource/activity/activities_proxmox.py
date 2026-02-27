@@ -613,7 +613,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         
         template_node = None
         for vm in all_vms:
-            if str(vm.get("vmid")) == str(template_vm_id) and vm.get("template") == 1:
+            if str(vm.get("vmid")) == str(template_vm_id):
                 template_node = vm.get("node")
                 break
         if not template_node:
