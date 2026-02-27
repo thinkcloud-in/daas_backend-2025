@@ -103,10 +103,15 @@ async def create_pool(pool_data: dict, db) -> dict:
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get('email', "UnknownUser")
     workflow_id = f"{pool_name} Creating-{uniqueId}"
-    try:
-        asyncio.create_task(workers_pool.create_pool_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    import logging
+    _logger = logging.getLogger(__name__)
+    def _on_worker_done(task):
+        exc = task.exception() if not task.cancelled() else None
+        if exc:
+            _logger.error(f"[create_pool_worker] Worker crashed: {exc}")
+    task = asyncio.create_task(workers_pool.create_pool_worker())
+    task.add_done_callback(_on_worker_done)
+
     
     handle = await client.start_workflow(
         workflows_pool.PoolCreationWorkflow.run,
