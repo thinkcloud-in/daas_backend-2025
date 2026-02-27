@@ -12,19 +12,19 @@ from router.temporal_namespace_router import temporal_namespace_router
 from router.proxmox_router import proxmox_router
 from router.ip_router import ip_router
 from router.ipmi_router import ipmi_router
-from service.temporalResource.workers import workers_schedule, workers_retentionPeriod, workers_ldap, workers_ipmi
 from service.gucamoleService import startup_event_client
 from service.temporalService import run_email_worker
 from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
 from service.temporalResource.workers import worker_hyper_v
-from service.temporalResource.workers import workers_pool, workers_machine, workers_guacmole
+from service.temporalResource.workers import workers_pool, workers_machine
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from middleware.request_logger import RequestLoggerMiddleware
-
+from dotenv import load_dotenv 
+load_dotenv()
 from contextlib import asynccontextmanager
 from utils.temporal_client import TemporalClientManager
 from utils.session_manager import SessionManager
@@ -44,11 +44,6 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(worker_hyper_v.hyperv_worker())
     asyncio.create_task(workers_pool.combined_pool_worker())
     asyncio.create_task(workers_machine.combined_machine_worker())
-    asyncio.create_task(workers_schedule.start_all_schedule_workers())
-    asyncio.create_task(workers_retentionPeriod.start_all_retention_workers())
-    asyncio.create_task(workers_ldap.start_all_ldap_workers())
-    asyncio.create_task(workers_ipmi.start_all_ipmi_workers())
-    asyncio.create_task(workers_guacmole.start_all_guac_workers())
     asyncio.create_task(listen_for_machine_changes())
     asyncio.create_task(run_email_worker())
     

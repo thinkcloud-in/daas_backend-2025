@@ -23,7 +23,7 @@ from service.temporalResource.workflows import workflows_RBAC
 import logging
 # import time
 from utils.session_manager import SessionManager
-
+load_dotenv()
 logger = logging.getLogger(__name__)
 
  
@@ -54,35 +54,31 @@ logging.basicConfig(
 )
 logger = logging.getLogger("guacamole_login_logger")
 
-import time
-
-_guac_token_cache = {"token": None, "expiry": 0}
-
 async def login_with_guacamole():
-    # Check cache first (TTL 5 minutes / 300 seconds)
-    if _guac_token_cache["token"] and time.time() < _guac_token_cache["expiry"]:
-        return _guac_token_cache["token"]
-
     uniqueId = unique_id()
     logger.info(f"Starting login process with Guacamole, unique ID: {uniqueId}.")
     client = await connectionWithClient()
+    logger.info("Successfully established client connection with Guacamole.")
+    try:
+        logger.info("Starting login_with_guacamole_worker task.")
+        asyncio.create_task(workers_guacmole.login_with_guacamole_worker())
+    except Exception as e:
+        logger.error("Error occurred while starting login_with_guacamole_worker.", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     
     try:
+        logger.info("Starting LoginWorkflow workflow.")
         handle = await client.start_workflow(
             workflows_guacmole.LoginWorkflow.run,
             id=f"login_with_guacamole-{uniqueId}",
             task_queue="login-task-queue",
         )
         result = await handle.result()
-        
-        # Cache the result
-        _guac_token_cache["token"] = result
-        _guac_token_cache["expiry"] = time.time() + 300  # 5 minute cache
-        
+        logger.info(f"Workflow completed successfully. Result: {result}")
         return result
     except Exception as e:
-        logger.error("Error occurred during Guacamole login", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to complete login: {str(e)}")
+        logger.error("Error occurred while running LoginWorkflow workflow.", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to complete login workflow: {str(e)}")
 
 
 #------------------------------------------------------Connection/machine ----------------------------------------------------
@@ -386,10 +382,15 @@ async def creating_connection(machine_data: CreateMachineBase):
     uniqueId = unique_id()
     logger.info(f"Starting to create connection with unique ID: {uniqueId}.")
     
+    client = await connectionWithClient()
+    logger.debug("Connected with the Temporal client.")
+
     try:
-        client = await connectionWithClient()
-        logger.debug("Connected with the Temporal client.")
+        # Start the workers task
+        logger.info("Starting the Guacamole workers task.")
+        asyncio.create_task(workers_guacmole.creating_machines_worker())
     except Exception as e:
+        logger.error("An error occurred while starting the workers task.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     
     try:
@@ -468,6 +469,10 @@ async def list_machines():
         client = await connectionWithClient()
         logger.info("Successfully established connection with the client.")
         
+        # Start background task
+        asyncio.create_task(workers_guacmole.list_of_machines_worker())
+        logger.info("Started worker task for listing machines.")
+        
         # Start Temporal workflow
         handle = await client.start_workflow(
             workflows_guacmole.ListOfMachinesWorkflow.run,
@@ -515,6 +520,12 @@ async def list_of_users():
     uniqueId = unique_id()
     client = await connectionWithClient()
     logger.info("Successfully established connection with the client.")
+    try:
+        asyncio.create_task(workers_guacmole.list_of_guaco_users_worker())
+        logger.info("Successfully task created for list of guaco users.")
+    except Exception as e:
+        logger.error("An error occurred while creating task for list of guaco users.", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     
     handle = await client.start_workflow(
         workflows_guacmole.ListOfGuacoUsersWorkflow.run,
@@ -537,8 +548,7 @@ def delete_user_from_guca(username):
     token = login_with_guacamole()
     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
     url = gucamole_create_user_url+"/"+username+"?token="+ token
-    session = SessionManager.get_session()
-    response= session.delete(url)
+    response= requests.request("DELETE", url, )
     return response.status_code
 # Create a user in guacamole
 async def create_user(username):
@@ -565,8 +575,7 @@ async def create_user(username):
         headers = {
             'Content-Type': 'application/json'
         }
-        session = SessionManager.get_session()
-        response = session.post(url, headers=headers, data=payload)
+        response = requests.post(url, headers=headers, data=payload)
         return response.status_code
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -577,8 +586,7 @@ async def delete_user(username):
         url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/postgresql/users/{username}?token={token}"
         payload = {}
         headers = {}
-        session = SessionManager.get_session()
-        response = session.delete(url, headers=headers, data=payload)
+        response = requests.delete(url, headers=headers, data=payload)
         return response.status_code
     except Exception as e:
         return e 
@@ -587,6 +595,12 @@ async def get_userList_from_keycloak():
     uniqueId = unique_id()
     client = await connectionWithClient()
     logger.info("Successfully established connection with the client.")
+    try:
+        asyncio.create_task(workers_guacmole.list_of_guaco_user_with_Keyclock_worker())
+        logger.info("Successfully task created for list of guaco user with keyclock")
+    except Exception as e:
+        logger.error("An error occurred while creating task for list of guaco user with keyclock.", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_guacmole.GetUserlistFromKeycloakWorkflow.run,
         id=f"list_of_user_guaco_keyclock-{uniqueId}",
@@ -605,8 +619,7 @@ async def get_users_connection_history(token):
     
     url =f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/history/users" 
     params = {'order': 'startDate', 'token': token}
-    session = SessionManager.get_session()
-    response = session.get(url, params=params)
+    response = requests.get(url, params=params)
     
     if response.status_code == 200:
         return response.json()  # Return the JSON response directly
@@ -621,36 +634,40 @@ async def get_session_reports(start_date_range: datetime, end_date_range: dateti
     start_date_str = start_date_range
     end_date_str = end_date_range
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetSessionReportWorkflow.run,
-            args = [start_date_str,end_date_str],
-            id=f"get_session_reports-{uniqueId}",
-            task_queue="get_session_reports",
-        )
-        result = await handle.result()
-        logger.info("Task created for get session report")
-        return result
+        asyncio.create_task(workers_guacmole.get_session_report_worker())
+        logger.info("Successfully task created for get session report.")
     except Exception as e:
-        logger.error(f"Error in get_session_reports: {e}")
+        logger.error("An error occurred while creating task for get session report.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetSessionReportWorkflow.run,
+        args = [start_date_str,end_date_str],
+        id=f"get_session_reports-{uniqueId}",
+        task_queue="get_session_reports",
+    )
+    result =  await handle.result()
+    logger.info("Task created for get session report")
+    return result
 async def get_users_in_timerange(session_reports):
     uniqueId = unique_id()
     client = await connectionWithClient()
     logger.info("Successfully established connection with the client.")
     # Convert datetime objects to ISO 8601 strings
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetAllUsersVamanitWorkflow.run,
-            args = [session_reports],
-            id=f"get_allUsers_vamanit-{uniqueId}",
-            task_queue="get_all_users_vamanit",
-        )
-        result = await handle.result()
-        logger.info("Task created for get all reports on vamanit")
-        return result
+        asyncio.create_task(workers_guacmole.get_all_reports_vamanit_worker())
+        logger.info("Successfully task created for get all reports on vamanit.")
     except Exception as e:
-        logger.error(f"Error in get_users_in_timerange: {e}")
+        logger.error("An error occurred while creating task for get all reports on vamanit.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetAllUsersVamanitWorkflow.run,
+        args = [session_reports],
+        id=f"get_allUsers_vamanit-{uniqueId}",
+        task_queue="get_all_users_vamanit",
+    )
+    result =  await handle.result()
+    logger.info("Task created for get all reports on vamanit")
+    return result
 
 async def get_perticular_user_sessionreports(session_reports, username):
     uniqueId = unique_id()
@@ -658,18 +675,20 @@ async def get_perticular_user_sessionreports(session_reports, username):
     logger.info("Successfully established connection with the client.")
     # Convert datetime objects to ISO 8601 strings
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetPerticularUserSessionReportWorkflow.run,
-            args = [session_reports,username],
-            id=f"get_perticular_user_session_report-{uniqueId}",
-            task_queue="get_perticular_user_session_report",
-        )
-        result = await handle.result()
-        logger.info("Successfully task created for get perticular user session report")
-        return result
+        asyncio.create_task(workers_guacmole.get_perticular_user_session_report_worker())
+        logger.info("Successfully task created for get perticular user session report.")
     except Exception as e:
-        logger.error(f"Error in get_perticular_user_sessionreports: {e}")
+        logger.error("An error occurred while creating task for get perticular user session report.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetPerticularUserSessionReportWorkflow.run,
+        args = [session_reports,username],
+        id=f"get_perticular_user_session_report-{uniqueId}",
+        task_queue="get_perticular_user_session_report",
+    )
+    result =  await handle.result()
+    logger.info("Successfully task created for get perticular user session report")
+    return result
 
 async def get_daily_reports(session_reports):
     uniqueId = unique_id()
@@ -677,36 +696,41 @@ async def get_daily_reports(session_reports):
     logger.info("Successfully established connection with the client.")
     # Convert datetime objects to ISO 8601 strings
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetDailyReportsWorkflow.run,
-            args = [session_reports],
-            id=f"get_daily_report-{uniqueId}",
-            task_queue="get_daily_report",
-        )
-        result = await handle.result()
-        logger.info("Successfully task created for get daily reports from guacamole")
-        return result
+        asyncio.create_task(workers_guacmole.get_daily_report_worker())
+        logger.info("Successfully task created for get daily reports from guacamole.")
     except Exception as e:
-        logger.error(f"Error in get_daily_reports: {e}")
+        logger.error("An error occurred while creating task for get daily reports from guacamole.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetDailyReportsWorkflow.run,
+        args = [session_reports],
+        id=f"get_daily_report-{uniqueId}",
+        task_queue="get_daily_report",
+    )
+    result =  await handle.result()
+    logger.info("Successfully task created for get daily reports from guacamole")
+    return result
 
 async def get_perticular_user_daily_reports(daily_reports, username):
     uniqueId = unique_id()
     client = await connectionWithClient()
     logger.info("Successfully established connection with the client.")
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.getPerticularUserDailyReportWorkflow.run,
-            args = [daily_reports,username],
-            id=f"get_perticular_user_daily_reports-{uniqueId}",
-            task_queue="get_perticular_user_daily_reports",
-        )
-        result = await handle.result()
+        asyncio.create_task(workers_guacmole.get_perticular_user_daily_report_worker())
         logger.info("Successfully task created for get perticular user daily reports.")
-        return result
     except Exception as e:
-        logger.error(f"Error in get_perticular_user_daily_reports: {e}")
+        logger.error("An error occurred while creating task for get perticular user daily reports.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.getPerticularUserDailyReportWorkflow.run,
+        args = [daily_reports,username],
+        id=f"get_perticular_user_daily_reports-{uniqueId}",
+        task_queue="get_perticular_user_daily_reports",
+    )
+    result =  await handle.result()
+   
+    logger.info("Successfully task created for get perticular user daily reports.")
+    return result
 
 
 
@@ -728,49 +752,53 @@ async def insert_report(company_name: str, company_logo: bytes, report_type: str
     uniqueId = unique_id()
     client = await connectionWithClient()
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.InsertReportWorkflow.run,
-            args=[company_name, company_logo, report_type],
-            id=f"insert_report-{uniqueId}",
-            task_queue="insert_report_taskqueue",
-        )
-        result = await handle.result()
-        return result
+        asyncio.create_task(workers_guacmole.insert_report_worker())
     except Exception as e:
-        logger.error(f"Error in insert_report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.InsertReportWorkflow.run,
+        args=[company_name, company_logo, report_type],
+        id=f"insert_report-{uniqueId}",
+        task_queue="insert_report_taskqueue",
+    )
+    result =  await handle.result()
+    return result
 # Function to fetch all companies
 async def get_companies():
     uniqueId = unique_id()
     client = await connectionWithClient()
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetCompaniesWorkflow.run,
-            id=f"get_companies-{uniqueId}",
-            task_queue="get_companies_taskqueue",
-        )
-        result = await handle.result()
-        return result
+        asyncio.create_task(workers_guacmole.get_companies_worker())
     except Exception as e:
-        logger.error(f"Error in get_companies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetCompaniesWorkflow.run,
+        id=f"get_companies-{uniqueId}",
+        task_queue="get_companies_taskqueue",
+    )
+    result =  await handle.result()
+    return result
 async def get_companies_by_report_type(report_type :str):
     uniqueId = unique_id()
     client = await connectionWithClient()
     logger.info("Successfully established connection with the client.")
     try:
-        handle = await client.start_workflow(
-            workflows_guacmole.GetCompaniesByReportNameWorkflow.run,
-            report_type,
-            id=f"get_companies_by_report_name-{uniqueId}",
-            task_queue="get_companies_by_report_name_taskqueue",
-        )
-        result = await handle.result()
-        logger.info("Successfully created task for get companies by report type")
-        return result
+        asyncio.create_task(workers_guacmole.get_companies_by_report_name_worker())
+        logger.info("Successfully task created for get companies by report type.")
     except Exception as e:
-        logger.error("An error occurred in get_companies_by_report_type.", exc_info=True)
+        logger.error("An error occurred while creating task for get companies by report type.", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+    handle = await client.start_workflow(
+        workflows_guacmole.GetCompaniesByReportNameWorkflow.run,
+        report_type,
+        id=f"get_companies_by_report_name-{uniqueId}",
+        task_queue="get_companies_by_report_name_taskqueue",
+    )
+    result =  await handle.result()
+
+    logger.info("Successfully created task for get companies by report type")
+    
+    return result
 
 
 

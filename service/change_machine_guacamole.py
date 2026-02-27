@@ -8,7 +8,7 @@ import logging
 from dto.machineDto import MachineDto
 from models.models import Machine
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-from utils.session_manager import SessionManager
+import requests
 
 logger = logging.getLogger("machine_listener")
 logging.basicConfig(
@@ -28,8 +28,7 @@ def login_with_guacamole():
     password = 'guacadmin' 
     payload = 'username='+username+'&password='+password
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    session = SessionManager.get_session()
-    response = session.post(url, headers=headers, data=payload)
+    response = requests.post(url, headers=headers, data=payload)
     if response.status_code == 200:
         return response.json().get('authToken')
     else:
@@ -344,8 +343,7 @@ def modify_connection(machine_data:Machine):
     except TypeError:
        return 'null' 
     try:
-        session = SessionManager.get_session()
-        response = session.put(url, headers=headers, data=payload)
+        response = requests.request("PUT", url, headers=headers, data=payload)
         return response.status_code
 
     except Exception as e:

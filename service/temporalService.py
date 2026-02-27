@@ -15,7 +15,8 @@ import base64
 
 import os
 from temporalio.common import RetryPolicy
-
+from dotenv import load_dotenv
+load_dotenv()
 
 TEMPORAL_SERVER = os.getenv('TEMPORAL_SERVER')
 

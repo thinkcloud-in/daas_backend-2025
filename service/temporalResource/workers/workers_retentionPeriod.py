@@ -1,20 +1,58 @@
 import os
-import asyncio
+from temporalio.client import Client
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_retentionPeriod
 from service.temporalResource.activity import activities_retentionPeriod
-from utils.temporal_client import TemporalClientManager
+from dotenv import load_dotenv
 
-async def start_all_retention_workers():
-    client = await TemporalClientManager.get_temporal_client()
+load_dotenv()
+
+async def connectionWithTemporal():
     
-    queues = [
-        ("namespace-tasks", [workflows_retentionPeriod.GetNamespacesWorkflow], [activities_retentionPeriod.list_namespaces_activity]),
-        ("update-Retention-tasks", [workflows_retentionPeriod.UpdateRetentionWorkflow], [activities_retentionPeriod.update_retention_activity]),
-    ]
+    try:
+        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
+        
+        return client
+    except Exception as e:
+        
+        raise e
+
+async def get_namespaces_worker():
+    client = await connectionWithTemporal()
+    if client is None:
+
+        return None
+
+    worker = Worker(
+        client,
+        task_queue="namespace-tasks",
+        workflows=[workflows_retentionPeriod.GetNamespacesWorkflow], 
+        activities=[activities_retentionPeriod.list_namespaces_activity],
+    )
     
-    workers = []
-    for queue_name, wfs, acts in queues:
-        workers.append(Worker(client, task_queue=queue_name, workflows=wfs, activities=acts))
+    try:
+        await worker.run()
+        
+    except Exception as e:
+        raise e
+
+
+async def update_retentionPeriod_worker():
+    client = await connectionWithTemporal()
+    if client is None:
+
+        return None
+
     
-    await asyncio.gather(*[w.run() for w in workers])
+    worker = Worker(
+        client,
+        task_queue="update-Retention-tasks",
+        workflows=[workflows_retentionPeriod.UpdateRetentionWorkflow], 
+        activities=[activities_retentionPeriod.update_retention_activity],
+    )
+    
+    try:
+        await worker.run()
+        
+    except Exception as e:
+        raise e
