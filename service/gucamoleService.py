@@ -22,7 +22,7 @@ from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workflows import workflows_RBAC
 import logging
 # import time
-from dotenv import load_dotenv
+from utils.session_manager import SessionManager
 load_dotenv()
 logger = logging.getLogger(__name__)
 
@@ -428,7 +428,8 @@ async def assign_connection_to_user(username:str, connection:str):
     headers = {
   'Content-Type': 'application/json'
 }
-    response= requests.request("PATCH", url, headers=headers, data=payload)
+    session = SessionManager.get_session()
+    response= session.request("PATCH", url, headers=headers, data=payload)
  
     return response.status_code
 
@@ -451,7 +452,8 @@ def revoke_user_from_connection(username:str, connection:str):
   'Content-Type': 'application/json'
 }
    
-    response= requests.request("PATCH", url, headers=headers, data=payload)
+    session = SessionManager.get_session()
+    response= session.request("PATCH", url, headers=headers, data=payload)
 
     return response.json
        
@@ -495,7 +497,8 @@ async def delete_connection(connection):
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     token = await login_with_guacamole()
     url = gucamole_update_url +connection+ "?token=" + token
-    response = requests.request("DELETE", url)
+    session = SessionManager.get_session()
+    response = session.request("DELETE", url)
     return response.status_code
  
 # modify machine/connection
@@ -507,7 +510,8 @@ async def modify_connection(machine_data:Machine):
     headers = {
     'Content-Type': 'application/json'
     }
-    response = requests.request("PUT", url, headers=headers, data=payload)
+    session = SessionManager.get_session()
+    response = session.request("PUT", url, headers=headers, data=payload)
     return response.status_code
    
 #------------------------------------------------------User----------------------------------------------------
@@ -536,7 +540,8 @@ async def get_user_details(username):
     token = await login_with_guacamole()
     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
     url = gucamole_create_user_url+"/"+username+"?token="+ token
-    response= requests.request("GET", url, )
+    session = SessionManager.get_session()
+    response= session.request("GET", url, )
     return response.status_code
 # get user paricular user  
 def delete_user_from_guca(username):

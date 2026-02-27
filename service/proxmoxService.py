@@ -7,6 +7,7 @@ from http.client import HTTPException
 from typing import Dict, List, Optional
 from fastapi.encoders import jsonable_encoder
 import requests
+from utils.session_manager import SessionManager
 import urllib3
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
@@ -59,7 +60,8 @@ def get_cluster_nodes(cluster_data):
         PROXMOX_HOST = f"https://{ip}:{cluster_data.port}"
         url = f"{PROXMOX_HOST}/api2/json/cluster/status"
         try:
-            response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+            session = SessionManager.get_session()
+            response = session.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
             response.raise_for_status()
             data = response.json()
             nodes = [
@@ -117,7 +119,8 @@ def get_all_cluster_vms(db,cluster_data):
     if not PROXMOX_HOST:
         raise RuntimeError("No reachable Proxmox host found for the cluster.")
     url = f"{PROXMOX_HOST}/api2/json/cluster/resources"
-    response = requests.get(url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    response = session.get(url, headers=headers, verify=False)
     response.raise_for_status()
     data = response.json()["data"]
     return data
@@ -351,7 +354,8 @@ def collect_proxmox_details(vmid, pool_id, db):
 
 def vm_start(PROXMOX_HOST, node, vmid, headers):
     start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/start"
-    resp = requests.post(start_url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    resp = session.post(start_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
     return True
@@ -665,7 +669,8 @@ def get_vm_config(db, cluster_data, node, vmid):
     }
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config"
-    response = requests.get(url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    response = session.get(url, headers=headers, verify=False)
     response.raise_for_status()
     return response.json()["data"]
 
