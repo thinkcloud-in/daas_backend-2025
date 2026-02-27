@@ -1,18 +1,11 @@
-from temporalio.client import Client
 from temporalio.worker import Worker
-import os
 from service.temporalResource.activity import activities_pool
 from service.temporalResource.workflows import workflows_pool
 from fastapi import HTTPException
+from utils.temporal_client import TemporalClientManager
 
 async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        raise e    
+    return await TemporalClientManager.get_temporal_client()
 
 
 async def create_pool_worker():
