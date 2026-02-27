@@ -20,7 +20,7 @@ class PoolCreationWorkflow:
                 activities_pool.create_pool_activity,
                 pool_data,  
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             return result
         except Exception:
@@ -42,7 +42,7 @@ class PoolUpdateWorkflow:
                 activities_pool.update_pool_activity,
                 args=[pool_id,pool_data],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             
             return result
@@ -66,7 +66,7 @@ class PoolDeletionWorkflow:
                 activities_pool.delete_pool_activity,
                 args=[pool_id],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             
             return result
