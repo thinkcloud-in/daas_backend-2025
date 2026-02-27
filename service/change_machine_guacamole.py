@@ -11,7 +11,10 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from utils.session_manager import SessionManager
 
 logger = logging.getLogger("machine_listener")
-# Logging managed by utils.logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 DATABASE_USER = os.getenv('USER_NAME')
 DATABASE_PASSWORD = os.getenv('PASSWORD')

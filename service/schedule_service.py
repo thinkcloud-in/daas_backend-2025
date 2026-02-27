@@ -115,6 +115,12 @@ async def connectionWithClient():
 async def get_data():
     uniqueId = unique_id()
     client =await connectionWithClient()
+    
+    try:
+        
+        asyncio.create_task(workers_schedule.get_report_data_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_data_workflow.run,
         id=f"Retrieving-schedule-data-{uniqueId}",
@@ -127,6 +133,12 @@ async def get_data():
 async def get_data_id(item_id:int):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    
+    try:
+        
+        asyncio.create_task(workers_schedule.get_report_data_by_id_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_data_by_id_workflow.run,
         item_id,

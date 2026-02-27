@@ -15,7 +15,10 @@ from service import hyper_v_service
 logger = logging.getLogger("create_machine_activity")
 
 
-# Logging managed by utils.logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger("machine_activity_logger")
 
 async def get_machine_name(machine_data):

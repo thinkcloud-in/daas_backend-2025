@@ -31,7 +31,10 @@ def unique_id():
     logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-# Logging managed by utils.logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger =  logging.getLogger("create_machine_activity")
 
 def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
