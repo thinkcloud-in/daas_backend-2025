@@ -566,7 +566,26 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         if not pool or not pool.pool_template_vm_id:
             return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-        template_vm_id = pool.pool_template_vm_id
+        raw_template = pool.pool_template_vm_id
+        template_vm_id = None
+        if isinstance(raw_template, dict):
+            template_vm_id = raw_template.get('vmid') or raw_template.get('id')
+        elif isinstance(raw_template, list) and raw_template:
+            first = raw_template[0]
+            if isinstance(first, dict):
+                template_vm_id = first.get('vmid') or first.get('id')
+            else:
+                template_vm_id = first
+        else:
+            template_vm_id = raw_template
+        
+        try:
+            if template_vm_id is not None and template_vm_id != "":
+                template_vm_id_str = str(int(template_vm_id))
+            else:
+                return {"status": "error", "error": f"Invalid template VM ID"}
+        except (ValueError, TypeError):
+            template_vm_id_str = str(template_vm_id)
         cluster_id = pool.cluster_id.split("_")[1]
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster_data:
@@ -606,27 +625,31 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
                 proxmoxService.vm_shutdown(PROXMOX_HOST, node, vmid, headers)
                 proxmoxService.wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120)
            
-            del_resp = requests.delete(delete_url, headers=headers, verify=False)
-            del_resp.raise_for_status()
-            await asyncio.sleep(5)  
+            try:
+                del_resp = requests.delete(delete_url, headers=headers, verify=False)
+                del_resp.raise_for_status()
+                await asyncio.sleep(5)  
+            except Exception as e:
+                return {"status": "error", "error": f"Failed to delete existing VM: {str(e)}"}
 
         
         template_node = None
         for vm in all_vms:
-            if str(vm.get("vmid")) == str(template_vm_id) and vm.get("template") == 1:
+            if str(vm.get("vmid")) == template_vm_id_str and vm.get("template") == 1:
                 template_node = vm.get("node")
                 break
         if not template_node:
-            return {"status": "error", "error": f"Template VM {template_vm_id} not found in cluster."}
+            return {"status": "error", "error": f"Template VM {template_vm_id_str} not found in cluster."}
 
         
         try:
-            clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template_vm_id}/clone"
+            clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template_vm_id_str}/clone"
+            storage = pool.pool_storage if pool.pool_storage else PROXMOX_STORAGE
             payload = {
                 "newid": vmid,
                 "name": machine.name,
                 "target": node,
-                "storage": PROXMOX_STORAGE,
+                "storage": storage,
                 "full": 1
             }
             resp = requests.post(clone_url, headers=headers, data=payload, verify=False)
@@ -635,5 +658,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
             return {"status": "success", "upid": upid, "node": node, "cluster_id": cluster_id,"machine_name": machine.name,"ip_address": machine.hostname}
         except Exception as e:
             return {"status": "error", "error": "Cloning failed" }
+    except Exception as e:
+        return {"status": "error", "error": f"An error occurred during rebuild: {str(e)}"}
     finally:
         db.close()
