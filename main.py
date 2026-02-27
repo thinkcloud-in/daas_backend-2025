@@ -18,7 +18,6 @@ from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
 from service.temporalResource.workers import worker_hyper_v
-from service.temporalResource.workers import workers_pool, workers_machine
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
@@ -75,8 +74,6 @@ def start_workers():
     start_async_worker(worker_proxmox.vm_power_worker)
     start_async_worker(worker_proxmox.vm_rebuild_worker)
     start_async_worker(worker_hyper_v.hyperv_worker)
-    start_async_worker(workers_pool.combined_pool_worker)
-    start_async_worker(workers_machine.combined_machine_worker)
     start_async_worker(listen_for_machine_changes)
     start_async_worker(run_email_worker)
 

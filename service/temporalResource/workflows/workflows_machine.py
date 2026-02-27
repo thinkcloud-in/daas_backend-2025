@@ -26,7 +26,7 @@ class CreateMachineWorkflow:
                 activities_machine.create_machine_activity,
                 args=[machine_data],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             logger.info("Workflow completed successfully.")
             return result
@@ -53,7 +53,7 @@ class DeleteMachineWorkflow:
                 activities_machine.delete_machine_activity,
                 args= [machine_id],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             
             
@@ -83,7 +83,7 @@ class UpdateMachineWorkflow:
                 activities_machine.update_machine_activity,
                 args= [machine_identifier,machine_data],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=3600),
+                start_to_close_timeout=timedelta(seconds=60),
             )
             
             

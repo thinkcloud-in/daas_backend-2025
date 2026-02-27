@@ -103,6 +103,10 @@ async def create_pool(pool_data: dict, db) -> dict:
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get('email', "UnknownUser")
     workflow_id = f"{pool_name} Creating-{uniqueId}"
+    try:
+        asyncio.create_task(workers_pool.create_pool_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     handle = await client.start_workflow(
         workflows_pool.PoolCreationWorkflow.run,
@@ -115,21 +119,16 @@ async def create_pool(pool_data: dict, db) -> dict:
             "UserName": [userName]
         },
     )
-    # result =  await handle.result()
-    # if isinstance(result, dict) and result.get("status") == "error":
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail={ 
-    #             "error_type": result.get("error_type"),
-    #             "error": result.get("error")
-    #         }
-    #     )
-    return {
-        "status": "success",
-        "msg": "Pool creation workflow started",
-        "workflow_id": handle.id,
-        "run_id": handle.run_id
-    } 
+    result =  await handle.result()
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise HTTPException(
+            status_code=400,
+            detail={ 
+                "error_type": result.get("error_type"),
+                "error": result.get("error")
+            }
+        )
+    return result 
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
 
@@ -138,6 +137,10 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get("email", "UnknownUser")
     workflow_id = f"{pool_name} Updating-{uniqueId}"
+    try:
+        asyncio.create_task(workers_pool.update_pool_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.PoolUpdateWorkflow.run,
         args=[pool_id,pool_data],
@@ -193,6 +196,10 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
         else:
             logger.info("Pool type is Manual, skipping additional workflow IDs.")
             workflow_status_map = None
+        try:
+            asyncio.create_task(workers_machine.create_machine_worker())
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
         machine_data_dict = machine_data.dict() if hasattr(machine_data, "dict") else dict(machine_data)
         machine_data_dict["workflowId"] = workflowId_list
         machine_data_dict.pop("clone_workflow_id", None)
@@ -212,15 +219,9 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
                     "UserName": [userName]
                 }
             )   
-            # result = await handle.result()
-            # logger.info(f"Machine creation workflow completed with result")
-            # return result
-            return {
-                "status": "success",
-                "msg": "Machine creation workflow started",
-                "workflow_id": handle.id,
-                "run_id": handle.run_id
-            }
+            result = await handle.result()
+            logger.info(f"Machine creation workflow completed with result")
+            return result
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An error occurred during machine creation: {str(e)}")
     finally:
@@ -241,6 +242,11 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
     machine_name = machine.name  # Assuming the table has a 'name' column
     userName = email
 
+    try:
+        asyncio.create_task(workers_machine.delete_machine_worker())
+        logger.info(f"Started worker task for deleting machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.DeleteMachineWorkflow.run,
         machine_identifier,
@@ -269,6 +275,10 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
 
     workflow_id = f"{pool_name}-deleting-{uniqueId}"
 
+    try:
+        asyncio.create_task(workers_pool.delete_pool_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
     handle = await client.start_workflow(
         workflows_pool.PoolDeletionWorkflow.run,
@@ -287,6 +297,11 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
 async def add_user_to_machine( machine_identifier: str, username: str):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.add_user_to_machine_worker())
+        logger.info(f"Started worker task for assigning user to machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.AddUserToMachineWorkflow.run,
         args = [machine_identifier, username],
@@ -299,6 +314,11 @@ async def add_user_to_machine( machine_identifier: str, username: str):
 async def delete_user_from_machine(machine_identifier: str, user_id: str):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.delete_user_from_machine_worker())
+        logger.info(f"Started worker task for removing user from machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.DeleteUserFromMachineWorkflow.run,
         args = [machine_identifier, user_id],
@@ -316,6 +336,11 @@ async def update_machine(machine_identifier: str, machine_data: UpdateMachineBas
     machine_name = machine_data.name
     userName = machine_data.email
     workflow_id = f"{machine_name} update-machine-{uniqueId}"
+    try:
+        asyncio.create_task(workers_machine.update_machine_worker())
+        logger.info(f"Started worker task for updating machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.UpdateMachineWorkflow.run,
         args = [machine_identifier,machine_data.dict()],
@@ -333,6 +358,11 @@ async def update_machine(machine_identifier: str, machine_data: UpdateMachineBas
 async def get_machines():
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.get_all_machines_worker())
+        logger.info(f"Started worker task for getting all machines with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.GetAllMachinesWorkflow.run,
         id=f"get-all-machines-{uniqueId}",
@@ -345,6 +375,11 @@ async def update_is_custom_machine(machine_identifier: str, machine_details: IsC
     
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.update_is_custom_machine_worker())
+        logger.info(f"Started worker task for updating custom machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.UpdateIsCustomMachineWorkflow.run,
         args = [machine_identifier, machine_details.dict()],
@@ -358,6 +393,11 @@ async def update_is_custom_machine(machine_identifier: str, machine_details: IsC
 async def list_of_all_machine_in_pool(pool_id : str):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.list_all_machine_in_pool_worker())
+        logger.info(f"Started worker task for listing all machines in pool with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.GetAllMachineInPoolWorkflow.run,
         pool_id,
@@ -371,6 +411,11 @@ async def list_of_all_machine_in_pool(pool_id : str):
 async def list_assigned_users( machine_id: str):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.list_all_asigned_users_worker())
+        logger.info(f"Started worker task for listing all assigned users to machine with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.ListOfAsignedUsersWorkflow.run,
         machine_id,
@@ -383,6 +428,11 @@ async def list_assigned_users( machine_id: str):
 async def get_pool_details(pool_id:int):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+
+        asyncio.create_task(workers_pool.get_pool_details_ID_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.get_pool_details_ID_workflow.run,
         pool_id,
@@ -396,6 +446,10 @@ async def retrive_pool_data(pool_name:str,db:Session):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_pool.retrieve_pool_data_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.RetrievePoolDataWorkflow.run,
         pool_name,
@@ -408,6 +462,10 @@ async def retrive_pool_data(pool_name:str,db:Session):
 async def get_all_pool_names(db: Session):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_pool.get_all_pool_names_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.GetListofPoolNamesWorkflow.run,
         id=f"Get-pool-names-{uniqueId}",
@@ -421,6 +479,10 @@ async def get_all_pools():
     uniqueId = unique_id()
     client = await connectionWithClient()
     workflow_id = f"Get-all-pools-{uniqueId}"
+    try:
+        asyncio.create_task(workers_pool.get_all_pools_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.get_all_pools_workflow.run,
         id=workflow_id,
@@ -432,6 +494,11 @@ async def get_all_pools():
 async def get_machine_details( machine_id: str):
     uniqueId = unique_id()
     client = await connectionWithClient()
+    try:
+        asyncio.create_task(workers_machine.get_machine_details_worker())
+        logger.info(f"Started worker task for getting machine details with unique ID {uniqueId}.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_machine.GetMachineDetailsWorkflow.run,
         machine_id,
