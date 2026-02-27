@@ -17,7 +17,7 @@ from models import task_models
 from typing import Optional
 from service.temporalResource.workflows import workflows_cluster
 from db_configuration.config import SessionLocal
-from utils.session_manager import SessionManager
+import requests
 
 
 
@@ -68,8 +68,7 @@ async def get_proxmox_storages(payload, db):
             for node in nodes:
                 url = f"{PROXMOX_BASE_URL}/api2/json/nodes/{node}/storage"
 
-                session = SessionManager.get_session()
-                response = session.get(
+                response = requests.get(
                     url,
                     headers=headers,
                     verify=False,

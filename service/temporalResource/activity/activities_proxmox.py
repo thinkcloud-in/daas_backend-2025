@@ -2,15 +2,16 @@ import ipaddress
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db
-from utils.session_manager import SessionManager
+import requests
 import asyncio
 from models.models import Machine, Cluster,Pool
 from service.clusterService import get_all_nodes
 from models.IPs_model import IPEntry,IPSModel
 from service import proxmoxService
 from influxdb_client import InfluxDBClient, Point, WriteOptions
+import dotenv
 import os
-
+dotenv.load_dotenv()
 
 # @activity.defn
 # async def clone_vm_activity(clone_payload: dict):
@@ -228,8 +229,7 @@ async def clone_vm_activity(clone_payload: dict):
                 "full": 1
             }
             try:
-                session = SessionManager.get_session()
-                response = session.post(clone_url, headers=headers, data=payload_dict, verify=False)
+                response = requests.post(clone_url, headers=headers, data=payload_dict, verify=False)
                 # if non-200, include body to help debugging
                 if response.status_code >= 400:
                     return {
@@ -284,8 +284,7 @@ async def wait_for_vm_ready_activity(args: dict):
         url = f"{proxmox_host}/api2/json/nodes/{node}/tasks/{upid}/status"
         while True:
             try:
-                session = SessionManager.get_session()
-                resp = session.get(url, headers=headers, verify=False, timeout=10)
+                resp = requests.get(url, headers=headers, verify=False, timeout=10)
                 resp.raise_for_status()
                 data = resp.json()['data']
                 if data['status'] == 'stopped':
@@ -332,15 +331,13 @@ async def assign_ip_to_vm_activity(args: dict):
             node_name = node["name"]
             vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/status/current"
             try:
-                session = SessionManager.get_session()
-                resp = session.get(vm_url, headers=headers, verify=False, timeout=5)
+                resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
                 if resp.status_code == 200:
                     config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/config"
                     payload = {
                         "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
                     }
-                    session = SessionManager.get_session()
-                    config_response = session.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
+                    config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
                     
                     return {
                         "message": f"IP {ip_with_cidr} assigned successfully on node {node_name}."
@@ -614,13 +611,11 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
 
         
         delete_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}"
-        session = SessionManager.get_session()
-        resp = session.get(delete_url, headers=headers, verify=False)
+        resp = requests.get(delete_url, headers=headers, verify=False)
         if resp.status_code == 200:
             
             status_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current"
-            session = SessionManager.get_session()
-            status_resp = session.get(status_url, headers=headers, verify=False)
+            status_resp = requests.get(status_url, headers=headers, verify=False)
             running = False
             if status_resp.status_code == 200:
                 running = status_resp.json().get("data", {}).get("status") == "running"
@@ -631,8 +626,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
                 proxmoxService.wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120)
            
             try:
-                session = SessionManager.get_session()
-                del_resp = session.delete(delete_url, headers=headers, verify=False)
+                del_resp = requests.delete(delete_url, headers=headers, verify=False)
                 del_resp.raise_for_status()
                 await asyncio.sleep(5)  
             except Exception as e:
@@ -658,8 +652,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
                 "storage": storage,
                 "full": 1
             }
-            session = SessionManager.get_session()
-            resp = session.post(clone_url, headers=headers, data=payload, verify=False)
+            resp = requests.post(clone_url, headers=headers, data=payload, verify=False)
             resp.raise_for_status()
             upid = resp.json()["data"]
             return {"status": "success", "upid": upid, "node": node, "cluster_id": cluster_id,"machine_name": machine.name,"ip_address": machine.hostname}

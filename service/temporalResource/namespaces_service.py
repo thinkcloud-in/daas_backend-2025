@@ -23,7 +23,7 @@ class UpdateRetentionRequest(BaseModel):
     retention_days: int
     email:str
 
-from utils.temporal_client import TemporalClientManager
+from temporalio.client import Client
 from service.temporalResource.workflows import workflows_retentionPeriod
 from service.temporalResource.workers import workers_retentionPeriod
 
@@ -32,7 +32,15 @@ def unique_id():
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
 async def connectionWithTemporal():
-    return await TemporalClientManager.get_temporal_client()
+    temporal_address = os.getenv('TEMPORAL_SERVER')
+    
+    try:
+        client = await Client.connect(temporal_address)
+        
+        return client
+    except Exception as e:
+        
+        return None
     
 
 
@@ -92,7 +100,11 @@ async def list_namespaces():
         return 
 
 
-    pass
+    try:
+        asyncio.create_task(workers_retentionPeriod.get_namespaces_worker())
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     handle = await client.start_workflow(
         workflows_retentionPeriod.GetNamespacesWorkflow.run,
@@ -112,7 +124,11 @@ async def update_namespace_retention(request: UpdateRetentionRequest):
     current_retention = await get_current_retention_days(request.namespace)
     action_message = f"Retention-Updation ({current_retention}d - {request.retention_days}d)"
 
-    pass
+    try:
+        
+        asyncio.create_task(workers_retentionPeriod.update_retentionPeriod_worker())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
     
     handle = await client.start_workflow(
         workflows_retentionPeriod.UpdateRetentionWorkflow.run,

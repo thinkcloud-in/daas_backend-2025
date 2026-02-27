@@ -1,11 +1,20 @@
 import os
 from temporalio.worker import Worker
+from temporalio.client import Client
 from service.temporalResource.activity import activities_RBAC
 from service.temporalResource.workflows import workflows_RBAC
-from utils.temporal_client import TemporalClientManager
+from dotenv import load_dotenv
+
+load_dotenv()
 
 async def connectionWithTemporal():
-    return await TemporalClientManager.get_temporal_client()
+    
+    try:
+        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
+        
+        return client
+    except Exception as e:
+        raise e
 
 
 async def get_client_worker():

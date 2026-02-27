@@ -195,8 +195,7 @@ async def get_proxmox_vm_status_activity(db: Session = None):
                 for vmid in vm_ids:
                     url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
                     try:
-                        session = SessionManager.get_session()
-                        response = session.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+                        response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
                         response.raise_for_status()
                         data = response.json()
                         qmp_status = data["data"].get("qmpstatus", "unknown")
