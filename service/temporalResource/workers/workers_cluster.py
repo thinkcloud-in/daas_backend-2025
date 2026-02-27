@@ -1,17 +1,11 @@
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_cluster 
 from service.temporalResource.activity import activities_cluster 
-from temporalio.client import Client
+from utils.temporal_client import TemporalClientManager
 import os
 
 async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        return e
+    return await TemporalClientManager.get_temporal_client()
 async def combined_worker():
     client = await connectionWithTemporal()
     if client is None:

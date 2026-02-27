@@ -4,7 +4,7 @@ import random
 from typing import  Optional
 from urllib.parse import urlparse
 from fastapi import logger
-import requests
+from utils.session_manager import SessionManager
 import urllib3
 from db_configuration.config import SessionLocal, get_db
 from models.proxmox_model import Proxmox
@@ -41,7 +41,8 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": ROOT_USERNAME, "password": ROOT_PASSWORD}
     
-    response = requests.post(url, data=payload, verify=VERIFY_SSL)
+    session = SessionManager.get_session()
+    response = session.post(url, data=payload, verify=VERIFY_SSL)
     
     response.raise_for_status()
     data = response.json()["data"]
@@ -101,7 +102,8 @@ def new_user_proxmox_login(PROXMOX_HOST):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": cred['username'], "password": cred['password']}
 
-    response = requests.post(url, data=payload, verify=VERIFY_SSL)
+    session = SessionManager.get_session()
+    response = session.post(url, data=payload, verify=VERIFY_SSL)
     
     response.raise_for_status()
     data = response.json()["data"]
@@ -118,7 +120,8 @@ def create_api_token_newUser(PROXMOX_HOST):
         "comment": "automation token"
     }
     url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}/token/{cred['token']}"
-    response = requests.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
+    session = SessionManager.get_session()
+    response = session.post(url, headers=headers, cookies=cookies, data=payload, verify=VERIFY_SSL)
     response.raise_for_status()
     data = response.json()["data"]
     full_token = data["full-tokenid"]
@@ -229,7 +232,8 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
     for ip in ip_list:
         url = f"https://{ip}:{port}"
         try:
-            requests.get(url, verify=False, timeout=timeout)
+            session = SessionManager.get_session()
+            session.get(url, verify=False, timeout=timeout)
             return url
         except Exception:
             continue
@@ -251,7 +255,8 @@ def get_all_nodes(cluster_data):
             PROXMOX_HOST = getting_Proxmox_host(cluster_data)
             url = f"{PROXMOX_HOST}/api2/json/cluster/status"
             try:
-                response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+                session = SessionManager.get_session()
+                response = session.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
                 
                 response.raise_for_status()
                 data = response.json()
@@ -293,11 +298,12 @@ def delete_cluster_proxmox(cluster_data, db: Session):
     url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}"
 
     try:
-        response = requests.delete(url, headers=headers, verify=VERIFY_SSL)
+        session = SessionManager.get_session()
+        response = session.delete(url, headers=headers, verify=VERIFY_SSL)
         # Accept 401/404 errors or "no such user" in the error text
         try:
             response.raise_for_status()
-        except requests.HTTPError as e:
+        except Exception as e:
             if response.status_code in (401, 404) or "no such user" in response.text:
                 pass
             else:
@@ -332,7 +338,8 @@ def add_influxdb_metric_server(cluster_data, payload):
         
         payload = {k: v for k, v in payload.items()}
         
-        response = requests.post(url, headers=headers, data=json.dumps(payload), verify=False)
+        session = SessionManager.get_session()
+        response = session.post(url, headers=headers, data=json.dumps(payload), verify=False)
         response.raise_for_status()
         return response.json()
     finally:
@@ -352,7 +359,8 @@ def get_influxdb_metric_server(cluster_data):
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
         url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
         try:
-            response = requests.get(url, headers=headers, verify=False)
+            session = SessionManager.get_session()
+            response = session.get(url, headers=headers, verify=False)
             response.raise_for_status()
             data = response.json().get("data", [])
         except Exception as e:
@@ -365,7 +373,8 @@ def get_influxdb_metric_server(cluster_data):
                     if server_id:
                         detail_url = f"{url}/{server_id}"
                         try:
-                            detail_resp = requests.get(detail_url, headers=headers, verify=False)
+                            session = SessionManager.get_session()
+                            detail_resp = session.get(detail_url, headers=headers, verify=False)
                             detail_resp.raise_for_status()
                             return detail_resp.json().get("data", {})
                         except Exception as e:
@@ -438,7 +447,8 @@ def delete_influxdb_metric_server(cluster_data):
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
         url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
         try:
-            response = requests.delete(url, headers=headers, verify=False)
+            session = SessionManager.get_session()
+            response = session.delete(url, headers=headers, verify=False)
             response.raise_for_status()
             return {"status": "success"}
         except Exception as e:

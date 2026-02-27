@@ -96,19 +96,7 @@ async def start_status_poller_workflow():
     uniqueId = controllers.unique_id()
     client = await connectionWithClient()
     
-    try:
-        if _worker_task is None or _worker_task.done():
-      
-            _worker_task = asyncio.create_task(worker_pollingStatus.status_poller_worker())
-            await asyncio.sleep(3)
-        else:
-           
-            logger.info("Status poller worker is already running")
-            
-    except Exception as e:
-        logger.error(f"Error starting worker: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
+    pass
     
     try:
         handle = await client.start_workflow(

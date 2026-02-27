@@ -1,6 +1,6 @@
 import os
 from fastapi.encoders import jsonable_encoder
-import requests
+from utils.session_manager import SessionManager
 from temporalio import activity
 from models.models import LDAPCredential,LDAP_test_connection_model
 from keycloak_configration import keycloak_config
@@ -60,7 +60,8 @@ async def ad_ldap_configuration_activity(Ldap: LDAPCredential):
             "name": Ldap.name
         }
  
-        response = requests.post(url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.post(url, headers=headers, json=payload)
        
         response.raise_for_status() 
         all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
@@ -79,7 +80,8 @@ async def get_LDAPs_from_keycloak_activity():
         parentId = get_realm_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
         payload={}
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components?parentId={parentId}&type=org.keycloak.storage.UserStorageProvider"
-        res=requests.get(url,headers=headers,data=payload)
+        session = SessionManager.get_session()
+        res=session.get(url,headers=headers,data=payload)
         data = res.json()
         return data
     except Exception as e:
@@ -103,7 +105,8 @@ async def test_ldap_connection_activity(Ldap: LDAP_test_connection_model):
     }
 
     url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-    response = requests.post(url, headers=headers, json=payload)
+    session = SessionManager.get_session()
+    response = session.post(url, headers=headers, json=payload)
     status_code = response.status_code
     try:
         response_json = response.json() 
@@ -132,7 +135,8 @@ async def test_ldap_authentication_activity(Ldap: LDAP_test_connection_model):
         "useTruststoreSpi":Ldap.useTruststoreSpi
     }
     url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
-    res=requests.post(url, headers=headers, json=payload)
+    session = SessionManager.get_session()
+    res=session.post(url, headers=headers, json=payload)
     status_code = res.status_code
     
     try:
@@ -152,7 +156,8 @@ async def delete_ldap_config_activity(ldap_id):
         headers = keycloak_config.get_login_from_keycloak()
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
         payload={}
-        res=requests.delete(url,headers=headers,json=payload)
+        session = SessionManager.get_session()
+        res=session.delete(url,headers=headers,json=payload)
         # res 204
         if (res.status_code==204):
             all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
@@ -171,7 +176,8 @@ async def get_LDAP_by_id_activity(ldap_id):
         headers = keycloak_config.get_login_from_keycloak()
         payload={}
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
-        res=requests.get(url,headers=headers,data=payload)
+        session = SessionManager.get_session()
+        res=session.get(url,headers=headers,data=payload)
         res =res.json()
         mapped_data = {
         "name": res.get("name", ""),
@@ -225,7 +231,8 @@ async def sync_user_from_keycloak_Byid_activity(ldap_id):
         headers =keycloak_config. get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerFullSync"
         payload = {}
-        response = requests.request("POST", url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.request("POST", url, headers=headers, json=payload)
         data =response.json() 
         return data
     except Exception as e:
@@ -238,7 +245,8 @@ async def sync_changed_users_from_keycloak_activity(ldap_id):
         headers = keycloak_config.get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerChangedUsersSync"
         payload = {}
-        response = requests.request("POST", url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.request("POST", url, headers=headers, json=payload)
         data =response.json() 
         return data
     except Exception as e:
@@ -251,7 +259,8 @@ async def unlink_users_from_keycloak_activity(ldap_id):
         headers = keycloak_config.get_login_from_keycloak()
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/unlink-users"
         payload = {}
-        response = requests.request("POST", url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.request("POST", url, headers=headers, json=payload)
         try:
             if response.text.strip():
                 data = response.json()
@@ -270,7 +279,8 @@ async def remove_imported_users_from_keycloak_activity(ldap_id):
         headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/remove-imported-users"
         payload = {}
-        response = requests.request("POST", url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.request("POST", url, headers=headers, json=payload)
         if response.status_code == 404:
             return {
                 "msg": "Resource not found",
@@ -345,7 +355,8 @@ async def update_ldap_config_activity(Ldap: LDAPCredential,ldap_id:str):
         }
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
         headers = keycloak_config.get_login_from_keycloak()
-        response = requests.put(url, headers=headers, json=payload)
+        session = SessionManager.get_session()
+        response = session.put(url, headers=headers, json=payload)
        
         if(response.status_code == 204):
             all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()

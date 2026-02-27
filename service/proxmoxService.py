@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from models.models import Cluster, CreateClusterBase,Pool, Machine
 from db_configuration.config import get_db
 import re
-from service.gucamoleService import connectionWithClient
-from service.temporalResource.workers import worker_proxmox
+from utils.temporal_client import TemporalClientManager
+from .temporalResource.workers import worker_proxmox
 from service.temporalResource.workflows import workflows_proxmox
 from service.clusterService import getting_Proxmox_host,get_api_token,get_all_nodes
 from models.proxmox_model import MetricServer
@@ -180,7 +180,7 @@ async def clone_vm(clone_payload: dict):
         _worker_started = True
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"clonevms-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
     try:
@@ -214,28 +214,29 @@ async def delete_proxmox_vm(vmid, cluster_data):
     for node in nodes:
         vm_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
         try:
-            resp = requests.get(vm_url, headers=headers, verify=False, timeout=5)
+            session = SessionManager.get_session()
+            resp = session.get(vm_url, headers=headers, verify=False, timeout=5)
             if resp.status_code == 200:
                 vm_status = resp.json()["data"].get("status")
                 # If running, stop the VM first
                 if vm_status == "running":
                     stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/stop"
-                    stop_resp = requests.post(stop_url, headers=headers, verify=False, timeout=10)
+                    stop_resp = session.post(stop_url, headers=headers, verify=False, timeout=10)
                     stop_resp.raise_for_status()
                     # Optional: Wait until stopped (polling)
                     import time
                     for _ in range(12):  # Wait max ~60s
-                        status_check = requests.get(vm_url, headers=headers, verify=False, timeout=5)
+                        status_check = session.get(vm_url, headers=headers, verify=False, timeout=5)
                         new_status = status_check.json()["data"].get("status")
                         if new_status != "running":
                             break
                         time.sleep(5)
                 # Now delete the VM
                 delete_url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}"
-                delete_resp = requests.delete(delete_url, headers=headers, verify=False, timeout=10)
+                delete_resp = session.delete(delete_url, headers=headers, verify=False, timeout=10)
                 delete_resp.raise_for_status()
                 return {"message": f"VM with VMID {vmid} stopped (if running) and deleted successfully on node {node['name']}."}
-        except requests.RequestException:
+        except Exception:
             continue  # Try next node
 
     raise HTTPException(status_code=404, detail=f"VMID {vmid} not found on any node. Consider deleting the pool.")
@@ -266,7 +267,7 @@ async def migrate_bucket_all_data(migration_payload: dict):
         _worker_started = True
 
     uniqueId = unique_id()  # Or use any unique ID generator you have
-    client = await connectionWithClient()  # Or Client.connect("localhost:7233") directly
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"Migration-{uniqueId}"
     SRC_BUCKET = migration_payload.get("src_bucket")
     DST_BUCKET = migration_payload.get("dst_bucket")
@@ -362,20 +363,23 @@ def vm_start(PROXMOX_HOST, node, vmid, headers):
 def vm_stop(PROXMOX_HOST, node, vmid, headers):
     
     stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop"
-    resp = requests.post(stop_url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    resp = session.post(stop_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
     return True
 def vm_reboot(PROXMOX_HOST, node, vmid, headers):
     reboot_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/reboot"
-    resp = requests.post(reboot_url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    resp = session.post(reboot_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return {"error": f"HTTP {resp.status_code}, {resp.text}"}
     return {"status": "success"}
 
 def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
     shutdown_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/shutdown"
-    resp = requests.post(shutdown_url, headers=headers, verify=False)
+    session = SessionManager.get_session()
+    resp = session.post(shutdown_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
     return True
@@ -387,7 +391,7 @@ def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
 async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"start_vm_proxmox-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
     try:
@@ -415,7 +419,7 @@ async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
 async def stop_vm_proxmox(vmid: int, pool_id: str,email: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"stop_vm_proxmox-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
 
@@ -443,7 +447,7 @@ async def stop_vm_proxmox(vmid: int, pool_id: str,email: str):
 async def reboot_vm_proxmox(vmid: int, pool_id: str,email: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"reboot_vm_proxmox-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
 
@@ -471,7 +475,7 @@ async def reboot_vm_proxmox(vmid: int, pool_id: str,email: str):
 async def shutdown_vm_proxmox(vmid: int, pool_id: str, email: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"shutdown_vm_proxmox-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
 
@@ -500,7 +504,8 @@ def wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120):
     status_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current"
     waited = 0
     while waited < timeout:
-        resp = requests.get(status_url, headers=headers, verify=False)
+        session = SessionManager.get_session()
+        resp = session.get(status_url, headers=headers, verify=False)
         if resp.status_code == 200:
             status = resp.json().get("data", {}).get("status")
             if status == "stopped":
@@ -556,7 +561,7 @@ async def vm_rebuild(vmid: int, pool_id: str,email: str):
         _worker_started = True
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"vmrebuild-{uniqueId}"
     try:
         # Start the VM rebuild workflow
@@ -694,7 +699,8 @@ def get_vm_ip_addresses(db, cluster_data, node, vmid):
     try:
         
         start_time = time.time()
-        response = requests.get(url, headers=headers, verify=False, timeout=5)
+        session = SessionManager.get_session()
+        response = session.get(url, headers=headers, verify=False, timeout=5)
         time_taken = time.time() - start_time
         logger.info(f"API call took {time_taken:.2f} seconds")
         response.raise_for_status()

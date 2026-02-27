@@ -13,10 +13,10 @@ from temporalio.client import (
     ScheduleActionExecutionStartWorkflow,
 )
 from utils.temporal_client import TemporalClientManager
-from dotenv import load_dotenv
+
 import os
 
-load_dotenv()
+
 GUACAMOLE_REPORT_URL = os.getenv('GUACAMOLE_REPORT_URL')
 
 HORIZON_REPORT_URL = os.getenv('HORIZON_REPORT_URL')
@@ -154,11 +154,7 @@ async def get_data_report(report:str, limit: int, offset: int,db):
     uniqueID = unique_id()
     client = await connectionWithClient()
     
-    try:
-        
-        asyncio.create_task(workers_schedule.get_schedule_data_along_report_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_schedule.get_report_along_report_workflow.run,
         args=[report, limit, offset],
@@ -173,8 +169,7 @@ async def update_data_id(item_id:int, item,db):
     client = await connectionWithClient()
     
     try:
-        
-        asyncio.create_task(workers_schedule.update_schedule_data_id_worker())
+        pass
         
         handle = await client.start_workflow(
             workflows_schedule.update_schedule_data_id_workflow.run,
@@ -195,11 +190,7 @@ async def delete_data_id(item_id:int,db):
     uniqueId = unique_id()
     client = await connectionWithClient()
     
-    try:
-        
-        asyncio.create_task(workers_schedule.delete_schedule_data_id_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_schedule.delete_schedule_data_id_workflow.run,
         item_id,
@@ -213,7 +204,7 @@ async def delete_data_id(item_id:int,db):
 async def get_temporal_status(schedule_id : str):
 
     async def get_schedule_execution_details(schedule_id):
-        client = await Client.connect(os.getenv("TEMPORAL_SERVER"))
+        client = await TemporalClientManager.get_temporal_client()
         schedule_handle = client.get_schedule_handle(schedule_id)
         try:
             description = await schedule_handle.describe()

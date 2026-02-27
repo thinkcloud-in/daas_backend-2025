@@ -28,10 +28,7 @@ async def create_ipmi_server(db: Session, ipmi_data: IPMIDeviceRequest):
     ipmi_ip = ipmi_data.get('ipmi_server_ip', "UnknownIP")
     userName = ipmi_data.get('email', "UnknownUser")
 
-    try:
-        asyncio.create_task(workers_ipmi.create_ipmi_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
 
     handle = await client.start_workflow(
         workflows_ipmi.IpmiCreationWorkflow.run,
@@ -54,10 +51,7 @@ async def update_ipmi_server( ipmi_id: int, ipmi_data: IPMIDeviceRequest):
     ipmi_ip = ipmi_data.get('ipmi_server_ip', "UnknownIP")
     userName = ipmi_data.get('email')
  
-    try:
-        asyncio.create_task(workers_ipmi.update_ipmi_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ipmi.IpmiUpdateWorkflow.run,
         args=[ipmi_id, ipmi_data],
@@ -81,10 +75,7 @@ async def delete_ipmi_server(db: Session, ipmi_id: int,email: Optional[str] = No
     ipmi_ip = ipmi_data.ipmi_server_ip
     userName = email if email else "UnknownUser"
  
-    try:
-        asyncio.create_task(workers_ipmi.delete_ipmi_worker())
-    except Exception as e:
-        return response_format.error_response(500, "Failed to start deletion worker", str(e))
+    pass
     handle = await client.start_workflow(
         workflows_ipmi.IpmiDeletionWorkflow.run,
         ipmi_id,

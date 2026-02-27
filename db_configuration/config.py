@@ -3,8 +3,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
 import os
 import logging
-from dotenv import load_dotenv
-load_dotenv()
+
 logging.basicConfig(
     level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
