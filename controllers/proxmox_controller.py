@@ -13,7 +13,13 @@ from service.gucamoleService import connectionWithClient
 import os, logging, sys
 from utils import response_format
 
-# Logging managed by utils.logger
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 logger = logging.getLogger(__name__)
 

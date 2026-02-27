@@ -16,7 +16,10 @@ from reportlab.lib.units import inch
 
 
 
-# Logging managed by utils.logger
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 
 

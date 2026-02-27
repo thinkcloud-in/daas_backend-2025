@@ -4,7 +4,10 @@ import logging
 from datetime import timedelta
 from service.temporalResource.activity import activities_cluster
 
-# Logging managed by utils.logger or worker
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger("create_cluster_workflow")
 
 
