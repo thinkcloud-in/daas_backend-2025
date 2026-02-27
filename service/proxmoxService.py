@@ -564,7 +564,7 @@ async def vm_rebuild(vmid: int, pool_id: str,email: str):
         )
 
         # Set status to RUNNING as soon as workflow is started
-        machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
+        machine_data = db.query(Machine).filter(Machine.vm_id == vmid).first()
         if machine_data:
             current_ids = machine_data.workflowId or []
             new_rebuild_id = workflow_id
@@ -635,7 +635,7 @@ async def vm_rebuild(vmid: int, pool_id: str,email: str):
         return result
     except Exception as e:
         db.rollback()
-        machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
+        machine_data = db.query(Machine).filter(Machine.vm_id == vmid).first()
         if machine_data:
             # On error, update workflow_status for rebuild workflow
             current_status = machine_data.workflow_status or {}
