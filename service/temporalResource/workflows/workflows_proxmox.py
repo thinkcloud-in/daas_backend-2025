@@ -6,10 +6,7 @@ import logging
 from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging managed by utils.logger or worker
 logger = logging.getLogger("create_machine_workflow")
  
 @workflow.defn(sandboxed=False)

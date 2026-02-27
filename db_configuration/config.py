@@ -4,14 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 import os
 import logging
 
-logging.basicConfig(
-    level=logging.ERROR,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('app.log'),
-        logging.StreamHandler()
-    ]
-)
+# Logging managed by utils.logger
 logger = logging.getLogger(__name__)
 
 

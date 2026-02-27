@@ -12,7 +12,7 @@ from router.temporal_namespace_router import temporal_namespace_router
 from router.proxmox_router import proxmox_router
 from router.ip_router import ip_router
 from router.ipmi_router import ipmi_router
-from service.temporalResource.workers import workers_schedule, workers_retentionPeriod, workers_ldap, workers_ipmi
+from service.temporalResource.workers import workers_schedule, workers_retentionPeriod, workers_ldap, workers_ipmi, workers_RBAC
 from service.gucamoleService import startup_event_client
 from service.temporalService import run_email_worker
 from service.temporalResource.workers import workers_cluster
@@ -28,6 +28,10 @@ from middleware.request_logger import RequestLoggerMiddleware
 from contextlib import asynccontextmanager
 from utils.temporal_client import TemporalClientManager
 from utils.session_manager import SessionManager
+from utils.logger import setup_logging
+
+# Initialize centralized logging
+setup_logging()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -39,8 +43,7 @@ async def lifespan(app: FastAPI):
     # Start workers as background tasks
     asyncio.create_task(workers_cluster.combined_worker())
     asyncio.create_task(worker_pollingStatus.status_poller_worker())
-    asyncio.create_task(worker_proxmox.vm_power_worker())
-    asyncio.create_task(worker_proxmox.vm_rebuild_worker())
+    asyncio.create_task(worker_proxmox.start_all_proxmox_workers())
     asyncio.create_task(worker_hyper_v.hyperv_worker())
     asyncio.create_task(workers_pool.combined_pool_worker())
     asyncio.create_task(workers_machine.combined_machine_worker())
@@ -49,6 +52,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(workers_ldap.start_all_ldap_workers())
     asyncio.create_task(workers_ipmi.start_all_ipmi_workers())
     asyncio.create_task(workers_guacmole.start_all_guac_workers())
+    asyncio.create_task(workers_RBAC.start_all_rbac_workers())
     asyncio.create_task(listen_for_machine_changes())
     asyncio.create_task(run_email_worker())
     
@@ -57,7 +61,7 @@ async def lifespan(app: FastAPI):
     # Shutdown
     print("Cleaning up resources...")
     await TemporalClientManager.close()
-    SessionManager.close()
+    await SessionManager.close_all()
 
 app = FastAPI(lifespan=lifespan)
  
