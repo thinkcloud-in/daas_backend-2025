@@ -272,6 +272,7 @@ async def wait_for_vm_ready_activity(args: dict):
     try:
         cluster_id = args["cluster_id"]
         upid = args["upid"]
+        vmid = args.get("vmid")  # optional — passed for status update
         node = extract_node_from_upid(upid)
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster_data:
@@ -289,6 +290,15 @@ async def wait_for_vm_ready_activity(args: dict):
                 data = resp.json()['data']
                 if data['status'] == 'stopped':
                     if 'exitstatus' in data and data['exitstatus'] == 'OK':
+                        # VM clone task done — write "cloudbase-init" so the
+                        # frontend spinner shows "Running - cloudbase-init"
+                        if vmid:
+                            machine = db.query(Machine).filter(
+                                Machine.vm_id == str(vmid)
+                            ).first()
+                            if machine:
+                                machine.error_message = "cloudbase-init"
+                                db.commit()
                         return True
                     else:
                         raise Exception(f"Task failed: {data}")
