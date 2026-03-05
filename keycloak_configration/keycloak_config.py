@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+import uuid
 from temporalio.client import Client
 import json
 import requests
@@ -33,8 +33,7 @@ def get_login_from_keycloak():
  
  
 def unique_id():
-    unique_id = datetime.now()
-    return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
+    return str(uuid.uuid4())
 
 async def connectionWithClient():
     try:
