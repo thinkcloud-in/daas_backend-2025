@@ -91,7 +91,7 @@ async def get_userlist_from_keycloak_activity():
                 "content-type": "application/json"
             }
             resp = await session.get(
-                f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_RELAM')}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*",
+                f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*",
 
                 headers=auth_headers
             )
