@@ -76,12 +76,26 @@ async def get_LDAPs_from_keycloak_activity():
     from keycloak_configration.keycloak_config import get_login_from_keycloak,get_realm_id_from_keycloak
     try:
         headers = get_login_from_keycloak()
-        parentId = get_realm_id_from_keycloak(headers)  # Assuming you have a function to get the realm ID
+        if not headers:
+             return {"msg": "Error occurred", "error": "Failed to authenticate with Keycloak. Check credentials and KEYCLOAK_ROOT_URL."}
+        
+        parentId = get_realm_id_from_keycloak(headers)
+        if isinstance(parentId, Exception):
+             return {"msg": "Error occurred", "error": f"Failed to get realm ID: {str(parentId)}"}
+        
         payload={}
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components?parentId={parentId}&type=org.keycloak.storage.UserStorageProvider"
         res=requests.get(url,headers=headers,data=payload)
-        data = res.json()
-        return data
+        
+        if res.status_code != 200:
+             return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}", "response": res.text}
+        
+        try:
+            data = res.json()
+            return data
+        except Exception as json_err:
+             return {"msg": "Error occurred", "error": f"Failed to parse Keycloak response as JSON: {str(json_err)}", "response": res.text}
+             
     except Exception as e:
         return {"msg": "Error occurred", "error": str(e)}
 
@@ -153,13 +167,13 @@ async def delete_ldap_config_activity(ldap_id):
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
         payload={}
         res=requests.delete(url,headers=headers,json=payload)
-        # res 204
-        if (res.status_code==204):
-            all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
+        
+        if res.status_code == 204:
+            all_ldaps = await keycloak_config.get_LDAPs_from_keycloak()
             return all_ldaps
         else:
-            return res
-        
+            return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}", "response": res.text}
+            
     except Exception as e:
         return {"msg": "Error occurred", "error": str(e)}
 
@@ -172,47 +186,55 @@ async def get_LDAP_by_id_activity(ldap_id):
         payload={}
         url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
         res=requests.get(url,headers=headers,data=payload)
-        res =res.json()
+        
+        if res.status_code != 200:
+             return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}", "response": res.text}
+        
+        try:
+            res_json = res.json()
+        except Exception as json_err:
+             return {"msg": "Error occurred", "error": f"Failed to parse response as JSON: {str(json_err)}", "response": res.text}
+             
         mapped_data = {
-        "name": res.get("name", ""),
-        "vendor": res.get('config').get('vendor',[''])[0],
-        "connectionUrl": res.get('config').get("connectionUrl", [""])[0],
-        "startTls": res.get('config').get("startTls", [False])[0],
-        "useTruststoreSpi": res.get('config').get("useTruststoreSpi", [""])[0],
-        "connectionPooling":(res.get('config').get("connectionPooling", [False])[0]),
-        "connectionTimeout": res.get('config').get("connectionTimeout", [""])[0],
-        "authType": res.get('config').get("authType", [""])[0],
-        "bindDn": res.get('config').get("bindDn", [""])[0],
-        "bindCredential": res.get('config').get("bindCredential", [""])[0],
-        "editMode": res.get('config').get("editMode", [""])[0],
-        "usersDn": res.get('config').get("usersDn", [""])[0],
-        "usernameLDAPAttribute": res.get('config').get("usernameLDAPAttribute", [""])[0],
-        "rdnLDAPAttribute": res.get('config').get("rdnLDAPAttribute", [""])[0],
-        "uuidLDAPAttribute": res.get('config').get("uuidLDAPAttribute", [""])[0],
-        "userObjectClasses": res.get('config').get("userObjectClasses", [""])[0],
-        "searchScope": res.get('config').get("searchScope", [""])[0],
-        "readTimeout": res.get('config').get("readTimeout", [""])[0],
-        "pagination": res.get('config').get("pagination", [False])[0],
-        "referral": res.get('config').get("referral", [""])[0],
-        "importEnabled": res.get('config').get("importEnabled", [True])[0],
-        "syncRegistrations": res.get('config').get("syncRegistrations", [True])[0],
-        "batchSizeForSync": res.get('config').get("batchSizeForSync", [""])[0],
-        "fullSyncPeriod": int(res.get('config').get("fullSyncPeriod", ["-1"])[0]),
-        "changedSyncPeriod": int(res.get('config').get("changedSyncPeriod", ["-1"])[0]),
-        "allowKerberosAuthentication": res.get('config').get("allowKerberosAuthentication", [False])[0],
-        "useKerberosForPasswordAuthentication": res.get('config').get("useKerberosForPasswordAuthentication", [False])[0],
-        "cachePolicy": res.get('config').get("cachePolicy", ["DEFAULT"])[0],
-        "usePasswordModifyExtendedOp": res.get('config').get("usePasswordModifyExtendedOp", [False])[0],
-        "validatePasswordPolicy": res.get('config').get("validatePasswordPolicy", [False])[0],
-        "trustEmail": res.get('config').get("trustEmail",[False])[0],
-        "customUserSearchFilter": res.get('config').get("customUserSearchFilter",[""])[0],
-        "debug": res.get('config').get("debug",[False])[0],
-        "enabled": res.get('config').get("enabled",[True])[0],
-        "kerberosRealm": res.get('config').get("kerberosRealm",[""])[0],
-        "keyTab": res.get('config').get("keyTab", [""])[0],
-        "lastSync": res.get('config').get("lastSync", [""])[0],
-        "serverPrincipal": res.get('config').get("serverPrincipal",[""])[0],
-        "krbPrincipalAttribute": res.get('config').get("krbPrincipalAttribute",[""])[0]
+        "name": res_json.get("name", ""),
+        "vendor": res_json.get('config').get('vendor',[''])[0],
+        "connectionUrl": res_json.get('config').get("connectionUrl", [""])[0],
+        "startTls": res_json.get('config').get("startTls", [False])[0],
+        "useTruststoreSpi": res_json.get('config').get("useTruststoreSpi", [""])[0],
+        "connectionPooling":(res_json.get('config').get("connectionPooling", [False])[0]),
+        "connectionTimeout": res_json.get('config').get("connectionTimeout", [""])[0],
+        "authType": res_json.get('config').get("authType", [""])[0],
+        "bindDn": res_json.get('config').get("bindDn", [""])[0],
+        "bindCredential": res_json.get('config').get("bindCredential", [""])[0],
+        "editMode": res_json.get('config').get("editMode", [""])[0],
+        "usersDn": res_json.get('config').get("usersDn", [""])[0],
+        "usernameLDAPAttribute": res_json.get('config').get("usernameLDAPAttribute", [""])[0],
+        "rdnLDAPAttribute": res_json.get('config').get("rdnLDAPAttribute", [""])[0],
+        "uuidLDAPAttribute": res_json.get('config').get("uuidLDAPAttribute", [""])[0],
+        "userObjectClasses": res_json.get('config').get("userObjectClasses", [""])[0],
+        "searchScope": res_json.get('config').get("searchScope", [""])[0],
+        "readTimeout": res_json.get('config').get("readTimeout", [""])[0],
+        "pagination": res_json.get('config').get("pagination", [False])[0],
+        "referral": res_json.get('config').get("referral", [""])[0],
+        "importEnabled": res_json.get('config').get("importEnabled", [True])[0],
+        "syncRegistrations": res_json.get('config').get("syncRegistrations", [True])[0],
+        "batchSizeForSync": res_json.get('config').get("batchSizeForSync", [""])[0],
+        "fullSyncPeriod": int(res_json.get('config').get("fullSyncPeriod", ["-1"])[0]),
+        "changedSyncPeriod": int(res_json.get('config').get("changedSyncPeriod", ["-1"])[0]),
+        "allowKerberosAuthentication": res_json.get('config').get("allowKerberosAuthentication", [False])[0],
+        "useKerberosForPasswordAuthentication": res_json.get('config').get("useKerberosForPasswordAuthentication", [False])[0],
+        "cachePolicy": res_json.get('config').get("cachePolicy", ["DEFAULT"])[0],
+        "usePasswordModifyExtendedOp": res_json.get('config').get("usePasswordModifyExtendedOp", [False])[0],
+        "validatePasswordPolicy": res_json.get('config').get("validatePasswordPolicy", [False])[0],
+        "trustEmail": res_json.get('config').get("trustEmail",[False])[0],
+        "customUserSearchFilter": res_json.get('config').get("customUserSearchFilter",[""])[0],
+        "debug": res_json.get('config').get("debug",[False])[0],
+        "enabled": res_json.get('config').get("enabled",[True])[0],
+        "kerberosRealm": res_json.get('config').get("kerberosRealm",[""])[0],
+        "keyTab": res_json.get('config').get("keyTab", [""])[0],
+        "lastSync": res_json.get('config').get("lastSync", [""])[0],
+        "serverPrincipal": res_json.get('config').get("serverPrincipal",[""])[0],
+        "krbPrincipalAttribute": res_json.get('config').get("krbPrincipalAttribute",[""])[0]
         }
         return mapped_data
     except Exception as e:
