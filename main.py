@@ -28,8 +28,13 @@ app = FastAPI()
 
 app = FastAPI(on_startup=[startup_event_client])
 
+@app.get("/test")
+def test_api():
+    return {
+        "status": "ok",
+        "message": "FastAPI working with APISIX 🚀"
+    }
 
- 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
