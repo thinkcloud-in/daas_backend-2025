@@ -55,6 +55,7 @@ def post_data(item, db):
             raise Exception("Failed to get smtp data")
         smtp_config = {
             "email": smtp_response.email,
+            "userName": smtp_response.userName,
             "password": smtp_response.password,
             "serverIP": smtp_response.serverIP,
             "serverPort": smtp_response.serverPort,
@@ -216,6 +217,8 @@ async def get_temporal_status(schedule_id : str):
         schedule_handle = client.get_schedule_handle(schedule_id)
         try:
             description = await schedule_handle.describe()
+            if not description.info.recent_actions:
+                return("PENDING")
             latest_action = description.info.recent_actions[-1]
             if isinstance(latest_action.action, ScheduleActionExecutionStartWorkflow):
                 workflow_id = latest_action.action.workflow_id

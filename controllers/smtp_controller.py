@@ -19,7 +19,11 @@ def sqlalchemy_obj_to_dict(obj):
 def smtp_get(db):
     try:
         data_objs = smtp_service.smtp_get(db)
-        data = [sqlalchemy_obj_to_dict(obj) for obj in data_objs]
+        data = []
+        for obj in data_objs:
+            obj_dict = sqlalchemy_obj_to_dict(obj)
+            obj_dict.pop('password', None)
+            data.append(obj_dict)
         return response_format.success_response(200, "SMTP Servers retrieved successfully.", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to retrieve SMTP Servers", str(e))

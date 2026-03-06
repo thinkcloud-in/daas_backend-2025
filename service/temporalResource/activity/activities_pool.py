@@ -229,7 +229,7 @@ async def create_pool_activity(request: dict) -> dict:
                         "clone_workflow_id": workflow_ids,
                     }
                     machine_data_obj = CreateMachineBase(**machine_data)
-                    machine_result = await controllers.create_machine(machine_data_obj)
+                    machine_result = await controllers.create_machine(machine_data_obj, db=db)
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
                     db.rollback()
@@ -635,7 +635,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     }
 
                     machine_data_obj = CreateMachineBase(**machine_data)
-                    machine_result = await controllers.create_machine(machine_data_obj)
+                    machine_result = await controllers.create_machine(machine_data_obj, db=db)
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
                     db.rollback()

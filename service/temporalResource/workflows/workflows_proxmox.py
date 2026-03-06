@@ -30,6 +30,7 @@ class WaitAndAssignIPsWorkflow:
                     "cluster_id": cluster_id,
                     "node": node,
                     "upid": upid,
+                    "vmid": vmid,
                     "timeout": 300,
                 }],
                 retry_policy=retry_policy,
@@ -281,7 +282,7 @@ class VmRebuildWorkflow:
             WaitAndAssignIPsWorkflow.run,
             args=[vms, ip_list, cluster_id],
             id=f"wait-assign-{workflow.info().workflow_id}-rebuild-{vmid}",
-            parent_close_policy=ParentClosePolicy.ABANDON
+            parent_close_policy=ParentClosePolicy.ABANDON,
         )
     
 

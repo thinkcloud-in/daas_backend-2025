@@ -353,7 +353,7 @@ class UpdateReportWorkflow:
             return result
         except Exception as e:
             
-            return None
+            raise
         
 @workflow.defn(sandboxed=False)
 class InsertReportWorkflow:
@@ -378,7 +378,7 @@ class InsertReportWorkflow:
             return result
         except Exception as e:
             
-            return None
+            raise
         
 
 @workflow.defn(sandboxed=False)
@@ -402,9 +402,8 @@ class GenerateReportWorkflow:
             )
             
             return result
-        except Exception as e:
-            
-            return None
+        except Exception as e: 
+            raise
         
 
 

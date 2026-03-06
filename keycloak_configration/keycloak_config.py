@@ -1,5 +1,5 @@
 import asyncio
-from datetime import datetime
+import uuid
 from temporalio.client import Client
 import json
 import requests
@@ -15,8 +15,8 @@ def get_login_from_keycloak():
             f"{os.getenv('KEYCLOAK_ROOT_URL')}/realms/master/protocol/openid-connect/token",
             data={
                 "client_id": "admin-cli",
-                "username": "admin",
-                "password": "admin",
+                "username": os.getenv("KEYCLOAK_ADMIN", "admin"),
+                "password": os.getenv("KEYCLOAK_PASSWORD", "admin"),
                 "grant_type": "password"
             }
         )
@@ -29,12 +29,11 @@ def get_login_from_keycloak():
         }
         return auth_headers
     except Exception as e:
-        return None
+        raise Exception(f"Failed to login to Keycloak: {str(e)}")
  
  
 def unique_id():
-    unique_id = datetime.now()
-    return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
+    return str(uuid.uuid4())
 
 async def connectionWithClient():
     try:
@@ -71,7 +70,7 @@ def get_realm_id_from_keycloak(auth_headers):
         data  = response.json()
         return data['id']
     except Exception as e:
-        return e 
+        raise Exception(f"Failed to get realm ID from Keycloak: {str(e)}")
 
 def get_componeant_id_from_keycloak(auth_headers):
     try:
@@ -83,7 +82,7 @@ def get_componeant_id_from_keycloak(auth_headers):
         data  = response.json()
         return data[0]['id']
     except Exception as e:
-        return e 
+        raise Exception(f"Failed to get component ID from Keycloak: {str(e)}")
 
 
 async def test_ldap_connection(ldap_data):

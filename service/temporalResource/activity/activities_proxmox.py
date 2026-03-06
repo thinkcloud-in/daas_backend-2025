@@ -272,6 +272,7 @@ async def wait_for_vm_ready_activity(args: dict):
     try:
         cluster_id = args["cluster_id"]
         upid = args["upid"]
+        vmid = args.get("vmid")  # optional — passed for status update
         node = extract_node_from_upid(upid)
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster_data:
@@ -289,6 +290,15 @@ async def wait_for_vm_ready_activity(args: dict):
                 data = resp.json()['data']
                 if data['status'] == 'stopped':
                     if 'exitstatus' in data and data['exitstatus'] == 'OK':
+                        # VM clone task done — write "cloudbase-init" so the
+                        # frontend spinner shows "Running - cloudbase-init"
+                        if vmid:
+                            machine = db.query(Machine).filter(
+                                Machine.vm_id == str(vmid)
+                            ).first()
+                            if machine:
+                                machine.error_message = "cloudbase-init"
+                                db.commit()
                         return True
                     else:
                         raise Exception(f"Task failed: {data}")
@@ -556,7 +566,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
 async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None):
     db: Session = next(get_db())
     try:
-        machine = db.query(Machine).filter(Machine.vm_id == vmid).first()
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
         if not machine:
             return {"status": "error", "error": f"Machine with vm_id {vmid} not found in DB."}
         if not machine.pool_id:
@@ -566,7 +576,14 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         if not pool or not pool.pool_template_vm_id:
             return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-        template_vm_id = pool.pool_template_vm_id
+        raw_template = pool.pool_template_vm_id
+        if isinstance(raw_template, dict):
+            template_vm_id = str(raw_template.get('vmid') or raw_template.get('id'))
+        elif isinstance(raw_template, list) and raw_template:
+            first = raw_template[0]
+            template_vm_id = str(first.get('vmid') or first.get('id')) if isinstance(first, dict) else str(first)
+        else:
+            template_vm_id = str(raw_template)
         cluster_id = pool.cluster_id.split("_")[1]
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster_data:
@@ -613,7 +630,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         
         template_node = None
         for vm in all_vms:
-            if str(vm.get("vmid")) == str(template_vm_id) and vm.get("template") == 1:
+            if str(vm.get("vmid")) == str(template_vm_id):
                 template_node = vm.get("node")
                 break
         if not template_node:
@@ -622,6 +639,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None)
         
         try:
             clone_url = f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template_vm_id}/clone"
+            # template_vm_id is already a str at this point
             payload = {
                 "newid": vmid,
                 "name": machine.name,

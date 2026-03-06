@@ -58,7 +58,8 @@ def smtp_update_data(item, db):
             db_item.serverIP = item.serverIP
             db_item.serverPort = item.serverPort
             db_item.userName = item.userName
-            db_item.password = item.password
+            if item.password:
+                db_item.password = item.password
             db_item.email = item.email
             db_item.receiverMail = item.receiverMail
             db_item.connOption = item.connOption

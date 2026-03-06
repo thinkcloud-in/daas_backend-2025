@@ -1,5 +1,5 @@
-from fastapi import APIRouter
-from typing import Any, List
+from fastapi import APIRouter, Form, File, UploadFile, Query
+from typing import Any, List, Union
 from controllers import guacamole_controller
 from models.API_Response_model import APIResponse
 from models.Rbac_models import RoleComponentSubmitRequest,RBACRequest
@@ -60,8 +60,12 @@ async def reports_by_type(report_type: str):
     return await guacamole_controller.read_companies_by_report_type(report_type)
 
 @guacamole_router.post("/update_report", response_model=APIResponse[Any])
-async def update_report():
-    return await guacamole_controller.update_company()
+async def update_report(
+    company_name: str = Form(...),
+    company_logo: Union[UploadFile, str, None] = File(...),
+    report_type: str = Form(...),
+):
+    return await guacamole_controller.update_company(company_name, company_logo, report_type)
 
 @guacamole_router.delete("/delete_company/{report_name}", response_model=APIResponse[Any])
 async def delete_company(report_name: str):

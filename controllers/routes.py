@@ -206,12 +206,16 @@ async def update_cluster_endpoint(cluster_id: str, cluster_data: models.UpdateCl
 @router.post('/ad_ldap_connection' ,response_model=APIResponse)
 async def ldap_Configuration(ldap_data:models.LDAPCredential):
     res =  await key_config.configuration_ad(ldap_data)
+    if isinstance(res, dict) and res.get("msg") == "Error occurred":
+        return response_format.error_response(500, res.get("error", "LDAP configuration failed"), res)
     return response_format.success_response(200, "LDAP configuration successful.", res)
 
 #Route to list all the LDAPs configured
 @router.get('/ldaps', response_model=APIResponse)
 async def get_LDAPs_from_keycloak_endpoint():
     res = await key_config.get_LDAPs_from_keycloak()
+    if isinstance(res, dict) and res.get("msg") == "Error occurred":
+        return response_format.error_response(500, res.get("error", "Failed to retrieve LDAP configurations"), res)
     return response_format.success_response(200, "LDAP configurations retrieved successfully.", res)
 
 #Route to test LDAP connection
@@ -230,12 +234,16 @@ async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connectio
 @router.delete('/delete_ldap_configuration/{ldap_id}', response_model=APIResponse)
 async def delete_ldap_config_endpoint(ldap_id: str):
     res = await key_config.delete_ldap_config(ldap_id)
+    if isinstance(res, dict) and res.get("msg") == "Error occurred":
+        return response_format.error_response(500, res.get("error", "Failed to delete LDAP configuration"), res)
     return response_format.success_response(200, "LDAP configuration deleted successfully.", res)
 
 # get LDAP details by id
 @router.get('/get_ldap_by_id/{ldap_id}', response_model=APIResponse)
 async def get_LDAP_by_id_endpoint(ldap_id: str):
     data = await key_config.get_LDAP_by_id(ldap_id)
+    if isinstance(data, dict) and data.get("msg") == "Error occurred":
+        return response_format.error_response(500, data.get("error", "Failed to retrieve LDAP configuration"), data)
     return response_format.success_response(200, "LDAP configuration retrieved successfully.", data)
 
 # update_ldap_config
@@ -243,6 +251,8 @@ async def get_LDAP_by_id_endpoint(ldap_id: str):
 async def update_ldap_config_endpoint(ldap_data: models.LDAPCredential,ldap_id: str):
     ldap_data_dict = ldap_data.dict()
     data = await key_config.update_ldap_config(ldap_data_dict,ldap_id)
+    if isinstance(data, dict) and data.get("msg") == "Error occurred":
+         return response_format.error_response(500, data.get("error", "Failed to update LDAP configuration"), data)
     return response_format.success_response(200, "LDAP configuration updated successfully.", data)
 
 @router.get('/sync_users/{ldap_id}', response_model=APIResponse)

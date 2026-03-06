@@ -157,9 +157,12 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
 
  
-async def create_machine(machine_data: CreateMachineBase):
+async def create_machine(machine_data: CreateMachineBase, db: Session = None):
     logger.info(f"Received machine_data for creation: {machine_data}")
-    db = SessionLocal()
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
         uniqueId = unique_id()
         client = await connectionWithClient()
@@ -222,7 +225,8 @@ async def create_machine(machine_data: CreateMachineBase):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"An error occurred during machine creation: {str(e)}")
     finally:
-        db.close()
+        if own_db:
+            db.close()
 
 
 

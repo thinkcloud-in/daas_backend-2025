@@ -91,7 +91,7 @@ async def get_userlist_from_keycloak_activity():
                 "content-type": "application/json"
             }
             resp = await session.get(
-                f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_RELAM')}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*",
+                f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*",
 
                 headers=auth_headers
             )
@@ -352,6 +352,7 @@ async def delete_report_activity(report_type:str):
 
 @activity.defn
 async def update_report_activity(company_name: str, company_logo: bytes, report_type: str):
+    print(f"---------------[update_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -364,28 +365,34 @@ async def update_report_activity(company_name: str, company_logo: bytes, report_
                 WHERE report_type = %s;
             """
             cursor.execute(update_query, (company_name, company_logo, report_type))
+            print(f"[update_report_activity] UPDATE rowcount={cursor.rowcount}")
 
             if cursor.rowcount == 0:
-                from ...gucamoleService import insert_report
-                insert_report(company_name, company_logo, report_type)
+                insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
+                cursor.execute(insert_query, (company_name, company_logo, report_type))
+                print(f"[update_report_activity] INSERT rowcount={cursor.rowcount}")
             db.commit()
-            
+            print(f"[update_report_activity] Committed successfully")
 
     except Exception as error:
         db.rollback()
-        return ('error',error)
+        print(f"[update_report_activity] ERROR: {error}")
+        raise
     finally:
         db.close()
 
 @activity.defn
 async def insert_report_activity(company_name: str, company_logo: bytes, report_type: str):
+    print(f"[insert_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
             insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
             cursor.execute(insert_query, (company_name, company_logo, report_type))
             db.commit()
+            print(f"[insert_report_activity] Committed successfully, rowcount={cursor.rowcount}")
     except Exception as error:
+        print(f"[insert_report_activity] ERROR: {error}")
         raise error
     finally:
         db.close()
@@ -398,8 +405,13 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
    
     pdf_file = f"{report_type.lower().replace(' ', '_')}.pdf"
     company_data = await service.get_companies_by_report_type(report_type)
-  
+     
+    # print('company_data--------------------------------',company_data)
+    print('--------------------------------company_data[0]',company_data[0])
+    if not company_data or not isinstance(company_data, list) or len(company_data) == 0:
+        raise Exception(f"No report template found for report type: '{report_type}'. Please configure a report template first.")
     company_name = company_data[0].get('company_name',"unknown company name")
+    print('--------------------------------',company_name)
     logger.info("successfully got {company_name}")
  
     logo_image = None
