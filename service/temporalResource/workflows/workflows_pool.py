@@ -168,3 +168,25 @@ class get_pool_details_ID_workflow:
         except Exception as e:
             
             raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+
+@workflow.defn(sandboxed=False)
+class DomainJoinWorkflow:
+    @workflow.run
+    async def run(self, pool_id: int) -> dict:
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=30),
+            maximum_attempts=5,
+        )
+        try:
+            result = await workflow.execute_activity(
+                activities_pool.domain_join_activity,
+                args=[pool_id],
+                retry_policy=retry_policy,
+                start_to_close_timeout=timedelta(seconds=300),
+            )
+            return result
+        except Exception as e:
+            raise Exception(f"Domain join workflow error: {str(e)}")
+

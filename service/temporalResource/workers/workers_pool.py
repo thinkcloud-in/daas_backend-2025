@@ -148,6 +148,18 @@ async def get_pool_details_ID_worker():
     except Exception as e: 
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
 
-    
+async def domain_join_worker():
+    client = await connectionWithTemporal()
+    if client is None:
+        return None
 
-
+    worker = Worker(
+        client,
+        task_queue="domain-join-task-queue",
+        workflows=[workflows_pool.DomainJoinWorkflow],
+        activities=[activities_pool.domain_join_activity],
+    )
+    try:
+        await worker.run()
+    except Exception as e: 
+        raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
