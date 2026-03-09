@@ -24,7 +24,8 @@ async def get_client_activity():
         
     
         headers = auth_headers
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/clients"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/clients"
         logger.info(f"Keycloak URL: {keycloak_url}")
         async with aiohttp.ClientSession()as session:
             logger.info("Sending GET request to Keycloak...")
@@ -54,7 +55,8 @@ async def get_client_roles_activity():
         client_id = await service.get_client()
 
         container_id = client_id.get("id")
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/clients/{container_id}/roles"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/clients/{container_id}/roles"
         realm_url = keycloak_url
         async with aiohttp.ClientSession() as session:
             logger.info("Sending GET request to Keycloak...")

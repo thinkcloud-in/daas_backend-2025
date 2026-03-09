@@ -10,7 +10,8 @@ from utils import response_format
 async def ad_ldap_configuration_activity(Ldap: LDAPCredential):
     
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components"
 
         headers = keycloak_config.get_login_from_keycloak()
         parentId = keycloak_config.get_realm_id_from_keycloak(headers)
@@ -79,13 +80,14 @@ async def get_LDAPs_from_keycloak_activity():
         if not headers:
              return {"msg": "Error occurred", "error": "Failed to authenticate with Keycloak. Check credentials and KEYCLOAK_ROOT_URL."}
         
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         parentId = get_realm_id_from_keycloak(headers)
         if isinstance(parentId, Exception):
              return {"msg": "Error occurred", "error": f"Failed to get realm ID: {str(parentId)}"}
         
-        payload={}
-        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components?parentId={parentId}&type=org.keycloak.storage.UserStorageProvider"
-        res=requests.get(url,headers=headers,data=payload)
+        payload = {}
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components?parentId={parentId}&type=org.keycloak.storage.UserStorageProvider"
+        res = requests.get(url, headers=headers, data=payload)
         
         if res.status_code != 200:
              return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}", "response": res.text}
@@ -116,7 +118,8 @@ async def test_ldap_connection_activity(Ldap: LDAP_test_connection_model):
         "useTruststoreSpi":Ldap.useTruststoreSpi
     }
 
-    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/testLDAPConnection"
     response = requests.post(url, headers=headers, json=payload)
     status_code = response.status_code
     try:
@@ -145,7 +148,8 @@ async def test_ldap_authentication_activity(Ldap: LDAP_test_connection_model):
         "startTls":str(Ldap.startTls).lower(),
         "useTruststoreSpi":Ldap.useTruststoreSpi
     }
-    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/testLDAPConnection"
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/testLDAPConnection"
     res=requests.post(url, headers=headers, json=payload)
     status_code = res.status_code
     
@@ -164,7 +168,8 @@ async def delete_ldap_config_activity(ldap_id):
     from keycloak_configration import keycloak_config
     try:
         headers = keycloak_config.get_login_from_keycloak()
-        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components/{ldap_id}"
         payload={}
         res=requests.delete(url,headers=headers,json=payload)
         
@@ -184,7 +189,8 @@ async def get_LDAP_by_id_activity(ldap_id):
     try:
         headers = keycloak_config.get_login_from_keycloak()
         payload={}
-        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url=f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components/{ldap_id}"
         res=requests.get(url,headers=headers,data=payload)
         
         if res.status_code != 200:
@@ -245,7 +251,8 @@ async def get_LDAP_by_id_activity(ldap_id):
 async def sync_user_from_keycloak_Byid_activity(ldap_id):
     try:
         headers =keycloak_config. get_login_from_keycloak()
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerFullSync"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/user-storage/{ldap_id}/sync?action=triggerFullSync"
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
         data =response.json() 
@@ -258,7 +265,8 @@ async def sync_user_from_keycloak_Byid_activity(ldap_id):
 async def sync_changed_users_from_keycloak_activity(ldap_id):
     try:
         headers = keycloak_config.get_login_from_keycloak()
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/sync?action=triggerChangedUsersSync"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/user-storage/{ldap_id}/sync?action=triggerChangedUsersSync"
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
         data =response.json() 
@@ -271,7 +279,8 @@ async def sync_changed_users_from_keycloak_activity(ldap_id):
 async def unlink_users_from_keycloak_activity(ldap_id):
     try:
         headers = keycloak_config.get_login_from_keycloak()
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/unlink-users"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/user-storage/{ldap_id}/unlink-users"
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
         try:
@@ -290,7 +299,8 @@ async def unlink_users_from_keycloak_activity(ldap_id):
 async def remove_imported_users_from_keycloak_activity(ldap_id):
     try:
         headers = keycloak_config.get_login_from_keycloak()  # Assuming you have a function to get headers
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/user-storage/{ldap_id}/remove-imported-users"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/user-storage/{ldap_id}/remove-imported-users"
         payload = {}
         response = requests.request("POST", url, headers=headers, json=payload)
         if response.status_code == 404:
@@ -365,7 +375,8 @@ async def update_ldap_config_activity(Ldap: LDAPCredential,ldap_id:str):
             "name": Ldap.name,
             "id":ldap_id
         }
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components/{ldap_id}"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components/{ldap_id}"
         headers = keycloak_config.get_login_from_keycloak()
         response = requests.put(url, headers=headers, json=payload)
        
