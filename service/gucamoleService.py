@@ -838,25 +838,35 @@ async def delete_report(report_type: str):
     return result
  
 async def get_auth_headers():
+    # Get and sanitize environment variables
+    root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
+    admin_user = os.getenv('KEYCLOAK_ADMIN', 'admin').strip()
+    admin_pass = os.getenv('KEYCLOAK_PASSWORD', 'admin').strip()
+    
+    if not root_url:
+         raise Exception("KEYCLOAK_ROOT_URL is not set")
+
+    token_url = f"{root_url}/realms/master/protocol/openid-connect/token"
+    
      # Get access token
     resp = requests.post(
-        f"{os.getenv('KEYCLOAK_ROOT_URL')}/realms/master/protocol/openid-connect/token",
+        token_url,
         data={
             "client_id": "admin-cli",
-            "username": os.getenv('KEYCLOAK_ADMIN'),
-            "password": os.getenv('KEYCLOAK_PASSWORD'),
+            "username": admin_user,
+            "password": admin_pass,
             "grant_type": "password"
         }
     )
     resp.raise_for_status()
     data = resp.json()
-    access_token = data["access_token"]
+    access_token = data.get("access_token")
+    
     # Set authorization headers
-    auth_headers = {
+    return {
         "Authorization": f"Bearer {access_token}",
-        "content-type": "application/json"
+        "Content-Type": "application/json"
     }
-    return auth_headers
 async def get_client():
     uniqueId = unique_id()
     client = await connectionWithClient()
@@ -897,7 +907,8 @@ async def get_client_roles():
 async def create_client_role(client_id, role_name):
     try:
         headers = await get_auth_headers()
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/clients/{client_id}/roles"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/clients/{client_id}/roles"
         realm_url = keycloak_url
         payload = {
             "name": role_name
@@ -912,7 +923,8 @@ async def create_client_role(client_id, role_name):
 async def role_exists(client_id, role_name):
     try:
         headers = await get_auth_headers()
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/clients/{client_id}/roles"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/clients/{client_id}/roles"
         response = requests.get(keycloak_url, headers=headers)
         response.raise_for_status()
         roles = response.json()
@@ -924,7 +936,8 @@ async def role_exists(client_id, role_name):
 async def delete_client_role(client_id, role_name):
     try:
         headers = await get_auth_headers()
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/clients/{client_id}/roles/{role_name}"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/clients/{client_id}/roles/{role_name}"
         realm_url = keycloak_url
         realm_response = requests.delete(realm_url, headers=headers)
         realm_response.raise_for_status()
@@ -934,7 +947,8 @@ async def delete_client_role(client_id, role_name):
 def get_user_roles(auth_headers, user_id):
     try:
         headers = auth_headers
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/users/{user_id}/role-mappings"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/role-mappings"
         realm_url = keycloak_url
         realm_response = requests.get(realm_url, headers=headers)
         realm_response.raise_for_status()
@@ -946,7 +960,8 @@ def get_user_roles(auth_headers, user_id):
 def assign_role(user_id, role_id):
     try:
         headers = get_auth_headers()
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{os.getenv('KEYCLOAK_REALM')}/users/{user_id}/roles/{role_id}"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/roles/{role_id}"
         realm_url = keycloak_url
         realm_response = requests.put(realm_url, headers=headers)
         realm_response.raise_for_status()

@@ -63,7 +63,8 @@ async def configuration_ad(ldap_data: dict) -> dict:
 
 def get_realm_id_from_keycloak(auth_headers):
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}"
         payload = {}
         headers = auth_headers  
         response = requests.get(url, headers=headers, data=payload)
@@ -74,7 +75,8 @@ def get_realm_id_from_keycloak(auth_headers):
 
 def get_componeant_id_from_keycloak(auth_headers):
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/components"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components"
 
         payload = {}
         headers = auth_headers 
@@ -254,7 +256,8 @@ async def remove_imported_users_from_keycloak(ldap_id):
 # it is responisble for enable or disable opt for client
 def get_Auth_flow_id_browser(auth_flow_headers):
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/browser/executions"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
         auth_headers = auth_flow_headers
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
@@ -267,7 +270,8 @@ def get_Auth_flow_id_browser(auth_flow_headers):
     
 def get_Auth_flow_Value_browser():
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/browser/executions"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
         auth_headers = get_login_from_keycloak()
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
@@ -281,11 +285,12 @@ def get_Auth_flow_Value_browser():
 
 def set_otp_for_browser_auth(value):
     try:
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         if value is True:
             requires = "REQUIRED"
         else:  
             requires = "DISABLED"
-        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/browser/executions"
+        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
         headers = get_login_from_keycloak()
         data = get_Auth_flow_id_browser(headers)
         id = data[0]["id"]
@@ -314,7 +319,8 @@ def set_otp_for_browser_auth(value):
 
 def get_guacamole_browser_auth_flow(auth_flow_headers):
     try:
-        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
         auth_headers = auth_flow_headers
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
@@ -328,11 +334,12 @@ def get_guacamole_browser_auth_flow(auth_flow_headers):
         return "ERROR"
 def set_otp_for_guacamole_browser(value):
     try:
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         if value is True:
             requires = "REQUIRED"
         else:  
             requires = "DISABLED"
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
         headers = get_login_from_keycloak()
         data = get_guacamole_browser_auth_flow(headers)
         id = data[0]["id"]
@@ -361,7 +368,8 @@ def set_otp_for_guacamole_browser(value):
 
 def get_Auth_flow_Value_guacamole_browser():
     try:
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/guacamole/authentication/flows/guacamole-browser-auth-flow/executions"
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
         auth_headers = get_login_from_keycloak()
         payload = {}
         response = requests.request("GET", url, headers=auth_headers, data=payload)
