@@ -799,3 +799,104 @@ async def get_pool_details_id_activity(pool_id: int):
         db.rollback()
         
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving the pool: {str(e)}")
+
+
+@activity.defn()
+async def domain_join_activity(pool_id: int) -> dict:
+    import paramiko
+    db: Session = next(get_db())
+    try:
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool:
+            return {"msg": f"Pool not found with id {pool_id}"}
+        
+        vm_ids = pool.pool_vmids or []
+        if not vm_ids:
+            return {"msg": "No VMs found in the pool to join domain."}
+            
+        cluster_id = pool.cluster_id
+        if cluster_id:
+            cluster_id = cluster_id.split("_")[-1] if "_" in str(cluster_id) else cluster_id
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        if not cluster:
+            return {"msg": "Cluster not found"}
+        host = cluster.ip.split(",")[0].strip() if cluster.ip else ""
+        user = cluster.username.split("@")[0] if cluster.username else ""
+        proxmox_password = cluster.password
+
+        domain = "rcvdev.team"
+        username = "rcvdev\\administrator"
+        password = "Teamw0rk@1"
+
+        yaml_content = f"""#cloud-config
+        write_files:
+            - path: "C:\\\\join-domain.ps1"
+              content: |
+                $domain = "{domain}"
+                $username = "{username}"
+                $password = "{password}"
+
+                $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+                $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
+
+                Write-Host "Waiting for network..."
+
+                do {{
+                    $net = Test-NetConnection -ComputerName "172.16.0.51" -InformationLevel Quiet
+                    Start-Sleep -Seconds 10
+                }} until ($net -eq $true)
+
+                do {{
+                    nltest /dsgetdc:$domain
+                    Start-Sleep -Seconds 10
+                }} until ($LASTEXITCODE -eq 0)
+
+                Add-Computer `
+                -DomainName $domain `
+                -Credential $credential `
+                -OUPath "OU=OU11,OU=OU1,DC=rcvdev,DC=team" `
+                -Force
+
+                Start-Sleep -Seconds 30
+                Restart-Computer -Force
+
+        runcmd:
+            - powershell.exe -ExecutionPolicy Bypass -File "C:\\\\join-domain.ps1"
+        """
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            ssh.connect(host, username=user, password=proxmox_password)
+            ssh.exec_command("mkdir -p /var/lib/vz/snippets")
+
+            sftp = ssh.open_sftp()
+            file = sftp.file(f"/var/lib/vz/snippets/join-domain-pool-{pool_id}.yml", "w")
+            file.write(yaml_content)
+            file.close()
+
+            for vm_id in vm_ids:
+
+                cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
+
+                stdin, stdout, stderr = ssh.exec_command(cmd)
+
+                exit_status = stdout.channel.recv_exit_status()
+                out = stdout.read().decode()
+                err = stderr.read().decode()
+
+                print("EXIT:", exit_status)
+                print("OUT:", out)
+                print("ERR:", err)
+
+        except Exception as e:
+            return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
+        finally:
+            ssh.close()
+            
+        return {"msg": "Domain join workflow executed successfully"}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Domain join failed: {str(e)}")
+    finally:
+        db.close()

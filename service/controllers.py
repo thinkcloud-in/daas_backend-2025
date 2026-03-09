@@ -120,6 +120,7 @@ async def create_pool(pool_data: dict, db) -> dict:
         },
     )
     result =  await handle.result()
+    
     if isinstance(result, dict) and result.get("status") == "error":
         raise HTTPException(
             status_code=400,
@@ -128,6 +129,33 @@ async def create_pool(pool_data: dict, db) -> dict:
                 "error": result.get("error")
             }
         )
+        
+    try:
+        if isinstance(result, dict) and "pool" in result:
+            pool_id = result["pool"]["id"]
+            
+            try:
+                asyncio.create_task(workers_pool.domain_join_worker())
+            except Exception as e:
+                logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
+                
+            handle1 = await client.start_workflow(
+                workflows_pool.DomainJoinWorkflow.run,
+                pool_id,
+                id=f"{pool_name} DomainJoin-{uniqueId}",
+                task_queue="domain-join-task-queue",
+                search_attributes={
+                    "Entity": [pool_name],
+                    "Action": ["Domain-Join"],
+                    "UserName": [userName]
+                },
+            )
+
+            result1 =  await handle1.result()
+            print("............................................................",result1)
+    except Exception as e:
+        logger.error(f"Failed to start domain join workflow for pool {pool_name}: {e}")
+
     return result 
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
