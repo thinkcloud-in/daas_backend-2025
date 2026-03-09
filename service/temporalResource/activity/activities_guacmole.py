@@ -69,58 +69,63 @@ async def list_of_guaco_users_activity():
 async def get_userlist_from_keycloak_activity():
     import os
     import aiohttp
+    import logging
+    logger = logging.getLogger("KEYCLOAK_USER_LIST")
 
     try:
-        # Get root URL and realm, handling potential misspelling (RELAM) in environment variables
-        root_url = os.getenv('KEYCLOAK_ROOT_URL')
-        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        # Get and sanitize environment variables from your production YAML
+        root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
+        realm_name = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        realm = realm_name.strip() if realm_name else 'guacamole'
         
-        if not root_url:
-            raise Exception("KEYCLOAK_ROOT_URL environment variable not found")
-        if not realm:
-            raise Exception("KEYCLOAK_REALM (or KEYCLOAK_RELAM) environment variable not found")
+        admin_user = os.getenv('KEYCLOAK_ADMIN', 'admin').strip()
+        admin_pass = os.getenv('KEYCLOAK_PASSWORD', 'admin').strip()
 
-        # Access token logic...
+        if not root_url:
+            raise Exception("KEYCLOAK_ROOT_URL is empty. Please check your deployment YAML.")
+
         async with aiohttp.ClientSession() as session:
+            # 1. Get Token
             token_url = f"{root_url}/realms/master/protocol/openid-connect/token"
             token_data = {
                 "client_id": "admin-cli",
-                "username": os.getenv('KEYCLOAK_ADMIN'),
-                "password": os.getenv('KEYCLOAK_PASSWORD'),
+                "username": admin_user,
+                "password": admin_pass,
                 "grant_type": "password"
             }
             
             async with session.post(token_url, data=token_data) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    raise Exception(f"Failed to get Keycloak token: {resp.status} - {text}")
+                    raise Exception(f"Auth Failed at {token_url}: {resp.status} - {text}")
                 data = await resp.json()
                 access_token = data.get("access_token")
 
+            # 2. Keycloak Admin API headers (No Content-Type for GET)
             auth_headers = {
                 "Authorization": f"Bearer {access_token}",
-                "content-type": "application/json"
+                "Accept": "application/json"
             }
 
-            # Use standard /users endpoint instead of ui-ext (fixes the 404)
+            # 3. Fetch Users
             users_url = f"{root_url}/admin/realms/{realm}/users"
             
             async with session.get(users_url, headers=auth_headers) as resp:
                 if resp.status != 200:
                     text = await resp.text()
-                    raise Exception(f"Failed to fetch users from Keycloak: {resp.status} - {text}")
+                    # Reporting the full URL helps diagnose path issues in production
+                    raise Exception(f"Keycloak 400/Error at {users_url}: {resp.status} - {text}")
                 
                 users_data = await resp.json()
                 
-                # Format response properly
-                list_of_users_data = [
+                # Format for frontend
+                return [
                     {'username': user.get('username'), 'userid': user.get('id')}
                     for user in users_data
                 ]
-                return list_of_users_data
 
     except Exception as e:
-        logger.error(f"Error in get_userlist_from_keycloak_activity: {str(e)}", exc_info=True)
+        logger.error(f"Keycloak User List Error: {str(e)}")
         return [{
             "error": str(e),
             "type": e.__class__.__name__
