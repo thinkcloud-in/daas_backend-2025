@@ -838,25 +838,35 @@ async def delete_report(report_type: str):
     return result
  
 async def get_auth_headers():
+    # Get and sanitize environment variables
+    root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
+    admin_user = os.getenv('KEYCLOAK_ADMIN', 'admin').strip()
+    admin_pass = os.getenv('KEYCLOAK_PASSWORD', 'admin').strip()
+    
+    if not root_url:
+         raise Exception("KEYCLOAK_ROOT_URL is not set")
+
+    token_url = f"{root_url}/realms/master/protocol/openid-connect/token"
+    
      # Get access token
     resp = requests.post(
-        f"{os.getenv('KEYCLOAK_ROOT_URL')}/realms/master/protocol/openid-connect/token",
+        token_url,
         data={
             "client_id": "admin-cli",
-            "username": os.getenv('KEYCLOAK_ADMIN'),
-            "password": os.getenv('KEYCLOAK_PASSWORD'),
+            "username": admin_user,
+            "password": admin_pass,
             "grant_type": "password"
         }
     )
     resp.raise_for_status()
     data = resp.json()
-    access_token = data["access_token"]
+    access_token = data.get("access_token")
+    
     # Set authorization headers
-    auth_headers = {
+    return {
         "Authorization": f"Bearer {access_token}",
-        "content-type": "application/json"
+        "Content-Type": "application/json"
     }
-    return auth_headers
 async def get_client():
     uniqueId = unique_id()
     client = await connectionWithClient()
