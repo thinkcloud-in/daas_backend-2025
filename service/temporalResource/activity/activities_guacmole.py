@@ -68,65 +68,56 @@ async def list_of_guaco_users_activity():
 @activity.defn
 async def get_userlist_from_keycloak_activity():
     import os
+    import re
     import aiohttp
-    import logging
-    import service.gucamoleService as gService
-    
-    logger = logging.getLogger("KEYCLOAK_USER_LIST")
 
     try:
-        # 1. Sanitize environment
+        # Sanitize variables from your YAML
         root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
         realm_name = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         realm = realm_name.strip() if realm_name else 'guacamole'
         
-        if not root_url:
-            raise Exception("KEYCLOAK_ROOT_URL is empty.")
-
+        # Get access token
         async with aiohttp.ClientSession() as session:
-            # 2. Verify Realm Existence (Public check)
-            # This helps confirm if the realm name 'guacamole' is actually correct
-            realm_check_url = f"{root_url}/realms/{realm}/.well-known/openid-configuration"
-            async with session.get(realm_check_url) as rc_resp:
-                if rc_resp.status == 404:
-                    # Try master as a fallback check
-                    raise Exception(f"Realm '{realm}' not found at {realm_check_url}. Please check KEYCLOAK_REALM value.")
-                elif rc_resp.status != 200:
-                    text = await rc_resp.text()
-                    logger.warning(f"Realm check returned {rc_resp.status} for {realm_check_url}: {text}")
-
-            # 3. Get Auth Headers using shared service logic
-            auth_headers = await gService.get_auth_headers()
-            if not auth_headers:
-                raise Exception("Failed to obtain Keycloak admin token. Check KEYCLOAK_ADMIN/PASSWORD.")
-
-            # 4. Fetch Users using the standardized Admin API path
-            # Some Keycloak instances with /auth or other paths are sensitive to headers
-            users_url = f"{root_url}/admin/realms/{realm}/users"
+            token_url = f"{root_url}/realms/master/protocol/openid-connect/token"
+            async with session.post(
+                token_url,
+                data={
+                    "client_id": "admin-cli",
+                    "username": os.getenv('KEYCLOAK_ADMIN'),
+                    "password": os.getenv('KEYCLOAK_PASSWORD'),
+                    "grant_type": "password"
+                }
+            ) as resp:
+                resp.raise_for_status()
+                data = await resp.json()
+                access_token = data["access_token"]
             
-            # Clean headers: Keycloak Admin API GET requests should NOT have Content-Type
-            # and sometimes Accept is mandatory.
-            headers = {
-                "Authorization": auth_headers.get("Authorization"),
-                "Accept": "application/json"
+            auth_headers = {
+                "Authorization": f"Bearer {access_token}",
+                "content-type": "application/json"
             }
             
-            async with session.get(users_url, headers=headers) as resp:
-                if resp.status != 200:
-                    text = await resp.text()
-                    # If we get a 400 here, it might be a permission issue or a path issue.
-                    # We'll try one more thing: list realms to see if we have ANY admin access.
-                    raise Exception(f"Keycloak Admin API error at {users_url}: {resp.status} - {text}. Verify that 'admin' has 'view-users' role for realm '{realm}'.")
-                
-                users_data = await resp.json()
-                
-                return [
-                    {'username': user.get('username'), 'userid': user.get('id')}
-                    for user in users_data
-                ]
+            # Reverting back to your original endpoint
+            users_url = f"{root_url}/admin/realms/{realm}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*"
+            
+            async with session.get(users_url, headers=auth_headers) as resp:
+                resp.raise_for_status()
+                json_data = await resp.text()
+
+            # Original regex parsing
+            username_pattern = r'"username"\s*:\s*"([^"]*)"'
+            id_pattern = r'"id"\s*:\s*"([^"]*)"'
+            usernames = re.findall(username_pattern, json_data)
+            ids = re.findall(id_pattern, json_data)
+            
+            list_of_users_data = [
+                {'username': username, 'userid': user_id}
+                for username, user_id in zip(usernames, ids)
+            ]
+            return list_of_users_data
 
     except Exception as e:
-        logger.error(f"Error in get_userlist_from_keycloak_activity: {str(e)}")
         return [{
             "error": str(e),
             "type": e.__class__.__name__
