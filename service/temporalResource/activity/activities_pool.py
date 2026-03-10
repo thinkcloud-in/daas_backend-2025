@@ -889,19 +889,35 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
             file.write(yaml_content)
             file.close()
 
-            for vm_id in vm_ids:
+            import time
 
-                cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
+            cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
+
+            for i in range(3):
 
                 stdin, stdout, stderr = ssh.exec_command(cmd)
 
                 exit_status = stdout.channel.recv_exit_status()
-                out = stdout.read().decode()
                 err = stderr.read().decode()
 
-                print("EXIT:", exit_status)
-                print("OUT:", out)
-                print("ERR:", err)
+                if "can't lock file" in err:
+                    print("VM locked, waiting...")
+                    time.sleep(5)
+                else:
+                    break
+            # for vm_id in vm_ids:
+
+            #     cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
+
+            #     stdin, stdout, stderr = ssh.exec_command(cmd)
+
+            #     exit_status = stdout.channel.recv_exit_status()
+            #     out = stdout.read().decode()
+            #     err = stderr.read().decode()
+
+            #     print("EXIT:", exit_status)
+            #     print("OUT:", out)
+            #     print("ERR:", err)
 
         except Exception as e:
             return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
