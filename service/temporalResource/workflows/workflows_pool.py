@@ -172,7 +172,7 @@ class get_pool_details_ID_workflow:
 @workflow.defn(sandboxed=False)
 class DomainJoinWorkflow:
     @workflow.run
-    async def run(self, pool_id: int) -> dict:
+    async def run(self, pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str) -> dict:
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -182,7 +182,7 @@ class DomainJoinWorkflow:
         try:
             result = await workflow.execute_activity(
                 activities_pool.domain_join_activity,
-                args=[pool_id],
+                args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=300),
             )

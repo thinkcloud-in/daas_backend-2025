@@ -802,7 +802,7 @@ async def get_pool_details_id_activity(pool_id: int):
 
 
 @activity.defn()
-async def domain_join_activity(pool_id: int) -> dict:
+async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str) -> dict:
     import paramiko
     db: Session = next(get_db())
     try:
@@ -824,9 +824,23 @@ async def domain_join_activity(pool_id: int) -> dict:
         user = cluster.username.split("@")[0] if cluster.username else ""
         proxmox_password = cluster.password
 
-        domain = "rcvdev.team"
-        username = "rcvdev\\administrator"
-        password = "Teamw0rk@1"
+        domain = pool_ad_domain #"rcvdev.team"
+        username = pool_ad_username #"rcvdev\\administrator"
+        password = pool_ad_password #"Teamw0rk@1"
+        ou_path_input = pool_ad_path # "OU11/OU1"
+        
+        ou_components = []
+        if ou_path_input:
+            ou_parts = [p.strip() for p in ou_path_input.split("/") if p.strip()]
+            for part in reversed(ou_parts):
+                ou_components.append(f"OU={part}")
+
+        domain_parts = [p.strip() for p in domain.split(".") if p.strip()]
+        for part in domain_parts:
+            ou_components.append(f"DC={part}")
+
+        final_ou_path = ",".join(ou_components)
+        ou_args = f'-OUPath "{final_ou_path}" `' if final_ou_path else ""
 
         yaml_content = f"""#cloud-config
         write_files:
@@ -854,7 +868,7 @@ async def domain_join_activity(pool_id: int) -> dict:
                 Add-Computer `
                 -DomainName $domain `
                 -Credential $credential `
-                -OUPath "OU=OU11,OU=OU1,DC=rcvdev,DC=team" `
+                {ou_args}
                 -Force
 
                 Start-Sleep -Seconds 30
