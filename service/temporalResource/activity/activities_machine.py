@@ -26,8 +26,8 @@ async def get_machine_name(machine_data):
     try:
         machine_name = machine_data['name']
         payload = {
-        "username": {os.getenv("USER_GUACA")},
-        "password": {os.getenv("GUACA_PASS")},
+            "username": os.getenv("USER_GUACA"),
+            "password": os.getenv("GUACA_PASS"),
         }
 
         headers = {
