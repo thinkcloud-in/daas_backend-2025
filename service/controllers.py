@@ -133,27 +133,28 @@ async def create_pool(pool_data: dict, db) -> dict:
                 "error": result.get("error")
             }
         )
-        
+    
     try:
         if isinstance(result, dict) and "pool" in result:
             pool_id = result["pool"]["id"]
             
-            try:
-                asyncio.create_task(workers_pool.domain_join_worker())
-            except Exception as e:
-                logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
-                
-            await client.start_workflow(
-                workflows_pool.DomainJoinWorkflow.run,
-                args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
-                id=f"{pool_name} DomainJoin-{uniqueId}",
-                task_queue="domain-join-task-queue",
-                search_attributes={
-                    "Entity": [pool_name],
-                    "Action": ["Domain-Join"],
-                    "UserName": [userName]
-                },
-            )
+            if pool_ad_password != "UnknownPassword" and pool_ad_username != "UnknownUsername":
+                try:
+                    asyncio.create_task(workers_pool.domain_join_worker())
+                except Exception as e:
+                    logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
+                    
+                await client.start_workflow(
+                    workflows_pool.DomainJoinWorkflow.run,
+                    args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
+                    id=f"{pool_name} DomainJoin-{uniqueId}",
+                    task_queue="domain-join-task-queue",
+                    search_attributes={
+                        "Entity": [pool_name],
+                        "Action": ["Domain-Join"],
+                        "UserName": [userName]
+                    },
+                )
 
             # result1 =  await handle1.result()
     except Exception as e:
@@ -167,6 +168,10 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
     client = await connectionWithClient()
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get("email", "UnknownUser")
+    pool_ad_domain = pool_data.get('pool_ad_domain', "UnknownDomain")
+    pool_ad_password = pool_data.get('pool_ad_password', "UnknownPassword")
+    pool_ad_username = pool_data.get('pool_ad_username', "UnknownUsername")
+    pool_ad_path = pool_data.get('pool_ad_path', "")
     workflow_id = f"{pool_name} Updating-{uniqueId}"
     try:
         asyncio.create_task(workers_pool.update_pool_worker())
@@ -183,6 +188,32 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
             "UserName": [userName]
         },
     )
+    try:
+        if isinstance(result, dict) and "pool" in result:
+            pool_id = result["pool"]["id"]
+            
+            if pool_ad_password != "UnknownPassword" and pool_ad_username != "UnknownUsername":
+                try:
+                    asyncio.create_task(workers_pool.domain_join_worker())
+                except Exception as e:
+                    logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
+                    
+                await client.start_workflow(
+                    workflows_pool.DomainJoinWorkflow.run,
+                    args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
+                    id=f"{pool_name} DomainJoin-{uniqueId}",
+                    task_queue="domain-join-task-queue",
+                    search_attributes={
+                        "Entity": [pool_name],
+                        "Action": ["Domain-Join"],
+                        "UserName": [userName]
+                    },
+                )
+
+            # result1 =  await handle1.result()
+    except Exception as e:
+        logger.error(f"Failed to start domain join workflow for pool {pool_name}: {e}")
+
     result =  await handle.result()
     return result
 
