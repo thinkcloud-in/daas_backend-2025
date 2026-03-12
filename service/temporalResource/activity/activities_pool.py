@@ -1,3 +1,4 @@
+import time
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db  
