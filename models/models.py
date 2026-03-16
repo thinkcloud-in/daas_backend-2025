@@ -10,7 +10,7 @@ from sqlalchemy.ext.mutable import MutableDict
 
 #declarative base model for pool
 class Pool(Base):
-    __tablename__ = 'pools_newa_'
+    __tablename__ = 'pools_new_1'
 
     id = Column(Integer, Sequence('pool_id_seq'), primary_key=True)
     pool_type = Column(String)
@@ -18,6 +18,10 @@ class Pool(Base):
     pool_name = Column(String) # pool name
     pool_machines=Column(ARRAY(String))
     pool_os_type=Column(String,nullable=True)
+    pool_ad_domain = Column(String, nullable=True)
+    pool_ad_password = Column(String, nullable=True)
+    pool_ad_username = Column(String, nullable=True)
+    pool_ad_path = Column(String, nullable=True)
 
     # -------------------------
     # disable_audio = Column(Boolean, nullable=True)
@@ -175,6 +179,10 @@ class CreatePoolBase(BaseModel):
     pool_type: Optional[str] = None
     email: Optional[str] = None
     # name: str
+    pool_ad_domain: Optional[str] = None
+    pool_ad_password: Optional[str] = None
+    pool_ad_username: Optional[str] = None
+    pool_ad_path: Optional[str] = None
     pool_name: Optional[str] = None
     pool_machines: Optional[List[str]] = None  # <--- add this line!
     pool_os_type: Optional[str] = None

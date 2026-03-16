@@ -18,6 +18,7 @@ aiohttp-retry==2.9.1
 reportlab==4.2.5
 httpx==0.26.0
 influxdb-client==1.41.0
+paramiko==4.0.0
 
 # Database dependencies
 SQLAlchemy==2.0.36

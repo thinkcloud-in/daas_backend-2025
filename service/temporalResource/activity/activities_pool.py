@@ -1,3 +1,4 @@
+import time
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db  
@@ -802,7 +803,7 @@ async def get_pool_details_id_activity(pool_id: int):
 
 
 @activity.defn()
-async def domain_join_activity(pool_id: int) -> dict:
+async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str) -> dict:
     import paramiko
     db: Session = next(get_db())
     try:
@@ -824,9 +825,23 @@ async def domain_join_activity(pool_id: int) -> dict:
         user = cluster.username.split("@")[0] if cluster.username else ""
         proxmox_password = cluster.password
 
-        domain = "rcvdev.team"
-        username = "rcvdev\\administrator"
-        password = "Teamw0rk@1"
+        domain = pool_ad_domain #"rcvdev.team"
+        username = pool_ad_username #"rcvdev\\administrator"
+        password = pool_ad_password #"Teamw0rk@1"
+        ou_path_input = pool_ad_path # "OU11/OU1"
+        
+        ou_components = []
+        if ou_path_input:
+            ou_parts = [p.strip() for p in ou_path_input.split("/") if p.strip()]
+            for part in reversed(ou_parts):
+                ou_components.append(f"OU={part}")
+
+        domain_parts = [p.strip() for p in domain.split(".") if p.strip()]
+        for part in domain_parts:
+            ou_components.append(f"DC={part}")
+
+        final_ou_path = ",".join(ou_components)
+        ou_args = f'-OUPath "{final_ou_path}" `' if final_ou_path else ""
 
         yaml_content = f"""#cloud-config
         write_files:
@@ -854,7 +869,7 @@ async def domain_join_activity(pool_id: int) -> dict:
                 Add-Computer `
                 -DomainName $domain `
                 -Credential $credential `
-                -OUPath "OU=OU11,OU=OU1,DC=rcvdev,DC=team" `
+                {ou_args}
                 -Force
 
                 Start-Sleep -Seconds 30
@@ -879,15 +894,38 @@ async def domain_join_activity(pool_id: int) -> dict:
 
                 cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
 
-                stdin, stdout, stderr = ssh.exec_command(cmd)
+                max_retry = 10
 
-                exit_status = stdout.channel.recv_exit_status()
-                out = stdout.read().decode()
-                err = stderr.read().decode()
+                for i in range(max_retry):
 
-                print("EXIT:", exit_status)
-                print("OUT:", out)
-                print("ERR:", err)
+                    stdin, stdout, stderr = ssh.exec_command(cmd)
+
+                    exit_status = stdout.channel.recv_exit_status()
+                    out = stdout.read().decode()
+                    err = stderr.read().decode()
+
+                    print("EXIT:", exit_status)
+                    print("OUT:", out)
+                    print("ERR:", err)
+
+                    if "can't lock file" in err:
+                        print(f"VM {vm_id} locked, waiting 5s...")
+                        time.sleep(5)
+                    else:
+                        print("Script attached successfully")
+                        break
+
+                # cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
+
+                # stdin, stdout, stderr = ssh.exec_command(cmd)
+
+                # exit_status = stdout.channel.recv_exit_status()
+                # out = stdout.read().decode()
+                # err = stderr.read().decode()
+
+                # print("EXIT:", exit_status)
+                # print("OUT:", out)
+                # print("ERR:", err)
 
         except Exception as e:
             return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
