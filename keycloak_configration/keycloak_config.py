@@ -362,6 +362,7 @@ def set_otp_for_guacamole_browser(value):
             "index": 1
         })
         response = requests.request("PUT", url, headers=headers, data=payload)
+        return response.status_code
     except Exception as e:
         return e
 
