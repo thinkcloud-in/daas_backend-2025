@@ -159,12 +159,12 @@ async def delete_hyperv_disk_activity(request: dict) -> dict:
         return {"status": "failed", "error": "disk_path is required"}
 
     encoded_path = quote(disk_path, safe=":/\\")
-    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={encoded_path}"
+    url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk"
 
     logger.info("Deleting Hyper-V disk: %s", disk_path)
 
     async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.delete(url)
+        response = await client.delete(url, json=encoded_path)
 
     data = response.json()
 
