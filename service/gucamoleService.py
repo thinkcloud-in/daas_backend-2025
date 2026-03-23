@@ -612,13 +612,15 @@ async def get_users_connection_history(token):
         return []
     # f"{baseurl}/guacamole/api/session/data/postgresql/history/users"
     
-    url =f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/history/users" 
-    params = {'order': 'startDate', 'token': token}
+    url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/history/connections" 
+    # Fetch recent connection usage history (which includes connectionName, username, etc.)
+    params = {'order': '-startDate', 'limit': 1000, 'token': token}
     response = requests.get(url, params=params)
     
     if response.status_code == 200:
         return response.json()  # Return the JSON response directly
     else:
+        logger.error(f"Failed to fetch Guacamole connection history: {response.status_code} - {response.text}")
         return []
 
 async def get_session_reports(start_date_range: datetime, end_date_range: datetime):

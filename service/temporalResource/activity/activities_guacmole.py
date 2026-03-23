@@ -173,34 +173,60 @@ async def get_session_reports_activity(start_date_str: str, end_date_str: str):
         users_history = await get_users_connection_history(token)
         session_reports = []
 
-        start_date_range = datetime.fromisoformat(start_date_str)
-        end_date_range = datetime.fromisoformat(end_date_str)
+        # Robust datetime parsing
+        def parse_dt(dt_str):
+            if isinstance(dt_str, datetime):
+                return dt_str
+            for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d', '%Y-%m-%d %H:%M:%S.%f'):
+                try:
+                    return datetime.strptime(dt_str, fmt)
+                except:
+                    continue
+            return datetime.fromisoformat(dt_str)
+
+        try:
+            start_date_range = parse_dt(start_date_str)
+            end_date_range = parse_dt(end_date_str)
+        except Exception as e:
+            logger.error(f"Failed to parse dates: {start_date_str}, {end_date_str}. Error: {e}")
+            return {"msg": "Error occurred", "error": f"Invalid date format: {e}"}
+
+        logger.info(f"Filtering sessions from {start_date_range} to {end_date_range}")
+        
         for entry in users_history:
-            if entry['startDate'] is not None:
+            if entry.get('startDate') is not None:
+                # Guacamole startDate is in milliseconds
                 start_date = datetime.fromtimestamp(entry['startDate'] / 1000)
-                end_date = datetime.fromtimestamp(entry['endDate'] / 1000) if entry['endDate'] else None
+                end_date = datetime.fromtimestamp(entry['endDate'] / 1000) if entry.get('endDate') else None
                 duration_seconds = (end_date - start_date).total_seconds() if end_date else None
 
+                # Check if session falls within range
                 if start_date_range <= start_date <= end_date_range:
+                    # connectionName is the actual machine name, remoteHost is the user's IP
+                    machine_name = entry.get('connectionName') or entry.get('remoteHost', 'Unknown')
                     session_reports.append({
                         'loginTime': start_date.strftime('%Y-%m-%d %H:%M:%S'),
                         'logoutTime': end_date.strftime('%Y-%m-%d %H:%M:%S') if end_date else 'Not Applicable',
                         'username': entry['username'],
-                        'machineName': entry['remoteHost'],
+                        'machineName': machine_name,
                         'sessionDuration': duration_seconds if duration_seconds is not None else 'Not Applicable'
                     })
-            else:
-                end_date = datetime.fromtimestamp(entry['endDate'] / 1000) if entry['endDate'] else None
-                if end_date and start_date_range <= end_date <= end_date_range:
+            elif entry.get('endDate') is not None:
+                end_date = datetime.fromtimestamp(entry['endDate'] / 1000)
+                if start_date_range <= end_date <= end_date_range:
+                    machine_name = entry.get('connectionName') or entry.get('remoteHost', 'Unknown')
                     session_reports.append({
                         'loginTime': 'Not Applicable',
-                        'logoutTime': end_date.strftime('%Y-%m-%d %H:%M:%S') if end_date else 'Not Applicable',
+                        'logoutTime': end_date.strftime('%Y-%m-%d %H:%M:%S'),
                         'username': entry['username'],
-                        'machineName': entry['remoteHost'],
+                        'machineName': machine_name,
                         'sessionDuration': 'Not Applicable'
                     })
+        
+        logger.info(f"Found {len(session_reports)} sessions in range")
         return session_reports
     except Exception as e:
+        logger.error(f"Error in get_session_reports_activity: {e}", exc_info=True)
         return {"msg": "Error occurred", "error": str(e)}
 
 
@@ -221,69 +247,44 @@ async def get_perticular_user_session_report_activity(session_reports : list, us
         return {"msg": "Error occurred", "error": str(e)}
 
 @activity.defn
-async def get_daily_reports_activity(session_reports : list):
-    day_duration = []
-    index = 0
+async def get_daily_reports_activity(session_reports: list):
+    if not isinstance(session_reports, list):
+        logger.error(f"get_daily_reports_activity received non-list input: {type(session_reports)}")
+        return []
 
-    while index < len(session_reports):
-        value = session_reports[index]
-        username = value["username"]
-        machine_name = value["machineName"]
-        login_date = None
-        logout_date = None
+    day_duration_map = {}
+
+    for row in session_reports:
+        if row.get("loginTime") == "Not Applicable" or row.get("logoutTime") == "Not Applicable" or row.get("sessionDuration") == "Not Applicable":
+            continue
         
-        if value["loginTime"] != "Not Applicable" and value["logoutTime"] != "Not Applicable":
-            login_date = datetime.strptime(value["loginTime"], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
-            logout_date = datetime.strptime(value["logoutTime"], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+        try:
+            username = row["username"]
+            machine_name = row["machineName"]
+            duration = float(row["sessionDuration"])
+            login_date = datetime.strptime(row["loginTime"], '%Y-%m-%d %H:%M:%S').strftime('%Y-%m-%d')
+            
+            key = (username, machine_name, login_date)
+            
+            if key not in day_duration_map:
+                day_duration_map[key] = {
+                    "username": username,
+                    "machine_name": machine_name,
+                    "day_session_count": 0,
+                    "daily_duration": 0.0,
+                    "date": login_date
+                }
+            
+            day_duration_map[key]["day_session_count"] += 1
+            day_duration_map[key]["daily_duration"] += duration
+        except Exception as e:
+            logger.warning(f"Skipping record due to processing error: {e}")
+            continue
 
-        daily_duration = timedelta()
-        day_session_count = 0
+    combined_day_duration = list(day_duration_map.values())
+    combined_day_duration.sort(key=lambda x: (x['date'], x['username']))
 
-        for j in range(index, len(session_reports)):
-            row = session_reports[j]
-            if row["loginTime"] == "Not Applicable" or row["logoutTime"] == "Not Applicable" or row["sessionDuration"] == "Not Applicable":
-                continue
-
-            login_event = datetime.strptime(row["loginTime"], '%Y-%m-%d %H:%M:%S')
-            login = login_event.strftime('%Y-%m-%d')
-            logout_event = datetime.strptime(row["logoutTime"], '%Y-%m-%d %H:%M:%S')
-            logout = logout_event.strftime('%Y-%m-%d')
-
-            if (row["username"] == username and 
-                login == login_date and 
-                logout == logout_date and 
-                row["machineName"] == machine_name):
-                day_session_count += 1
-                session_duration = row["sessionDuration"]
-                daily_duration += timedelta(seconds=session_duration)
-            else:
-                index = j
-                break
-        else:
-            index = len(session_reports)
-
-        if login_date is not None and logout_date is not None:
-            day_duration.append({
-                "username": username,
-                "machine_name": machine_name,
-                "day_session_count": day_session_count,
-                "daily_duration": daily_duration.total_seconds(),
-                "date": login_date
-            })
-
-    combined_day_duration = {}
-    for entry in day_duration:
-        key = (entry["username"], entry["machine_name"], entry["date"])
-        if key in combined_day_duration:
-            combined_entry = combined_day_duration[key]
-            combined_entry["day_session_count"] += entry["day_session_count"]
-            combined_entry["daily_duration"] += entry["daily_duration"]
-        else:
-            combined_day_duration[key] = entry
-
-    combined_day_duration = list(combined_day_duration.values())
-    combined_day_duration.sort(key=lambda x: x['username'])
-
+    logger.info(f"Aggregated {len(session_reports)} sessions into {len(combined_day_duration)} daily records")
     return combined_day_duration
 
 @activity.defn
@@ -414,6 +415,7 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
    
    
     pdf_file = f"{report_type.lower().replace(' ', '_')}.pdf"
+    logger.info(f"Generating PDF report for type '{report_type}' from {start_date} to {end_date}")
     company_data = await service.get_companies_by_report_type(report_type)
      
     if not company_data or not isinstance(company_data, list) or len(company_data) == 0:
@@ -619,6 +621,10 @@ async def generate_report_activity(start_date: str, end_date: str, report_type: 
             ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
         ]))
         story.append(main_table)
+    else:
+        logger.warning(f"No matching report logic found for report type: '{report_type}'")
+        error_style = ParagraphStyle('ErrorStyle', parent=styles['Normal'], textColor=colors.red)
+        story.append(Paragraph(f"Error: Unsupported report type '{report_type}'", error_style))
    
     def footer(canvas, doc):
         canvas.saveState()
