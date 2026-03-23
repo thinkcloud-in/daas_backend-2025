@@ -17,15 +17,13 @@ from models import task_models
 from typing import Optional
 from service.temporalResource.workflows import workflows_cluster
 from db_configuration.config import SessionLocal
-import requests
-
-
+import uuid
 
 
 def unique_id():
-    unique_id = datetime.now()
-    logger.info(f"Generated unique ID - {unique_id}")
-    return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
+    u_id = uuid.uuid4().hex[:8]
+    logger.info(f"Generated unique ID - {u_id}")
+    return u_id
 
 logging.basicConfig(
     level=logging.INFO,
@@ -156,7 +154,6 @@ async def create_pool(pool_data: dict, db) -> dict:
     return result 
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
-
     uniqueId = unique_id()
     client = await connectionWithClient()
     pool_name = pool_data.get("pool_name", "UnknownPool")
@@ -181,6 +178,7 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
             "UserName": [userName]
         },
     )
+    result =  await handle.result()
     if isinstance(result, dict) and "pool" in result:
         pool_id = result["pool"]["id"]
         if pool_ad_domain != "UnknownDomain":
@@ -201,7 +199,6 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
                 },
             )
 
-    result =  await handle.result()
     return result
 
 
