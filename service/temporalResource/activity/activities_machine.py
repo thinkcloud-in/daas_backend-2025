@@ -26,8 +26,8 @@ async def get_machine_name(machine_data):
     try:
         machine_name = machine_data['name']
         payload = {
-            "username": {os.getenv("USER_GUACA")},
-            "password": {os.getenv("GUACA_PASS")},
+            "username": os.getenv("USER_GUACA"),
+            "password": os.getenv("GUACA_PASS"),
         }
 
         headers = {
@@ -78,9 +78,25 @@ async def create_machine_activity(machine_data: dict):
         if not email:
             raise ValueError("Email is required for creating the machine.")
 
-        response = await get_machine_name(machine_data)
-        if response == 'Machine Already Existed':
-            return {"msg": "Machine already exists"}
+        cluster_type = ""
+        cluster_id_str = ""
+        if pool and pool.cluster_id:
+            try:
+                # The cluster_id in the pool table is typically "poolID_clusterID"
+                parts = pool.cluster_id.split("_")
+                cluster_id_str = parts[1] if len(parts) >= 2 else parts[0]
+                cluster = db.query(model.Cluster).filter(model.Cluster.id == cluster_id_str).first()
+                if cluster:
+                    cluster_type = cluster.type.lower()
+            except Exception as e:
+                logger.warning(f"Failed to determine cluster type: {e}")
+
+        # Perform the "Machine Already Existed" check primarily for Proxmox or non-automated pools
+        # as per user feedback that for Hyper-V/Automated this might be intentional or handled elsewhere.
+        if cluster_type == "proxmox" or not is_automated:
+            response = await get_machine_name(machine_data)
+            if response == 'Machine Already Existed':
+                return {"msg": "Machine already exists"}
         logger.info("Machine name is unique, proceeding with creation.")
         # Create the machine in Guacamole first (external system)
         guaca_machine_response = await gucamoleService.creating_connection(machine_data)

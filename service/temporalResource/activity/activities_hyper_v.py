@@ -30,6 +30,8 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
     ip_list = request.get('ip_list')
     password = template.get('password')
     gateway = template.get('gateway')
+    subnet = template.get('subnet')
+    dns = template.get('dns')
     number_of_vms = request.get("count", 1)
     base_vm_name = request.get("name_template", "cloned_vm")
 
@@ -59,7 +61,9 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
             "ip": ip,
             "password": password,
             "gateway": gateway,
-            "os_type": os_type
+            "os_type": os_type,
+            "subnet": subnet,
+            "dns": dns
         }
         logger.debug("Payload for clone_vm_for_single_node: %s", payload)
         async with httpx.AsyncClient(timeout=120.0) as client:
