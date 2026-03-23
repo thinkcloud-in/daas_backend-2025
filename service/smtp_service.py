@@ -85,11 +85,12 @@ def smtp_status_update(smtpStatus:bool,db):
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while updating SMTP status: {str(e)}")
     
-def smtp_test_mail(data,db):
+def smtp_test_mail(data, db):
     try:
-        cinfig = db.query(SMTP).first()
-        if cinfig is None:
+        config = db.query(SMTP).first()
+        if config is None:
             raise HTTPException(status_code=404, detail="SMTP configuration not found")
+        
         smtp_serverip = data.serverIP
         smtp_port = data.serverPort
         smtp_mail = data.email
@@ -97,24 +98,34 @@ def smtp_test_mail(data,db):
         smtp_password = data.password
         smtp_connOptions = data.connOption
         smtp_receiverMail = data.receiverMail
- 
+        smtp_userAuth = data.userAuthentication
+
         msg = MIMEMultipart()
         msg["From"] = smtp_mail.strip()
         msg["To"] = smtp_receiverMail.strip()
         msg['Subject'] = 'Test Mail'
-        body = 'This is a test email.'
+        body = 'This is a test email sent from the registration system.'
         msg.attach(MIMEText(body, 'plain'))
- 
+
+        server = None
         if smtp_connOptions == "SSL":
             server = smtplib.SMTP_SSL(smtp_serverip, smtp_port)
         else:
             server = smtplib.SMTP(smtp_serverip, smtp_port)
             server.starttls()
-        server.login(smtp_username, smtp_password)
+        
+        if smtp_userAuth == "true": # Only login if authentication is enabled
+            server.login(smtp_username, smtp_password)
+            
         text = msg.as_string()
         server.sendmail(smtp_mail, smtp_receiverMail, text)
         server.quit()
         return {"message": "Test email sent successfully"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error while sending test email: {str(e)}")
+        if server:
+            try:
+                server.quit()
+            except:
+                pass
+        raise HTTPException(status_code=500, detail=f"Failed to send test email: {str(e)}")
  
