@@ -266,7 +266,7 @@ def get_Auth_flow_id_browser(auth_flow_headers):
         ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
         return ids 
     except Exception as e:
-        return "ERROR"
+        return False
     
 def get_Auth_flow_Value_browser():
     try:
@@ -281,7 +281,7 @@ def get_Auth_flow_Value_browser():
         else:
          return  False
     except Exception as e:
-        return "ERROR"    
+        return False
 
 def set_otp_for_browser_auth(value):
     try:
@@ -315,7 +315,7 @@ def set_otp_for_browser_auth(value):
         response = requests.request("PUT", url, headers=headers, data=payload)
         return  response.status_code
     except Exception as e:
-        return e
+        return 500
 
 def get_guacamole_browser_auth_flow(auth_flow_headers):
     try:
@@ -331,7 +331,7 @@ def get_guacamole_browser_auth_flow(auth_flow_headers):
         return ids 
     except Exception as e:
        
-        return "ERROR"
+        return False
 def set_otp_for_guacamole_browser(value):
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -362,8 +362,9 @@ def set_otp_for_guacamole_browser(value):
             "index": 1
         })
         response = requests.request("PUT", url, headers=headers, data=payload)
+        return response.status_code
     except Exception as e:
-        return e
+        return 500
 
 
 def get_Auth_flow_Value_guacamole_browser():
@@ -381,4 +382,4 @@ def get_Auth_flow_Value_guacamole_browser():
         else:
          return  False
     except Exception as e:
-        return "ERROR"
+        return False
