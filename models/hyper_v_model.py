@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 from pydantic import BaseModel, Field
 
 class CloneVMRequest(BaseModel):
@@ -21,3 +21,7 @@ class HandleActionRequest(BaseModel):
 
 class HandleDeleteDiskRequest(BaseModel):
     disk_path: str = Field(..., description="Path of the disk to be deleted")
+
+class HandleRebuildActionRequest(BaseModel):
+    vm_id: Union[int, str] = Field(..., description="ID of the VM")
+    pool_id: Union[int, str] = Field(..., description="ID of the pool")

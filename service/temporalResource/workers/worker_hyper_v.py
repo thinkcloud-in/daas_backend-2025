@@ -20,12 +20,14 @@ async def hyperv_worker():
             workflows_hyper_v.DeleteVMHyperVWorkflow,
             workflows_hyper_v.HandleActionHyperVWorkflow,
             workflows_hyper_v.DeleteHyperVDiskWorkflow,
+            workflows_hyper_v.VmRebuildHyperVWorkflow,
         ],
         activities=[
             activities_hyper_v.clone_vm_single_node_activity,
             activities_hyper_v.delete_vm_single_node_activity,
             activities_hyper_v.handle_action_activity,
             activities_hyper_v.delete_hyperv_disk_activity,
+            activities_hyper_v.vm_rebuild_hyper_v_activity,
         ],
     )
 

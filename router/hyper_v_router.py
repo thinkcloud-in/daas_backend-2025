@@ -1,3 +1,4 @@
+from models.hyper_v_model import HandleRebuildActionRequest
 from fastapi import APIRouter, Depends
 import controllers.hyper_v_controller as controller
 from models.API_Response_model import APIResponse
@@ -37,6 +38,10 @@ async def get_status(vm_id: str):
 @hyper_v_router.post("/handle_action", response_model=APIResponse[Any])
 async def handle_action(request: HandleActionRequest):
         return await controller.handle_action(request)
+
+@hyper_v_router.post("/vm_rebuild", response_model=APIResponse[Any])
+async def rebuild_vm(request: HandleRebuildActionRequest):
+        return await controller.rebuild_vm_endpoint(request)
 
 @hyper_v_router.delete("/delete_disk", response_model=APIResponse[Any])
 async def delete_disk(request: HandleDeleteDiskRequest):
