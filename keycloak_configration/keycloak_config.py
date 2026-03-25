@@ -253,133 +253,118 @@ async def remove_imported_users_from_keycloak(ldap_id):
    
 
 
-# it is responisble for enable or disable opt for client
 def get_Auth_flow_id_browser(auth_flow_headers):
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
-        auth_headers = auth_flow_headers
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        response = requests.request("GET", url, headers=auth_flow_headers)
         data = response.json()
-        ids = []
-        ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
-        return ids 
+        if isinstance(data, list):
+            for execution in data:
+                if execution.get('providerId') == 'auth-otp-form' or 'OTP' in execution.get('displayName', ''):
+                    return [{'id': execution['id'], 'flowId': execution['flowId']}]
+        return False
     except Exception as e:
         return False
-    
+
 def get_Auth_flow_Value_browser():
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
-        auth_headers = get_login_from_keycloak()
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        headers = get_login_from_keycloak()
+        response = requests.request("GET", url, headers=headers)
         data = response.json()
-        if data[5]['requirement'] == "REQUIRED":
-            return  True
-        else:
-         return  False
+        if isinstance(data, list):
+            for execution in data:
+                if execution.get('providerId') == 'auth-otp-form' or 'OTP' in execution.get('displayName', ''):
+                    return execution.get('requirement') == "REQUIRED"
+        return False
     except Exception as e:
         return False
 
 def set_otp_for_browser_auth(value):
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
-        if value is True:
-            requires = "REQUIRED"
-        else:  
-            requires = "DISABLED"
-        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
+        requires = "REQUIRED" if value else "DISABLED"
         headers = get_login_from_keycloak()
         data = get_Auth_flow_id_browser(headers)
+        if not data:
+            raise HTTPException(status_code=404, detail="OTP execution not found in browser flow")
         id = data[0]["id"]
         flowId = data[0]["flowId"]
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/browser/executions"
         payload = json.dumps({
             "id": id,
             "requirement": requires,
-            "displayName": "guacamole-browser-auth-flow Browser - Conditional OTP",
-            "description": "Flow to determine if the OTP is required for the authentication",
-            "requirementChoices": [
-                "REQUIRED",
-                "ALTERNATIVE",
-                "DISABLED",
-                "CONDITIONAL"
-            ],
-            "configurable": False,
-            "authenticationFlow": True,
-            "flowId": flowId,
-            "level": 1,
-            "index": 1
+            "displayName": "Browser - OTP Form",
+            "providerId": "auth-otp-form",
+            "level": 0,
+            "index": 0,
+            "requirementChoices": ["REQUIRED", "ALTERNATIVE", "DISABLED", "CONDITIONAL"]
         })
         response = requests.request("PUT", url, headers=headers, data=payload)
-        return  response.status_code
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail="Keycloak update failed")
+        return response.status_code
+    except HTTPException:
+        raise
     except Exception as e:
-        return 500
+        raise HTTPException(status_code=500, detail=str(e))
 
 def get_guacamole_browser_auth_flow(auth_flow_headers):
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
-        url =  f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
-        auth_headers = auth_flow_headers
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
+        response = requests.request("GET", url, headers=auth_flow_headers)
         data = response.json()
-        
-        ids = []
-        ids.append({'id': data[5]['id'], 'flowId': data[5]['flowId']})
-        return ids 
-    except Exception as e:
-       
+        if isinstance(data, list):
+            for execution in data:
+                if execution.get('providerId') == 'auth-otp-form' or 'OTP' in execution.get('displayName', ''):
+                    return [{'id': execution['id'], 'flowId': execution['flowId']}]
         return False
+    except Exception as e:
+        return False
+
 def set_otp_for_guacamole_browser(value):
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
-        if value is True:
-            requires = "REQUIRED"
-        else:  
-            requires = "DISABLED"
-        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
+        requires = "REQUIRED" if value else "DISABLED"
         headers = get_login_from_keycloak()
         data = get_guacamole_browser_auth_flow(headers)
+        if not data:
+            raise HTTPException(status_code=404, detail="OTP execution not found in guacamole flow")
         id = data[0]["id"]
         flowId = data[0]["flowId"]
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
         payload = json.dumps({
             "id": id,
             "requirement": requires,
             "displayName": "guacamole-browser-auth-flow Browser - Conditional OTP",
-            "description": "Flow to determine if the OTP is required for the authentication",
-            "requirementChoices": [
-                "REQUIRED",
-                "ALTERNATIVE",
-                "DISABLED",
-                "CONDITIONAL"
-            ],
-            "configurable": False,
-            "authenticationFlow": True,
-            "flowId": flowId,
-            "level": 1,
-            "index": 1
+            "providerId": "auth-otp-form",
+            "level": 0,
+            "index": 0,
+            "requirementChoices": ["REQUIRED", "ALTERNATIVE", "DISABLED", "CONDITIONAL"]
         })
         response = requests.request("PUT", url, headers=headers, data=payload)
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail="Keycloak update failed")
         return response.status_code
+    except HTTPException:
+        raise
     except Exception as e:
-        return 500
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 def get_Auth_flow_Value_guacamole_browser():
     try:
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/authentication/flows/guacamole-browser-auth-flow/executions"
-        auth_headers = get_login_from_keycloak()
-        payload = {}
-        response = requests.request("GET", url, headers=auth_headers, data=payload)
+        headers = get_login_from_keycloak()
+        response = requests.request("GET", url, headers=headers)
         data = response.json()
-
-        
-        if data[5]['requirement'] == "REQUIRED":
-            return  True
-        else:
-         return  False
+        if isinstance(data, list):
+            for execution in data:
+                if execution.get('providerId') == 'auth-otp-form' or 'OTP' in execution.get('displayName', ''):
+                    return execution.get('requirement') == "REQUIRED"
+        return False
     except Exception as e:
         return False
