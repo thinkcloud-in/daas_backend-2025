@@ -310,17 +310,51 @@ async def shutdown_vm_endpoint(
 
 async def rebuild_vm_endpoint(
     data: VMPowerRequest,
-    vmid: int,
+    vmid: str,
     pool_id: str = None,
+    db: Session = None,
 ):
     try:
-        vm_status = await service.vm_rebuild(vmid,pool_id, data.email)
+        # Handle optional db argument for reverse compatibility or standalone calls
+        if db is None:
+            from db_configuration.config import SessionLocal
+            db = SessionLocal()
+            close_db = True
+        else:
+            close_db = False
+
+        cluster_data = get_cluster_by_id(db, vmid)
+        if not cluster_data:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+
+        if cluster_data.type.lower() in ("hyper-v", "hyperv"):
+            import service.hyper_v_service as hyper_v_service
+            # Hyper-V rebuild expects a request object or dict with vm_id, pool_id, and email
+            rebuild_request = {
+                "vm_id": vmid,
+                "pool_id": pool_id,
+                "email": data.email
+            }
+            res = await hyper_v_service.vm_rebuild(rebuild_request)
+            return res
+
+        # Proxmox logic
+        # For Proxmox, vmid is typically an integer
+        try:
+            proxmox_vmid = int(vmid)
+        except ValueError:
+            proxmox_vmid = vmid
+            
+        vm_status = await service.vm_rebuild(proxmox_vmid, pool_id, data.email)
         return {"vm_status": vm_status, "msg": "VM rebuild initiated."}
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))
+    finally:
+        if 'close_db' in locals() and close_db:
+            db.close()
 
 
-def get_cluster_by_id(db: Session, vm_id: int) -> Cluster:
+def get_cluster_by_id(db: Session, vm_id: str) -> Cluster:
     try:
         vm_id_str = str(vm_id)
         machine_data = db.query(Machine).filter(Machine.vm_id == vm_id_str).first()
@@ -363,14 +397,18 @@ def proxmox_all_vm_details(
         vm_infos = service.get_all_vm_details(db, cluster_data)
         return vm_infos
 
-async def proxmox_vm_details(vm_id: int, db):
+async def proxmox_vm_details(vm_id: str, db):
         cluster_data = get_cluster_by_id(db, vm_id)
         if not cluster_data:
             raise HTTPException(status_code=404, detail="Cluster not found")
+        
+        if cluster_data.type.lower() in ("hyper-v", "hyperv"):
+            import service.hyper_v_service as hyper_v_service
+            res = await hyper_v_service.get_vm_info(vm_id)
+            return res
+
         vm_infos = await service.get_all_vm_details_parallel(db, cluster_data)
-        vm_info = next((vm for vm in vm_infos if vm["vmid"] == vm_id), None)
+        vm_info = next((vm for vm in vm_infos if str(vm["vmid"]) == str(vm_id)), None)
         if not vm_info:
             raise HTTPException(status_code=404, detail="VM not found")
         return vm_info
- 
-  

@@ -4,10 +4,12 @@ import httpx
 import os
 from datetime import datetime
 from service.gucamoleService import connectionWithClient
-from service.temporalResource.workflows import workflows_hyper_v
+# from service.temporalResource.workflows import workflows_hyper_v  # Move to inside functions
 import logging
 import uuid
-# from models.hyper_v_model import Hyper_V
+from db_configuration.config import get_db
+from models.models import Machine, Pool
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,7 @@ async def clone_vm_for_single_node(request) -> dict:
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
     try:
+        from service.temporalResource.workflows import workflows_hyper_v
         logger.info("Starting workflow %s with payload keys: %s", list(req_dict.keys()))
         handle = await client.start_workflow(
             workflows_hyper_v.CloneVMHyperVWorkflow.run,
@@ -85,7 +88,15 @@ async def get_vm_info(vm_id):
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url)
         data = response.json()
-        return data['data']
+        
+        agent_data = data.get('data', '')
+        # If not found by ID, we might need a fallback or better error reporting
+        if isinstance(agent_data, str) and ("ObjectNotFound" in agent_data or "unable to find" in agent_data.lower()):
+            # Potentially the ID changed or is misformatted. 
+            # In a real scenario, we might want to search by VM Name here if we had it.
+            return {"error": f"VM with ID {vm_id} not found on Hyper-V host.", "agent_error": agent_data}
+            
+        return agent_data
     
 async def get_switches():
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_switches"
@@ -105,6 +116,7 @@ async def delete_vm(vm_id: str) -> dict:
     request = {"vm_id": vm_id}
 
     try:
+        from service.temporalResource.workflows import workflows_hyper_v
         logger.info("Starting workflow %s with payload keys: %s", request)
         handle = await client.start_workflow(
             workflows_hyper_v.DeleteVMHyperVWorkflow.run,
@@ -128,13 +140,6 @@ async def delete_hyperv_vm(vm_id):
         data = response.json()
         return data['data']
 
-# async def get_status(vm_id):
-#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
-#     async with httpx.AsyncClient(timeout=20.0) as client:
-#         response = await client.get(url)
-#         data = response.json()
-#         return data['data']
-
 async def get_status(vm_id: str) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/get_status/{vm_id}"
     async with httpx.AsyncClient(timeout=20.0) as client:
@@ -143,15 +148,6 @@ async def get_status(vm_id: str) -> dict:
         data = response.json()
         return data.get("data", {})
     
-# async def handle_action(request, db):
-#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
-#     async with httpx.AsyncClient(timeout=20.0) as client:
-#         response = await client.post(url, json=request.dict())
-#         data = response.json()
-#         if data.get('code') == 200:
-#             return data['data']
-#         else:
-#             return data.get('msg', 'Unknown error occurred')
 async def handle_action(request) -> dict:
     # workflow_id = f"hyperv-handle-action-{uuid.uuid4().hex}"
     client = await connectionWithClient()
@@ -163,6 +159,7 @@ async def handle_action(request) -> dict:
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
     try:
+        from service.temporalResource.workflows import workflows_hyper_v
         handle = await client.start_workflow(
             workflows_hyper_v.HandleActionHyperVWorkflow.run,
             args=[payload],
@@ -179,15 +176,6 @@ async def handle_action(request) -> dict:
     result = await handle.result()
     return result
         
-# async def delete_hyperv_disk(disk_path):
-#     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_disk?disk_path={disk_path}"
-#     async with httpx.AsyncClient(timeout=20.0) as client:
-#         response = await client.delete(url)
-#         data = response.json()
-#         if data.get('code') == 200:
-#             return data['data']
-#         else:
-#             return data.get('msg', 'Unknown error occurred')
 async def delete_disk(disk_path: str) -> dict:
     workflow_id = f"delete_hyperv_disk-{uuid.uuid4().hex}"
 
@@ -198,6 +186,7 @@ async def delete_disk(disk_path: str) -> dict:
     request = {"disk_path": disk_path}
 
     try:
+        from service.temporalResource.workflows import workflows_hyper_v
         handle = await client.start_workflow(
             workflows_hyper_v.DeleteHyperVDiskWorkflow.run,
             args=[request],
@@ -210,3 +199,35 @@ async def delete_disk(disk_path: str) -> dict:
 
     result = await handle.result()
     return result
+
+async def vm_rebuild(request):
+    from db_configuration.config import SessionLocal
+    from models.models import Machine
+    
+    payload = request.dict() if hasattr(request, "dict") else request
+    vm_id = payload.get("vm_id")
+    
+    db = SessionLocal()
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+        if not machine:
+            return {"status": "error", "error": f"Machine with vm_id {vm_id} not found in DB."}
+        
+        uniqueId = unique_id()
+        client = await connectionWithClient()
+        workflow_id = f"vmrebuild_hyperv-{uniqueId}-{uuid.uuid4().hex[:4]}"
+        
+        from service.temporalResource.workflows import workflows_hyper_v
+        handle = await client.start_workflow(
+            workflows_hyper_v.VmRebuildHyperVWorkflow.run,
+            args=[payload],
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+        result = await handle.result()
+        return result
+    except Exception as e:
+        logger.error(f"Error in Hyper-V vm_rebuild: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()

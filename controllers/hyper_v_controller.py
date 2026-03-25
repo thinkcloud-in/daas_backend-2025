@@ -34,3 +34,7 @@ async def handle_action(request):
 async def delete_disk(request):
     result = await service.delete_disk(request)
     return success_response(200, "Successfully deleted disk from Hyper-V VM", result)
+
+async def rebuild_vm_endpoint(request):
+    result = await service.vm_rebuild(request)
+    return success_response(200, "VM rebuild initiated.", result)

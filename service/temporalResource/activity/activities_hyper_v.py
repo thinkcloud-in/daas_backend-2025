@@ -2,7 +2,7 @@ from temporalio import activity
 import httpx
 import os
 from service import proxmoxService
-from service import hyper_v_service
+# from service import hyper_v_service  # Move to inside functions
 import logging
 from urllib.parse import quote
 
@@ -37,6 +37,7 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
 
     # Only fetch existing VM names from Hyper-V
     try:
+        from service import hyper_v_service
         hyperv_vms = await hyper_v_service.get_vms()
         hyperv_names = []
         for vm in hyperv_vms:
@@ -95,8 +96,6 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
         "created_names": new_names,
         "vms": result_vms,
     }
-    # finally:
-    #     db.close()
 
 @activity.defn
 async def delete_vm_single_node_activity(request: dict) -> dict:
@@ -181,3 +180,114 @@ async def delete_hyperv_disk_activity(request: dict) -> dict:
         "disk_path": disk_path,
         "error": data.get("msg", "Unknown error occurred")
     }
+
+@activity.defn
+async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
+    from db_configuration.config import SessionLocal
+    from models.models import Machine, Pool
+    db = SessionLocal()
+    vm_id = request.get("vm_id")
+    pool_id = request.get("pool_id")    
+    try:
+        machine = db.query(Machine).filter(Machine.vm_id == vm_id).first()
+        if not machine:
+            return {"status": "error", "error": f"Machine with vm_id {vm_id} not found in DB."}
+        
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool:
+            return {"status": "error", "error": f"Pool {pool_id} not found."}
+
+        template_data = pool.pool_template_vm_id
+        if not template_data:
+            return {"status": "error", "error": "No template data found in pool."}
+
+        # 1. Delete existing VM
+        delete_url = f"{HYPER_V_AGENT_URL}v1/hyper-v/delete_vm/{vm_id}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            del_resp = await client.delete(delete_url)
+            # We continue even if delete fails (e.g. already deleted manually)
+            logger.info(f"Delete VM {vm_id} response: {del_resp.status_code}")
+
+        # 2. Clone new VM from template
+        clone_url = f"{HYPER_V_AGENT_URL}v1/hyper-v/clone_vm_for_single_node"
+        
+        # Prepare payload for clone (similar to clone_vm_single_node_activity)
+        vhdPath = template_data.get("vhdPath")
+        PvhdPath = template_data.get("PvhdPath")
+        generation = template_data.get("generation")
+        memory = template_data.get("memory")
+        switch = template_data.get("switch")
+        os_type = template_data.get("os_type")
+        password = template_data.get('password')
+        gateway = template_data.get('gateway')
+        subnet = template_data.get('subnet')
+        dns = template_data.get('dns')
+        ip = machine.hostname # Use existing IP assigned to machine
+
+        payload = {
+            "vm_name": machine.name,
+            "memory": memory,
+            "vhdPath": vhdPath,
+            "switch": switch,
+            "generation": generation,
+            "PvhdPath": PvhdPath,
+            "ip": ip,
+            "password": password,
+            "gateway": gateway,
+            "os_type": os_type,
+            "subnet": subnet,
+            "dns": dns
+        }
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(clone_url, json=payload)
+            data = response.json()
+        
+        if data.get("code") != 200:
+            return {"status": "error", "error": f"Cloning failed: {data.get('msg')}"}
+
+        # Update the database with the new VM ID
+        # Post-cloning strategy: Get all VMs and find the one with the correct name to get the definitive ID
+        new_vm_id = None
+        try:
+            from service import hyper_v_service
+            all_vms = await hyper_v_service.get_vms()
+            for vm in all_vms:
+                # Host reports Name/VMName and Id/VMId
+                curr_name = vm.get("Name") or vm.get("VMName")
+                if curr_name == machine.name:
+                    new_vm_id = vm.get("Id") or vm.get("VMId")
+                    break
+        except Exception as sync_err:
+            logger.warning(f"Failed to sync VM ID by name for {machine.name}: {sync_err}")
+            # Fallback to agent response ID if list failed
+            agent_data = data.get("data")
+            if isinstance(agent_data, dict) and "VM" in agent_data:
+                new_vm_id = agent_data["VM"].get("Id") or agent_data["VM"].get("VMId")
+
+        if new_vm_id:
+            logger.info(f"Updating machine {machine.id} vm_id from {vm_id} to {new_vm_id}")
+            machine.vm_id = str(new_vm_id)
+            
+            # Also update pool_vmids if necessary
+            if pool.pool_vmids:
+                # Ensure we handle list correctly
+                updated_vmids = []
+                for v in pool.pool_vmids:
+                    if str(v) == str(vm_id):
+                        updated_vmids.append(str(new_vm_id))
+                    else:
+                        updated_vmids.append(str(v))
+                pool.pool_vmids = updated_vmids
+            
+            db.commit()
+            vm_id = str(new_vm_id)
+        else:
+            logger.error(f"Could not find new VM ID for {machine.name} after cloning")
+
+        return {"status": "success", "vm_id": vm_id, "machine_name": machine.name}
+    except Exception as e:
+        logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
+        return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
