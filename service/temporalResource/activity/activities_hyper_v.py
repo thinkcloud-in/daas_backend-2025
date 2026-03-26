@@ -34,6 +34,10 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
     dns = template.get('dns')
     number_of_vms = request.get("count", 1)
     base_vm_name = request.get("name_template", "cloned_vm")
+    domain = request.get("domain")
+    ou = request.get("ou")
+    username = request.get("username")
+    domain_password = request.get("domain_password")
 
     # Only fetch existing VM names from Hyper-V
     try:
@@ -64,7 +68,11 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
             "gateway": gateway,
             "os_type": os_type,
             "subnet": subnet,
-            "dns": dns
+            "dns": dns,
+            "domain": domain,
+            "ou": ou,
+            "username": username,
+            "domain_password": domain_password
         }
         logger.debug("Payload for clone_vm_for_single_node: %s", payload)
         async with httpx.AsyncClient(timeout=120.0) as client:
@@ -236,7 +244,11 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
             "gateway": gateway,
             "os_type": os_type,
             "subnet": subnet,
-            "dns": dns
+            "dns": dns,
+            "domain": pool.pool_ad_domain,
+            "ou": pool.pool_ad_path,
+            "username": pool.pool_ad_username,
+            "domain_password": pool.pool_ad_password
         }
 
         async with httpx.AsyncClient(timeout=120.0) as client:
