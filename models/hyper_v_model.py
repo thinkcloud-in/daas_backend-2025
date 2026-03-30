@@ -9,6 +9,10 @@ class CloneVMRequest(BaseModel):
     generation: int = Field(..., ge=1, le=2, description="VM generation (1 or 2)")
     PvhdPath: str = Field(..., description="Path of parent VHD")
     count: int = Field(..., ge=1, le=50, description="Number of VM clones to create (required)")
+    domain: Optional[str] = Field(None, description="Domain name")
+    ou: Optional[str] = Field(None, description="Organizational unit")
+    username: Optional[str] = Field(None, description="Username")
+    domain_password: Optional[str] = Field(None, description="Domain password")
     # os_type: str
     # mac_add: str
     # gateway: str

@@ -80,9 +80,10 @@ async def create_pool_activity(request: dict) -> dict:
                 "count": num_allocated,
                 "ip_list": ip_list,
                 "pool_storage": pool_storage,
-                # "password": password,
-                # "gateway": gateway,
-                # "os_type": os_type
+                "domain": pool_data.get("pool_ad_domain"),
+                "ou": pool_data.get("pool_ad_path"),
+                "username": pool_data.get("pool_ad_username"),
+                "domain_password": pool_data.get("pool_ad_password"),
             }
             # clone_payload_HyperV = {
             #     "cluster_id": str(cluster_data.id),
@@ -471,6 +472,10 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "count": num_allocated,
                 "ip_list": ip_list,
                 "pool_storage": pool_storage,
+                "domain": pool_data.get("pool_ad_domain", db_pool.pool_ad_domain),
+                "ou": pool_data.get("pool_ad_path", db_pool.pool_ad_path),
+                "username": pool_data.get("pool_ad_username", db_pool.pool_ad_username),
+                "domain_password": pool_data.get("pool_ad_password", db_pool.pool_ad_password),
             }
 
             try:

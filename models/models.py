@@ -3,8 +3,6 @@ from pydantic import BaseModel, Field# type: ignore
 from typing import Any, Dict, List, Optional, Union
 from db_configuration.config import Base
 import datetime
-import datetime
-from typing import List, Optional
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.mutable import MutableDict
 

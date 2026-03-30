@@ -8,7 +8,7 @@ def smtp_post(item, db):
     try:
         existing = db.query(SMTP).first()
         if existing:
-            raise HTTPException(status_code=400, detail="SMTP config already exists")
+            raise HTTPException(status_code=400, detail="SMTP config already exists. Please use update instead.")
         db_item = SMTP(
             smtpStatus = item.smtpStatus,
             serverIP = item.serverIP,
@@ -72,12 +72,15 @@ def smtp_update_data(item, db):
         raise HTTPException(status_code=500, detail=f"Error while updating/creating SMTP: {str(e)}")
 
     
-def smtp_status_update(smtpStatus:bool,db):
+def smtp_status_update(smtpStatus: bool, db):
     try:
         db_item = db.query(SMTP).first()
         if db_item is None:
-            raise HTTPException(status_code=404, detail="Item not found")
-        db_item.smtpStatus = smtpStatus
+            raise HTTPException(status_code=404, detail="SMTP configuration not found")
+        
+        # Explicit update and commit
+        db_item.smtpStatus = bool(smtpStatus)
+        db.add(db_item)
         db.commit()
         db.refresh(db_item)
         return db_item
