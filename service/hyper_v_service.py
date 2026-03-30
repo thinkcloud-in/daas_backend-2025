@@ -232,19 +232,21 @@ async def vm_rebuild(request):
     finally:
         db.close()
 
-async def pool_rebuild(pool_id: str, db):
+async def pool_rebuild(request, db):
     uniqueId = unique_id()
     client = await connectionWithClient()
     if client is None:
         return {"status": "error", "error": "Temporal client connection failed"}
-        
+    payload = request.dict() if hasattr(request, "dict") else request
+    pool_id = payload.get("pool_id")
+    vhdPath = payload.get("vhdPath")
     workflow_id = f"poolrebuild_hyperv-{pool_id}-{uniqueId}"
     
     from service.temporalResource.workflows import workflows_hyper_v
     try:
         handle = await client.start_workflow(
             workflows_hyper_v.HyperVPoolRebuildWorkflow.run,
-            args=[{"pool_id": pool_id}],
+            args=[{"pool_id": pool_id, "vhdPath": vhdPath}],
             id=workflow_id,
             task_queue="hyperv-task-queue",
         )

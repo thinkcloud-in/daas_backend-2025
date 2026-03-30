@@ -387,7 +387,7 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "vhdPath": template_data.get("vhdPath"),
             "switch": template_data.get("switch"),
             "generation": template_data.get("generation"),
-            "PvhdPath": "C:\kaibalya_test_env\Import-VM\Parent_VM.vhdx",
+            "PvhdPath": request.get("vhdPath"), #"C:\kaibalya_test_env\Import-VM\Parent_VM.vhdx",
             "ip": machine_ip,
             "password": template_data.get("password"),
             "gateway": template_data.get("gateway"),

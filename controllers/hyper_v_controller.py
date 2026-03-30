@@ -39,6 +39,6 @@ async def rebuild_vm_endpoint(request):
     result = await service.vm_rebuild(request)
     return success_response(200, "VM rebuild initiated.", result)
 
-async def pool_rebuild(pool_id: str, db):
-    result = await service.pool_rebuild(pool_id, db)
+async def pool_rebuild(request, db):
+    result = await service.pool_rebuild(request, db)
     return success_response(200, "Pool rebuild initiated.", result)

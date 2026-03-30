@@ -1,3 +1,4 @@
+from models.hyper_v_model import HandlePoolRebuildActionRequest
 from models.hyper_v_model import HandleRebuildActionRequest
 from fastapi import APIRouter, Depends
 import controllers.hyper_v_controller as controller
@@ -43,9 +44,9 @@ async def handle_action(request: HandleActionRequest):
 async def rebuild_vm(request: HandleRebuildActionRequest):
         return await controller.rebuild_vm_endpoint(request)
 
-@hyper_v_router.post("/pool_rebuild/{pool_id}", response_model=APIResponse[Any])
-async def pool_rebuild(pool_id: str, db: Session = Depends(get_db)):
-        return await controller.pool_rebuild(pool_id, db)
+@hyper_v_router.post("/pool_rebuild", response_model=APIResponse[Any])
+async def pool_rebuild(request: HandlePoolRebuildActionRequest, db: Session = Depends(get_db)):
+        return await controller.pool_rebuild(request, db)
 
 @hyper_v_router.delete("/delete_disk", response_model=APIResponse[Any])
 async def delete_disk(request: HandleDeleteDiskRequest):

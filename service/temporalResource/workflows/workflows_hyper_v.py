@@ -154,7 +154,6 @@ class HyperVPoolRebuildWorkflow:
         )
         if pool_data.get("status") == "error":
             return pool_data
-        print("pool_data--------------------------------------------------------------", pool_data)
         # # 2. Duplicate Parent/Template VM
         # parent_result = await workflow.execute_activity(
         #     activities_hyper_v.duplicate_parent_vm_activity,
@@ -174,7 +173,7 @@ class HyperVPoolRebuildWorkflow:
         for machine in machines:
             res = await workflow.execute_activity(
                 activities_hyper_v.rebuild_machine_in_pool_activity,
-                args=[{"machine": machine, "pool_id": pool_data["pool_id"], "new_template": pool_data["template_data"]}],
+                args=[{"vhdPath": request.get("vhdPath"), "machine": machine, "pool_id": pool_data["pool_id"], "new_template": pool_data["template_data"]}],
                 start_to_close_timeout=timedelta(minutes=10),
                 retry_policy=retry_policy,
             )

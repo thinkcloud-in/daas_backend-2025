@@ -29,3 +29,7 @@ class HandleDeleteDiskRequest(BaseModel):
 class HandleRebuildActionRequest(BaseModel):
     vm_id: Union[int, str] = Field(..., description="ID of the VM")
     pool_id: Union[int, str] = Field(..., description="ID of the pool")
+
+class HandlePoolRebuildActionRequest(BaseModel):
+    pool_id: Union[int, str] = Field(..., description="ID of the pool")
+    vhdPath: str = Field(..., description="Path of the base VHD file")
