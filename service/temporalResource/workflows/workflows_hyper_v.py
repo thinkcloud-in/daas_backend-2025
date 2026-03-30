@@ -132,3 +132,57 @@ class VmRebuildHyperVWorkflow:
             start_to_close_timeout=timedelta(minutes=5),
         )
         return result
+
+@workflow.defn(sandboxed=False)
+class HyperVPoolRebuildWorkflow:
+    @workflow.run
+    async def run(self, request: dict):
+        logger.info("HyperVPoolRebuildWorkflow started for pool_id=%s", request.get("pool_id"))
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=5),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=60),
+            maximum_attempts=3,
+        )
+
+        # 1. Gather data (machines in pool, template info)
+        pool_data = await workflow.execute_activity(
+            activities_hyper_v.get_pool_rebuild_data_activity,
+            args=[request],
+            start_to_close_timeout=timedelta(minutes=5),
+            retry_policy=retry_policy,
+        )
+        if pool_data.get("status") == "error":
+            return pool_data
+        print("pool_data--------------------------------------------------------------", pool_data)
+        # # 2. Duplicate Parent/Template VM
+        # parent_result = await workflow.execute_activity(
+        #     activities_hyper_v.duplicate_parent_vm_activity,
+        #     args=[pool_data],
+        #     start_to_close_timeout=timedelta(minutes=15),
+        #     retry_policy=retry_policy,
+        # )
+        # if parent_result.get("status") == "error":
+        #     return parent_result
+
+        # # Update pool_data with the new template info for child cloning
+        # pool_data["new_template"] = parent_result
+
+        # 3. Rebuild each machine in sequence
+        machines = pool_data.get("machines", [])
+        machine_results = []
+        for machine in machines:
+            res = await workflow.execute_activity(
+                activities_hyper_v.rebuild_machine_in_pool_activity,
+                args=[{"machine": machine, "pool_id": pool_data["pool_id"], "new_template": pool_data["template_data"]}],
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=retry_policy,
+            )
+            machine_results.append(res)
+
+        return {
+            "status": "success",
+            "msg": f"Pool rebuild completed for {len(machines)} machines.",
+            # "new_parent": parent_result,
+            "machine_results": machine_results
+        }

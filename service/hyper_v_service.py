@@ -231,3 +231,24 @@ async def vm_rebuild(request):
         return {"status": "error", "error": str(e)}
     finally:
         db.close()
+
+async def pool_rebuild(pool_id: str, db):
+    uniqueId = unique_id()
+    client = await connectionWithClient()
+    if client is None:
+        return {"status": "error", "error": "Temporal client connection failed"}
+        
+    workflow_id = f"poolrebuild_hyperv-{pool_id}-{uniqueId}"
+    
+    from service.temporalResource.workflows import workflows_hyper_v
+    try:
+        handle = await client.start_workflow(
+            workflows_hyper_v.HyperVPoolRebuildWorkflow.run,
+            args=[{"pool_id": pool_id}],
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+        return {"workflow_id": workflow_id, "status": "success", "msg": "Hyper-V Pool Rebuild started."}
+    except Exception as e:
+        logger.error(f"Failed to start pool rebuild workflow: {e}")
+        return {"status": "error", "error": str(e)}
