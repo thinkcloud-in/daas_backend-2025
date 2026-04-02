@@ -363,7 +363,6 @@ async def delete_report_activity(report_type:str):
 
 @activity.defn
 async def update_report_activity(company_name: str, company_logo: bytes, report_type: str):
-    print(f"---------------[update_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
