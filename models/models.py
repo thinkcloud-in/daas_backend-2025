@@ -165,7 +165,7 @@ class Pool(Base):
     pool_vmids = Column(ARRAY(String),nullable=True)  # List of VM IDs associated with the pool
     cluster_id = Column(String,  nullable=True)
     pool_ip_pool_names = Column(ARRAY(String), nullable=True)  # List of IP pools associated with the pool
-    pool_number_of_vms = Column(Integer, nullable=True)  # Number of VMs in the pool
+    pool_number_of_vms = Column(Integer, nullable=True, default=1)  # Number of VMs in the pool
     pool_naming_pattern = Column(String, nullable=True)  # Naming pattern for VMs in the pool
     pool_template_vm_id = Column(MutableDict.as_mutable(JSON), default=dict)
     # pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
@@ -316,7 +316,7 @@ class CreatePoolBase(BaseModel):
     pool_vmids: Optional[List[str]] = None  # List of VM IDs associated with the pool
     cluster_id: Optional[str] = None  # Foreign key to Cluster model
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
-    pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
+    pool_number_of_vms: Optional[int] = 1  # Number of VMs in the pool
     pool_naming_pattern: Optional[str] = None  # Naming pattern for VMs in the pool
     # pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
     # pool_template_vm_id: Optional[Union[int, Dict[str, Any]]] = None 
@@ -471,7 +471,7 @@ class UpdatePoolBase(BaseModel):
     pool_vmids: Optional[List[str]] = None  # List of VM IDs associated with the pool
     cluster_id: Optional[str] = None  # Foreign key to Cluster model
     pool_ip_pool_names: Optional[List[str]] = None  # List of IP pools associated with the pool
-    pool_number_of_vms: Optional[int] = None  # Number of VMs in the pool
+    pool_number_of_vms: Optional[int] = 1  # Number of VMs in the pool
     pool_naming_pattern: Optional[str] = None  # Naming pattern for VMs in the pool
     pool_template_vm_id: Optional[Dict[str, Any]] = None 
     # pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
@@ -625,10 +625,10 @@ class Machine(Base):
     users_assigned = Column(ARRAY(String), nullable=True)
     date_created = Column(DateTime, default=datetime.datetime.utcnow)
     is_custom_machine = Column(Boolean)
-    identifier = Column(String) # e.g., 'running', 'completed', etc.
+    identifier = Column(String) 
     workflowId = Column(ARRAY(String), default=[])
-    status = Column(String, default='running') 
-    error_message = Column(Text, nullable=True)
+    status = Column(String, default='RUNNING') # e.g., 'RUNNING', 'COMPLETED', etc.
+    error_message = Column(Text, nullable=True, default='power-off')
     # workflow_status = Column(JSON, default=dict) # NEW: workflow_status field for tracking status of all workflow IDs
     workflow_status = Column(MutableDict.as_mutable(JSON), default=dict)
 
@@ -770,8 +770,8 @@ class CreateMachineBase(BaseModel):
     # workflowId: Optional[List[str]] = None
     workflowId: List[str] = Field(default_factory=list)
     clone_workflow_id: Optional[Union[str, List[str]]] = None
-    status: Optional[str] = "running"
-    error_message: Optional[str] = None
+    status: Optional[str] = "RUNNING"
+    error_message: Optional[str] = "power-off"
     workflow_status: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 #pydantic model to update machine
 class UpdateMachineBase(BaseModel):

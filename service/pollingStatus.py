@@ -35,7 +35,7 @@ def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: s
     else:
         non_completed = next((s for s in statuses if s != "COMPLETED"), "RUNNING")
         machine.status = non_completed
-        machine.error_message = "; ".join(errors) if errors else None
+        machine.error_message = "; ".join(errors) if errors else "power-off"
     db.commit()
     db.refresh(machine)
     return machine.workflow_status, machine.status, machine.error_message
@@ -63,7 +63,7 @@ async def get_workflow_failure_message_simple(workflow_id):
                     "failure_message": parse_failure(failure),
                     "status": status
                 }
-    return {"failure_message": None, "status": status}
+    return {"failure_message": "power-off", "status": status}
 
 
 _worker_task = None
