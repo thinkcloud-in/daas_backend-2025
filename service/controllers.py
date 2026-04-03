@@ -251,7 +251,6 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
         machine_data_dict.pop("clone_workflow_id", None)
         if workflow_status_map is not None:
             machine_data_dict["workflow_status"] = workflow_status_map
-
         try:
             logger.info(f"Starting workflow for machine creation: {machine_data_dict}")
             handle = await client.start_workflow(

@@ -35,7 +35,12 @@ def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: s
     else:
         non_completed = next((s for s in statuses if s != "COMPLETED"), "RUNNING")
         machine.status = non_completed
-        machine.error_message = "; ".join(errors) if errors else "power-off"
+        if errors:
+            machine.error_message = "; ".join(errors)
+        elif vm_status:
+            machine.error_message = vm_status
+        elif machine.error_message not in ["power-off", "power-on", "shutdown", "reboot..."]:
+            machine.error_message = None
     db.commit()
     db.refresh(machine)
     return machine.workflow_status, machine.status, machine.error_message

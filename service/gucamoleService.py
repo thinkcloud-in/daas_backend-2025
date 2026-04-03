@@ -384,7 +384,6 @@ async def creating_connection(machine_data: CreateMachineBase):
     
     client = await connectionWithClient()
     logger.debug("Connected with the Temporal client.")
-
     try:
         # Start the workers task
         logger.info("Starting the Guacamole workers task.")

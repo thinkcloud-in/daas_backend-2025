@@ -629,6 +629,7 @@ class Machine(Base):
     workflowId = Column(ARRAY(String), default=[])
     status = Column(String, default='RUNNING') # e.g., 'RUNNING', 'COMPLETED', etc.
     error_message = Column(Text, nullable=True, default='power-off')
+
     # workflow_status = Column(JSON, default=dict) # NEW: workflow_status field for tracking status of all workflow IDs
     workflow_status = Column(MutableDict.as_mutable(JSON), default=dict)
 

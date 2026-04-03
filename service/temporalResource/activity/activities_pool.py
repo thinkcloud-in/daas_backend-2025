@@ -229,6 +229,7 @@ async def create_pool_activity(request: dict) -> dict:
                         "is_custom_machine": False,
                         "email": email,
                         "clone_workflow_id": workflow_ids,
+                        "error_message": "power-off",
                     }
                     machine_data_obj = CreateMachineBase(**machine_data)
                     machine_result = await controllers.create_machine(machine_data_obj, db=db)
