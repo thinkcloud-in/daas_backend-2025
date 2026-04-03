@@ -68,7 +68,7 @@ async def get_workflow_failure_message_simple(workflow_id):
                     "failure_message": parse_failure(failure),
                     "status": status
                 }
-    return {"failure_message": None, "status": status}
+    return {"failure_message": "power-off", "status": status}
 
 
 _worker_task = None

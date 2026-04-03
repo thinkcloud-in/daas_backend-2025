@@ -482,7 +482,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             try:
                 # Use the appropriate clone function based on cluster type
                 if cluster_type in ("hyper-v", "hyperv"):
-                    response = await clone_vm_for_single_node(clone_payload_dict, db)
+                    response = await clone_vm_for_single_node(clone_payload_dict)
                 else:
                     response = await clone_vm(clone_payload_dict)
 
@@ -754,8 +754,24 @@ async def retrieve_pool_data_activity(pool_name: str) :
         pool_json = jsonable_encoder(pool)
         
         if pool_json:
+            cluster_id_raw = pool_json.get("cluster_id")
+            if cluster_id_raw:
+                c_id = cluster_id_raw.split("_")[-1] if "_" in cluster_id_raw else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_json["cluster"] = cluster.name
+                    else:
+                        pool_json["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_json["cluster"] = "NA"
+            else:
+                pool_json["cluster"] = "NA"
+                
             return {"msg": f"{pool_name} Pool found ", "pool": pool_json}
         else:
+
             
             return {"msg": f"{pool_name} Pool not found"}
     except Exception as e:
@@ -784,10 +800,30 @@ async def get_all_pools_activity():
     try:
         pools = db.query(Pool).all()
         pools_json = jsonable_encoder(pools)
+        
+        # Fetch cluster names for each pool
+        for pool_data in pools_json:
+            cluster_id_raw = pool_data.get("cluster_id")
+            if cluster_id_raw:
+                # Handle the case where cluster_id is formatted as "poolid_clusterid"
+                c_id = cluster_id_raw.split("_")[-1] if "_" in cluster_id_raw else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_data["cluster"] = cluster.name
+                    else:
+                        pool_data["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_data["cluster"] = "NA"
+            else:
+                pool_data["cluster"] = "NA"
+                
         return {"msg": "listed all the Pools successfully", "pools": pools_json}
     except Exception as e:
         db.rollback()  
         raise HTTPException(status_code=500, detail=f"An error occurred while retrieving all pools: {str(e)}")
+
     
 
 @activity.defn()
@@ -798,8 +834,24 @@ async def get_pool_details_id_activity(pool_id: int):
         pool = db.query(Pool).filter(Pool.id == pool_id).first()
         pool_json = jsonable_encoder(pool)
         if pool_json:
+            cluster_id_raw = pool_json.get("cluster_id")
+            if cluster_id_raw:
+                c_id = cluster_id_raw.split("_")[-1] if "_" in cluster_id_raw else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_json["cluster"] = cluster.name
+                    else:
+                        pool_json["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_json["cluster"] = "NA"
+            else:
+                pool_json["cluster"] = "NA"
+                
             return {"msg": f"Pool Retrived Successfully", "pool": pool_json}
         else:
+
             
             return {"msg": f"Pool not found "}, 404
     except Exception as e:
