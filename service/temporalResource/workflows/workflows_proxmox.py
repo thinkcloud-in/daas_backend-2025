@@ -165,7 +165,7 @@ class LiveMigrateWorkflow:
 @workflow.defn(sandboxed=False)
 class StartVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: int, pool_id: str, email:str):
+    async def run(self, vmid: str, pool_id: str, email:str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -184,7 +184,7 @@ class StartVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class StopVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: int, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str, email: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -203,7 +203,7 @@ class StopVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class RebootVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: int, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str, email: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -223,7 +223,7 @@ class RebootVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class ShutdownVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: int, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str, email: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,

@@ -349,8 +349,8 @@ def collect_proxmox_details(vmid, pool_id, db):
     }
  
 
-def vm_start(PROXMOX_HOST, node, vmid, headers):
-    start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/start"
+def vm_start(PROXMOX_HOST, node, proxmox_vmid, headers):
+    start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{proxmox_vmid}/status/start"
     resp = requests.post(start_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
@@ -380,7 +380,7 @@ def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
 
 
 
-async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
+async def start_vm_proxmox(vmid: str, pool_id: str,email: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
@@ -408,7 +408,7 @@ async def start_vm_proxmox(vmid: int, pool_id: str,email: str):
 
 
 
-async def stop_vm_proxmox(vmid: int, pool_id: str,email: str):
+async def stop_vm_proxmox(vmid: str, pool_id: str,email: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
@@ -436,7 +436,7 @@ async def stop_vm_proxmox(vmid: int, pool_id: str,email: str):
         return {"error": str(e)}
     
     
-async def reboot_vm_proxmox(vmid: int, pool_id: str,email: str):
+async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
@@ -464,7 +464,7 @@ async def reboot_vm_proxmox(vmid: int, pool_id: str,email: str):
         return {"error": str(e)}
     
 
-async def shutdown_vm_proxmox(vmid: int, pool_id: str, email: str):
+async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()

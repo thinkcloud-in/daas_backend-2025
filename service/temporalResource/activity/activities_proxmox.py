@@ -1,3 +1,5 @@
+from service.temporalResource.activity.activities_hyper_v import handle_action_activity
+import service.hyper_v_service
 import ipaddress
 from temporalio import activity
 from sqlalchemy.orm import Session
@@ -434,13 +436,43 @@ async def migrate_bucket_new_data_activity(payload: dict):
  
  
 @activity.defn
-async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
+async def start_vm_proxmox_activity(vmid: str, pool_id: str,email:str = None):
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
         if not machine:
             return {"status": "error", "msg": f"Machine with id {vmid} not found."}
- 
+
+        pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+        if not pool or not pool.pool_template_vm_id:
+            return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
+
+        cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
+        cluster_id_parts = cluster_id_raw.split("_")
+
+        if len(cluster_id_parts) < 2:
+            return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
+
+        cluster_id = cluster_id_parts[1]  # "1829"
+
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        if not cluster:
+            return {"status": "error", "error": f"Cluster {cluster_id} not found."}
+        # Hyper-V check
+        if cluster.type and cluster.type.lower() == "hyper-v":
+            hyperv_request = {
+                "vm_id":machine.vm_id,
+                "vm_name":machine.name,
+                "action":"start"
+            }
+            result = await handle_action_activity(hyperv_request)
+            if result.get("status") == "success":
+                machine.error_message = "power-on"
+                db.commit()
+                return {"vm_status": "power-on", "msg": "VM started successfully."}
+            else:
+                return {"vm_status": "error", "msg": f"Start failed: {result.get('error', 'Unknown error')}"}
+
         details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
         if details.get("status") != "success":
             machine.error_message = f"Start failed: {details.get('error', 'Unknown error')}"
@@ -449,9 +481,9 @@ async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
  
         PROXMOX_HOST = details["PROXMOX_HOST"]
         node = details["node"]
-        vmid = details["vmid"]
+        proxmox_vmid = details["vmid"]
         headers = details["headers"]
-        vm_status = proxmoxService.vm_start(PROXMOX_HOST, node, vmid, headers)
+        vm_status = proxmoxService.vm_start(PROXMOX_HOST, node, proxmox_vmid, headers)
         if vm_status is True:
             machine.error_message = "power-on"
             msg = "VM started successfully."
@@ -464,12 +496,43 @@ async def start_vm_proxmox_activity(vmid: int, pool_id: str,email:str = None):
  
  
 @activity.defn
-async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
+async def stop_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
         if not machine:
             return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+        
+        pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+        if not pool or not pool.pool_template_vm_id:
+            return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
+
+        cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
+        cluster_id_parts = cluster_id_raw.split("_")
+
+        if len(cluster_id_parts) < 2:
+            return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
+
+        cluster_id = cluster_id_parts[1]  # "1829"
+
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        if not cluster:
+            return {"status": "error", "error": f"Cluster {cluster_id} not found."}
+        # Hyper-V check
+        if cluster.type and cluster.type.lower() == "hyper-v":
+            hyperv_request = {
+                "vm_id":machine.vm_id,
+                "vm_name":machine.name,
+                "action":"force_off"
+            }
+            result = await handle_action_activity(hyperv_request)
+            if result.get("status") == "success":
+                machine.error_message = "power-off"
+                db.commit()
+                return {"vm_status": "power-off", "msg": "VM stopped successfully."}
+            else:
+                return {"vm_status": "error", "msg": f"Stop failed: {result.get('error', 'Unknown error')}"}
+
         details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
         if details.get("status") != "success":
             machine.error_message = f"Stop failed: {details.get('error', 'Unknown error')}"
@@ -497,12 +560,43 @@ async def stop_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
 
 
 @activity.defn
-async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
+async def reboot_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
     db: Session = next(get_db())  
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
         if not machine:
             return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+
+        pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+        if not pool or not pool.pool_template_vm_id:
+            return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
+
+        cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
+        cluster_id_parts = cluster_id_raw.split("_")
+
+        if len(cluster_id_parts) < 2:
+            return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
+
+        cluster_id = cluster_id_parts[1]  # "1829"
+
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        if not cluster:
+            return {"status": "error", "error": f"Cluster {cluster_id} not found."}
+        # Hyper-V check
+        if cluster.type and cluster.type.lower() == "hyper-v":
+            hyperv_request = {
+                "vm_id":machine.vm_id,
+                "vm_name":machine.name,
+                "action":"restart"
+            }
+            result = await handle_action_activity(hyperv_request)
+            if result.get("status") == "success":
+                machine.error_message = "reboot..."
+                db.commit()
+                return {"vm_status": "reboot...", "msg": "VM rebooted successfully."}
+            else:
+                return {"vm_status": "error", "msg": f"Reboot failed: {result.get('error', 'Unknown error')}"}
+
         details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
         if details.get("status") != "success":
             machine.error_message = f"Reboot failed: {details.get('error', 'Unknown error')}"
@@ -530,13 +624,44 @@ async def reboot_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
  
  
 @activity.defn
-async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None):
+async def shutdown_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
     
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
         if not machine:
             return {"status": "error", "msg": f"Machine with id {vmid} not found."}
+
+        pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+        if not pool or not pool.pool_template_vm_id:
+            return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
+
+        cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
+        cluster_id_parts = cluster_id_raw.split("_")
+
+        if len(cluster_id_parts) < 2:
+            return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
+
+        cluster_id = cluster_id_parts[1]  # "1829"
+
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        if not cluster:
+            return {"status": "error", "error": f"Cluster {cluster_id} not found."}
+        # Hyper-V check
+        if cluster.type and cluster.type.lower() == "hyper-v":
+            hyperv_request = {
+                "vm_id":machine.vm_id,
+                "vm_name":machine.name,
+                "action":"stop"
+            }
+            result = await handle_action_activity(hyperv_request)
+            if result.get("status") == "success":
+                machine.error_message = "power-off"
+                db.commit()
+                return {"vm_status": "power-off", "msg": "VM stopped successfully."}
+            else:
+                return {"vm_status": "error", "msg": f"Stop failed: {result.get('error', 'Unknown error')}"}
+
         details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
         if details.get("status") != "success":
             machine.error_message = f"Shutdown failed: {details.get('error', 'Unknown error')}"
@@ -563,7 +688,7 @@ async def shutdown_vm_proxmox_activity(vmid: int, pool_id: str,email: str = None
         db.close()
 
 @activity.defn
-async def vm_rebuild_activity(vmid: int, pool_id: str = None, email: str = None):
+async def vm_rebuild_activity(vmid: str, pool_id: str = None, email: str = None):
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()

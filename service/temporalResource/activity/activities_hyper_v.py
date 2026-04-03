@@ -140,14 +140,18 @@ async def delete_vm_single_node_activity(request: dict) -> dict:
 @activity.defn
 async def handle_action_activity(request: dict) -> dict:
     url = f"{HYPER_V_AGENT_URL}v1/hyper-v/handle_action"
-
     logger.info("Hyper-V handle_action called with payload: %s", request)
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    timeout = httpx.Timeout(
+        connect=10.0,   
+        read=120.0,     
+        write=10.0,
+        pool=10.0
+    )
+    async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=request)
 
     data = response.json()
-
     if data.get("code") == 200:
         return {
             "status": "success",

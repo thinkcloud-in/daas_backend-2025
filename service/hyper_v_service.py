@@ -151,7 +151,6 @@ async def get_status(vm_id: str) -> dict:
 async def handle_action(request) -> dict:
     # workflow_id = f"hyperv-handle-action-{uuid.uuid4().hex}"
     client = await connectionWithClient()
-
     payload = request.dict() if hasattr(request, "dict") else request
 
     if client is None:

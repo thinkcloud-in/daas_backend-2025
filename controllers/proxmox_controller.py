@@ -261,7 +261,7 @@ async def get_metric_server_endpoint(
 
 async def start_vm_endpoint(
     data: VMPowerRequest,
-    vmid: int,
+    vmid: str,
     pool_id: str = None,
    
 ):
@@ -274,7 +274,7 @@ async def start_vm_endpoint(
 
 async def stop_vm_endpoint(
     data: VMPowerRequest,
-    vmid: int,
+    vmid: str,
     pool_id: str = None,
 ):
     try:
@@ -286,7 +286,7 @@ async def stop_vm_endpoint(
 
 async def reboot_vm_endpoint(
     data: VMPowerRequest,
-    vmid: int,
+    vmid: str,
     pool_id: str = None,
 ):
     try:
@@ -298,7 +298,7 @@ async def reboot_vm_endpoint(
 
 async def shutdown_vm_endpoint(
     data: VMPowerRequest,
-    vmid: int,
+    vmid: str,
     pool_id: str = None,
 ):
     try:
