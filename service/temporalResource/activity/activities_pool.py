@@ -28,6 +28,13 @@ async def create_pool_activity(request: dict) -> dict:
             # raise HTTPException(status_code=400, detail="No IP pools selected for automated assignment. Please select at least one IP pool.")
         vm_count = pool_data.get("pool_number_of_vms", 0)
         cluster_id = pool_data.get("cluster_id")
+        
+        # Guard against NaN cluster_id from frontend
+        if not cluster_id or str(cluster_id).lower() == "nan":
+            return {
+                "msg": "Invalid Cluster Selection: Cluster ID is missing or invalid (NaN). Please select a valid cluster."
+            }
+            
         node = pool_data.get("pool_selected_nodes")
         template_vm_id = pool_data.get("pool_template_vm_id")
         name_template = pool_data.get("pool_naming_pattern")
@@ -41,6 +48,11 @@ async def create_pool_activity(request: dict) -> dict:
             return {
                 "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
             }
+        
+        # Second guard before database operations
+        if str(pool_data.get("cluster_id")).lower() == "nan":
+             return {"msg": "Critial Error: Cluster ID is NaN. Aborting pool creation to prevent corruption."}
+
         pool = Pool(**pool_data)
         db.add(pool)
         # db.flush()
@@ -713,7 +725,7 @@ async def delete_pool_activity(pool_id: int) -> dict:
                             vmid_str =vmid
                             vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
                             vhdpath += machine.name
-                            await delete_hyperv_vm(vmid)
+                            await delete_hyperv_vm(vmid, db)
                             # if response:
                             #     await delete_disk(vhdpath)
                         ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
@@ -853,7 +865,7 @@ async def get_pool_details_id_activity(pool_id: int):
         else:
 
             
-            return {"msg": f"Pool not found "}, 404
+            return {"msg": f"Pool not found "}
     except Exception as e:
         db.rollback()
         

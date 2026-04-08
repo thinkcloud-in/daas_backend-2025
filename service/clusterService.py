@@ -8,7 +8,6 @@ import requests
 import urllib3
 from db_configuration.config import SessionLocal, get_db
 from models.proxmox_model import Proxmox
-from models.models import Cluster
 from sqlalchemy.orm import Session
 from service.gucamoleService import connectionWithClient
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

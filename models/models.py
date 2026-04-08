@@ -1,5 +1,5 @@
 from sqlalchemy import JSON, Text, Column, Integer, String, DateTime, Boolean,ARRAY, Sequence, UniqueConstraint
-from pydantic import BaseModel, Field# type: ignore
+from pydantic import BaseModel, Field, validator# type: ignore
 from typing import Any, Dict, List, Optional, Union
 from db_configuration.config import Base
 import datetime
@@ -939,6 +939,7 @@ class Cluster(Base):
     name=Column(String)
     ip = Column(String)
     port = Column(Integer)
+    agent_port = Column(Integer)
     username = Column(String)
     password = Column (String)
     tls = Column(Boolean)
@@ -949,24 +950,40 @@ class CreateClusterBase(BaseModel):
     type : str
     name : str
     ip : List[str]
-    port : int
+    port : Optional[Union[int, str]] = None
+    agent_port : Optional[Union[int, str]] = None
     username : str
     password : str
     tls : bool
     email: Optional[str] = None
     node_type: Optional[str] = None
 
+    @validator('port', 'agent_port', pre=True)
+    def clean_empty_string(cls, v):
+        if v == "":
+            return None
+        return v
+
+
 # pydantic model to update cluster
 class UpdateClusterBase(BaseModel):
     type :Optional[str]
     name : Optional[str]
     ip : Optional[List[str]]
-    port : Optional [int]
+    port : Optional[Union[int, str]] = None
+    agent_port : Optional[Union[int, str]] = None
     username : Optional[str]
     password : Optional[str]
     tls : Optional[bool]
     email: Optional[str] = None
     node_type: Optional[str] = None
+
+    @validator('port', 'agent_port', pre=True)
+    def clean_empty_string(cls, v):
+        if v == "":
+            return None
+        return v
+
 
 # here LDAP pydeantic model class
 class LDAPCredential(BaseModel):

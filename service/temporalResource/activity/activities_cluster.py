@@ -129,6 +129,22 @@ async def create_cluster_activity(cluster_data: dict):
         model_columns = set(c.name for c in Cluster.__table__.columns)
         cluster_fields = {k: v for k, v in cluster_data_dict.items() if k in model_columns}
         
+        # Clean numeric fields to prevent database "InvalidTextRepresentation" errors
+        for field in ["port", "agent_port"]:
+            if field in cluster_fields:
+                val = cluster_fields[field]
+                if val == "" or val is None:
+                    # Default agent_port for Hyper-V if skipped
+                    if field == "agent_port" and cluster_fields.get("type", "").lower() == "hyper-v":
+                        cluster_fields[field] = 8765
+                    else:
+                        cluster_fields[field] = None
+                else:
+                    try:
+                        cluster_fields[field] = int(val)
+                    except (ValueError, TypeError):
+                        cluster_fields[field] = None
+        
         existing_cluster_name = db.query(Cluster).filter_by(name=cluster_data_dict["name"]).first()
         if existing_cluster_name:
             return "Cluster name already exists."
@@ -136,7 +152,8 @@ async def create_cluster_activity(cluster_data: dict):
 
         existing_cluster = db.query(Cluster).filter(
             Cluster.ip == ip_string,
-            Cluster.port == port
+            Cluster.port == port,
+            Cluster.agent_port == cluster_data_dict["agent_port"]
         ).first()
 
         if existing_cluster:

@@ -2,6 +2,7 @@ from typing import Optional, Union
 from pydantic import BaseModel, Field
 
 class CloneVMRequest(BaseModel):
+    cluster_id: int = Field(..., description="ID of the cluster")
     vm_name: str = Field(..., description="Name of the new cloned VM")
     memory: int = Field(..., gt=0, description="Memory size in MB")
     vhdPath: str = Field(..., description="Path of the base VHD file")
@@ -24,6 +25,7 @@ class HandleActionRequest(BaseModel):
     action: str = Field(..., description="Action to perform on the VM")
 
 class HandleDeleteDiskRequest(BaseModel):
+    cluster_id: int = Field(..., description="ID of the cluster")
     disk_path: str = Field(..., description="Path of the disk to be deleted")
 
 class HandleRebuildActionRequest(BaseModel):
@@ -33,3 +35,9 @@ class HandleRebuildActionRequest(BaseModel):
 class HandlePoolRebuildActionRequest(BaseModel):
     pool_id: Union[int, str] = Field(..., description="ID of the pool")
     vhdPath: str = Field(..., description="Path of the base VHD file")
+
+class VerifyStandaloneHyperVRequest(BaseModel):
+    ip: str = Field(..., description="IP Address or FQDN")
+    username: str = Field(..., description="Username")
+    password: str = Field(..., description="Password")
+    agent_port: Optional[Union[str, int]] = Field(None, description="Agent Port")

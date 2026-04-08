@@ -335,7 +335,7 @@ async def rebuild_vm_endpoint(
                 "pool_id": pool_id,
                 "email": data.email
             }
-            res = await hyper_v_service.vm_rebuild(rebuild_request)
+            res = await hyper_v_service.vm_rebuild(rebuild_request, db)
             return res
 
         # Proxmox logic
@@ -347,6 +347,9 @@ async def rebuild_vm_endpoint(
             
         vm_status = await service.vm_rebuild(proxmox_vmid, pool_id, data.email)
         return {"vm_status": vm_status, "msg": "VM rebuild initiated."}
+    # except HTTPException as he:
+    #     # Re-raise HTTP exceptions, especially from get_cluster_by_id if any
+    #     raise he
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))
     finally:
@@ -404,7 +407,7 @@ async def proxmox_vm_details(vm_id: str, db):
         
         if cluster_data.type.lower() in ("hyper-v", "hyperv"):
             import service.hyper_v_service as hyper_v_service
-            res = await hyper_v_service.get_vm_info(vm_id)
+            res = await hyper_v_service.get_vm_info(vm_id, db)
             return res
 
         vm_infos = await service.get_all_vm_details_parallel(db, cluster_data)

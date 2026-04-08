@@ -1,9 +1,8 @@
 import base64
 from dto.machineDto import MachineDto
 import service.gucamoleService as service
-from typing import Union
 from datetime import datetime
-from fastapi import  HTTPException,File, UploadFile, Form,Query
+from fastapi import  File, UploadFile, Form,Query
 from fastapi.responses import FileResponse
 from fastapi.encoders import jsonable_encoder
 from utils import response_format
