@@ -68,22 +68,22 @@ async def get_metric_server_endpoint(cluster_id: str):
     return response_format.success_response(200, "Fetched InfluxDB metric server successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/start_vm", response_model=APIResponse[Any])
-async def start_vm(data: VMPowerRequest, vmid: int, pool_id: str = None):
+async def start_vm(data: VMPowerRequest, vmid: str, pool_id: str = None):
     res = await proxmox_controller.start_vm_endpoint(data, vmid, pool_id)
     return response_format.success_response(200, "VM started successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/stop_vm", response_model=APIResponse[Any])
-async def stop_vm(data: VMPowerRequest, vmid: int, pool_id: str = None):
+async def stop_vm(data: VMPowerRequest, vmid: str, pool_id: str = None):
     res = await proxmox_controller.stop_vm_endpoint(data, vmid, pool_id)
     return response_format.success_response(200, "VM stopped successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/reboot_vm", response_model=APIResponse[Any])
-async def reboot_vm(data: VMPowerRequest, vmid: int, pool_id: str = None):
+async def reboot_vm(data: VMPowerRequest, vmid: str, pool_id: str = None):
     res = await proxmox_controller.reboot_vm_endpoint(data, vmid, pool_id)
     return response_format.success_response(200, "VM rebooted successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/shutdown_vm", response_model=APIResponse[Any])
-async def shutdown_vm(data: VMPowerRequest, vmid: int, pool_id: str = None):
+async def shutdown_vm(data: VMPowerRequest, vmid: str, pool_id: str = None):
     res = await proxmox_controller.shutdown_vm_endpoint(data, vmid, pool_id)
     return response_format.success_response(200, "VM shut down successfully.", jsonable_encoder(res))
 
