@@ -149,17 +149,10 @@ async def create_cluster_activity(cluster_data: dict):
         if existing_cluster_name:
             return "Cluster name already exists."
             # raise Exception("Cluster already exists.")
-
-        existing_cluster = db.query(Cluster).filter(
-            Cluster.ip == ip_string,
-            Cluster.port == port,
-            Cluster.agent_port == cluster_data_dict["agent_port"]
-        ).first()
+        existing_cluster = db.query(Cluster).filter(Cluster.ip == ip_string).first()
 
         if existing_cluster:
             return "Cluster IP already exists."
-            # raise Exception("Cluster ip and port already exists.")
-
         cluster = Cluster(**cluster_fields)
         db.add(cluster)
         db.commit()
@@ -177,7 +170,6 @@ async def create_cluster_activity(cluster_data: dict):
         elif cluster_data_obj.type.lower() == "proxmox":
             try:
                 await clusterService.create_cluster_proxmox(cluster_data_obj)
-                
                 proxmox_nodes = clusterService.get_all_nodes(cluster_data_obj)
                 node_ips = [node["ip"] for node in proxmox_nodes]
                 cluster.ip = ",".join(node_ips)
@@ -185,10 +177,8 @@ async def create_cluster_activity(cluster_data: dict):
                 db.delete(cluster)
                 db.commit()
                 raise Exception("Error creating Proxmox cluster: " + str(e))
-            
         elif cluster_data_obj.type.lower() == "hyper-v":
             pass
-        
         db.commit()
         db.refresh(cluster)
         return {
