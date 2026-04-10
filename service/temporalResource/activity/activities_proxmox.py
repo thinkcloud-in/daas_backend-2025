@@ -436,7 +436,7 @@ async def migrate_bucket_new_data_activity(payload: dict):
  
  
 @activity.defn
-async def start_vm_proxmox_activity(vmid: str, pool_id: str,email:str = None):
+async def start_vm_proxmox_activity(vmid: str, pool_id: str):
     db: Session = next(get_db())
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
@@ -463,7 +463,8 @@ async def start_vm_proxmox_activity(vmid: str, pool_id: str,email:str = None):
             hyperv_request = {
                 "vm_id":machine.vm_id,
                 "vm_name":machine.name,
-                "action":"start"
+                "action":"start",
+                "cluster_id":cluster_id
             }
             result = await handle_action_activity(hyperv_request)
             if result.get("status") == "success":
@@ -523,7 +524,8 @@ async def stop_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
             hyperv_request = {
                 "vm_id":machine.vm_id,
                 "vm_name":machine.name,
-                "action":"force_off"
+                "action":"force_off",
+                "cluster_id":cluster_id
             }
             result = await handle_action_activity(hyperv_request)
             if result.get("status") == "success":
@@ -583,17 +585,18 @@ async def reboot_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
         if not cluster:
             return {"status": "error", "error": f"Cluster {cluster_id} not found."}
         # Hyper-V check
-        if cluster.type and cluster.type.lower() == "hyper-v":
+        if cluster.type and cluster.type.lower() in ("hyper-v", "hyperv"):
             hyperv_request = {
                 "vm_id":machine.vm_id,
                 "vm_name":machine.name,
-                "action":"restart"
+                "action":"reboot",
+                "cluster_id":cluster_id
             }
             result = await handle_action_activity(hyperv_request)
             if result.get("status") == "success":
-                machine.error_message = "reboot..."
+                machine.error_message = "reboot"
                 db.commit()
-                return {"vm_status": "reboot...", "msg": "VM rebooted successfully."}
+                return {"vm_status": "reboot", "msg": "VM rebooted successfully."}
             else:
                 return {"vm_status": "error", "msg": f"Reboot failed: {result.get('error', 'Unknown error')}"}
 
@@ -610,7 +613,7 @@ async def reboot_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
  
         vm_status = proxmoxService.vm_reboot(PROXMOX_HOST, node, vmid, headers)
         if vm_status.get("status") == "success":
-            machine.error_message = "reboot..."
+            machine.error_message = "reboot"
             msg = "VM rebooted successfully."
         elif vm_status.get("error"):
             
@@ -648,11 +651,12 @@ async def shutdown_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None
         if not cluster:
             return {"status": "error", "error": f"Cluster {cluster_id} not found."}
         # Hyper-V check
-        if cluster.type and cluster.type.lower() == "hyper-v":
+        if cluster.type and cluster.type.lower() in ("hyper-v", "hyperv"):
             hyperv_request = {
                 "vm_id":machine.vm_id,
                 "vm_name":machine.name,
-                "action":"stop"
+                "action":"stop",
+                "cluster_id":cluster_id
             }
             result = await handle_action_activity(hyperv_request)
             if result.get("status") == "success":

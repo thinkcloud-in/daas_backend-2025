@@ -22,6 +22,8 @@ async def hyperv_worker():
             workflows_hyper_v.DeleteHyperVDiskWorkflow,
             workflows_hyper_v.VmRebuildHyperVWorkflow,
             workflows_hyper_v.HyperVPoolRebuildWorkflow,
+            workflows_hyper_v.PingAgentWorkflow,
+            workflows_hyper_v.VerifyStandaloneHyperVWorkflow,
         ],
         activities=[
             activities_hyper_v.clone_vm_single_node_activity,
@@ -31,6 +33,8 @@ async def hyperv_worker():
             activities_hyper_v.vm_rebuild_hyper_v_activity,
             activities_hyper_v.rebuild_machine_in_pool_activity,
             activities_hyper_v.get_pool_rebuild_data_activity,
+            activities_hyper_v.ping_agent_activity,
+            activities_hyper_v.verify_standalone_hyper_v_activity,
             # activities_hyper_v.duplicate_parent_vm_activity,
         ],
     )

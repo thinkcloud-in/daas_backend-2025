@@ -55,26 +55,27 @@ def get_cluster_nodes(cluster_data):
         raise RuntimeError("No valid IPs found for cluster.")
  
     last_exception = None
-    for ip in ip_list:
-        PROXMOX_HOST = f"https://{ip}:{cluster_data.port}"
-        url = f"{PROXMOX_HOST}/api2/json/cluster/status"
-        try:
-            response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
-            response.raise_for_status()
-            data = response.json()
-            nodes = [
-                {
-                    "name": node["name"],
-                    "ip": node["ip"],
-                    "status": "online"
-                }
-                for node in data["data"]
-                if node.get("type") == "node" and node.get("online", 0) == 1
-            ]
-            return nodes
-        except Exception as e:
-            last_exception = e
-            continue
+    if cluster_data.type.lower() == "proxmox":
+        for ip in ip_list:
+            PROXMOX_HOST = f"https://{ip}:{cluster_data.port}"
+            url = f"{PROXMOX_HOST}/api2/json/cluster/status"
+            try:
+                response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
+                response.raise_for_status()
+                data = response.json()
+                nodes = [
+                    {
+                        "name": node["name"],
+                        "ip": node["ip"],
+                        "status": "online"
+                    }
+                    for node in data["data"]
+                    if node.get("type") == "node" and node.get("online", 0) == 1
+                ]
+                return nodes
+            except Exception as e:
+                last_exception = e
+                continue
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
 
 def update_cluster_nodes(db: Session) -> Dict[str, List[str]]:
@@ -380,22 +381,21 @@ def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
 
 
 
-async def start_vm_proxmox(vmid: str, pool_id: str,email: str):
-
+async def start_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
     uniqueId = unique_id()
     client = await connectionWithClient()
-    workflow_id = f"start_vm_proxmox-{uniqueId}"
+    workflow_id = f"start_vm_{cluster_type}-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
     try:
         # clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(
             workflows_proxmox.StartVMProxmoxWorkflow.run,
-            args=[vmid, pool_id,email],
+            args=[vmid, pool_id],
             id=workflow_id,
             task_queue="vmpower-task-queue",
             search_attributes={
                 "Entity": [str(vmid)],
-                "Action": ["start_vm_proxmox"],
+                "Action": [f"start_vm_{cluster_type}"],
                 "UserName": [email]
             }
         )
@@ -408,18 +408,16 @@ async def start_vm_proxmox(vmid: str, pool_id: str,email: str):
 
 
 
-async def stop_vm_proxmox(vmid: str, pool_id: str,email: str):
+async def stop_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
-    workflow_id = f"stop_vm_proxmox-{uniqueId}"
-    # clone_payload["workflowId"] = workflow_id
+    workflow_id = f"stop_vm_{cluster_type}-{uniqueId}"
 
     try:
-        # clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(
             workflows_proxmox.StopVMProxmoxWorkflow.run,
-            args=[vmid, pool_id,email],
+            args=[vmid, pool_id],
             id=workflow_id,
             task_queue="vmpower-task-queue",
             search_attributes={
@@ -436,23 +434,21 @@ async def stop_vm_proxmox(vmid: str, pool_id: str,email: str):
         return {"error": str(e)}
     
     
-async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str):
+async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
-    workflow_id = f"reboot_vm_proxmox-{uniqueId}"
-    # clone_payload["workflowId"] = workflow_id
+    workflow_id = f"reboot_vm_{cluster_type}-{uniqueId}"
 
     try:
-        # clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(
             workflows_proxmox.RebootVMProxmoxWorkflow.run,
-            args=[vmid, pool_id,email],
+            args=[vmid, pool_id],
             id=workflow_id,
             task_queue="vmpower-task-queue",
             search_attributes={
                 "Entity": [str(vmid)],
-                "Action": ["reboot_vm_proxmox"],
+                "Action": [f"reboot_vm_{cluster_type}"],
                 "UserName": [email]
             }
         )
@@ -464,23 +460,21 @@ async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str):
         return {"error": str(e)}
     
 
-async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str):
+async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
 
     uniqueId = unique_id()
     client = await connectionWithClient()
-    workflow_id = f"shutdown_vm_proxmox-{uniqueId}"
-    # clone_payload["workflowId"] = workflow_id
+    workflow_id = f"shutdown_vm_{cluster_type}-{uniqueId}"
 
     try:
-        # clone_payload["workflowId"] = workflow_id
         handle = await client.start_workflow(
             workflows_proxmox.ShutdownVMProxmoxWorkflow.run,
-            args=[vmid, pool_id,email],
+            args=[vmid, pool_id],
             id=workflow_id,
             task_queue="vmpower-task-queue",
             search_attributes={
                 "Entity": [str(vmid)],
-                "Action": ["shutdown_vm_proxmox"],
+                "Action": [f"shutdown_vm_{cluster_type}"],  
                 "UserName": [email]
             }
         )

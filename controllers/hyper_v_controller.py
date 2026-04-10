@@ -2,13 +2,14 @@ import service.hyper_v_service as service
 from utils.response_format import success_response
 from sqlalchemy.orm import Session
 from sqlalchemy.ext.asyncio import AsyncSession
+from typing import Optional, Union
 
 
 async def get_vms(cluster_id: int, db: Session):
     result = await service.get_vms(cluster_id, db)
     return success_response(200, "Successfully retrieved Hyper-V data", result)
 
-async def ping_agent(cluster_id=None, ip=None, port=None, db=None):
+async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     result = await service.ping_agent(cluster_id, db, ip, port)
     return success_response(200, "Successfully pinged Hyper-V agent", result)
 
@@ -49,6 +50,6 @@ async def pool_rebuild(request, db):
     result = await service.pool_rebuild(request, db)
     return success_response(200, "Pool rebuild initiated.", result)
 
-async def verify_standalone_hyper_v(request, cluster_id=None, db=None):
-    result = await service.verify_standalone_hyper_v(request, cluster_id, db)
+async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
+    result = await service.verify_standalone_hyper_v(request, db, cluster_id)
     return success_response(200, "Standalone Hyper-V verified.", result)

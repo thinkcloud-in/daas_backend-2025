@@ -1,16 +1,15 @@
+from service.hyper_v_service import get_agent_url
+from typing import Optional, Union
 from temporalio import activity
 import httpx
 from service import hyper_v_service
 from db_configuration.config import SessionLocal
 from models.models import Cluster 
-# from service import proxmoxService
-# from service import hyper_v_service  # Move to inside functions
+from sqlalchemy.orm import Session
 import logging
 from urllib.parse import quote
 from datetime import datetime
 
-# If you need a DB session, import your sessionmaker factory:
-# from db_configuration.config import SessionLocal
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +160,12 @@ async def handle_action_activity(request: dict) -> dict:
 
     logger.info("Hyper-V handle_action called with payload: %s", request)
 
+    # Clean payload for the agent. Agent strictly expects 'vm_id' and 'action'
+    agent_payload = {
+        "vm_id": request.get("vm_id") or request.get("vm_name"),
+        "action": request.get("action")
+    }
+
     timeout = httpx.Timeout(
         connect=10.0,   
         read=120.0,     
@@ -168,10 +173,27 @@ async def handle_action_activity(request: dict) -> dict:
         pool=10.0
     )
     async with httpx.AsyncClient(timeout=timeout) as client:
-        response = await client.post(url, json=request)
+        response = await client.post(url, json=agent_payload)
 
     data = response.json()
     if data.get("code") == 200:
+        # Update machine status immediately in the database so the UI enables/disables the correct buttons
+        action_requested = request.get("action")
+        try:
+            with SessionLocal() as db:
+                from models.models import Machine
+                vm_id_val = request.get("vm_id") or request.get("vm_name")
+                if vm_id_val:
+                    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id_val)).first()
+                    if machine:
+                        if action_requested == "start":
+                            machine.error_message = "power-on"
+                        elif action_requested in ["stop", "force_off", "shutdown"]:
+                            machine.error_message = "power-off"
+                        db.commit()
+        except Exception as e:
+            logger.error("Failed to update DB power state: %s", str(e))
+
         return {
             "status": "success",
             "data": data.get("data")
@@ -182,7 +204,7 @@ async def handle_action_activity(request: dict) -> dict:
         "status": "failed",
         "error": data.get("msg", "Unknown error occurred")
     }
-
+#---------------------needs to check this is being used or not -------------------------------------
 @activity.defn
 async def delete_hyperv_disk_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
@@ -219,6 +241,8 @@ async def delete_hyperv_disk_activity(request: dict) -> dict:
         "disk_path": disk_path,
         "error": data.get("msg", "Unknown error occurred")
     }
+
+#---------------------needs to check this is being used or not -------------------------------------
 
 @activity.defn
 async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
@@ -473,3 +497,65 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
     except Exception as e:
         logger.error("rebuild_machine_in_pool_activity failed: %s", str(e))
         return {"status": "error", "machine": m_data.get("name"), "error": str(e)}
+
+
+@activity.defn
+async def ping_agent_activity(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
+    if cluster_id:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        agent_url = get_agent_url(cluster)
+    elif ip:
+        agent_url = f"http://{ip}:{port or 8765}"
+    else:
+        raise Exception("cluster_id or ip/port required")
+        
+    url = f"{agent_url}/v1/hyper-v/health"
+
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.get(url)
+        data = resp.json()
+        return data
+
+@activity.defn
+async def verify_standalone_hyper_v_activity(request, db: Session, cluster_id: Optional[int] = None) -> dict:
+    payload = request.dict() if hasattr(request, "dict") else request
+    
+    if cluster_id:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        agent_url = get_agent_url(cluster)
+    else:
+        ip = payload.get("ip")
+        port = payload.get("agent_port") or 8765
+        agent_url = f"http://{ip}:{port}"
+    
+    url = f"{agent_url}/v1/hyper-v/verify_standalone_hyper_v"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload)
+            data = response.json()
+
+            # Propagate HTTP-level errors from the agent
+            if response.status_code != 200:
+                detail = (
+                    data.get("detail")
+                    or data.get("message")
+                    or data.get("msg")
+                    or "Hyper-V verification failed"
+                )
+                raise Exception("Error while verifying standalone Hyper-V- ",detail)
+
+            agent_data = data.get("data", {})
+
+            # Propagate logical errors returned with HTTP 200
+            if isinstance(agent_data, dict) and agent_data.get("status") == "error":
+                detail = (
+                    agent_data.get("message")
+                    or agent_data.get("error")
+                    or "Hyper-V verification failed"
+                )
+                raise Exception("Error while verifying standalone Hyper-V",detail)
+
+            return agent_data
+    except Exception as e:
+        logger.error("Error verifying standalone Hyper-V: %s", e)
+        raise Exception(f"Hyper-V verification error: {str(e)}")

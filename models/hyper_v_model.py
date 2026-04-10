@@ -21,7 +21,7 @@ class CloneVMRequest(BaseModel):
     # ip: str
 
 class HandleActionRequest(BaseModel):
-    vm_name: str = Field(..., description="Name of the VM")
+    vm_id: str = Field(..., description="ID of the VM")
     action: str = Field(..., description="Action to perform on the VM")
 
 class HandleDeleteDiskRequest(BaseModel):

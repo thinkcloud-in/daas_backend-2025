@@ -3,6 +3,7 @@ import logging
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_machine
+from sqlalchemy.orm import Session
 
 logging.basicConfig(
     level=logging.INFO,

@@ -263,11 +263,12 @@ async def start_vm_endpoint(
     data: VMPowerRequest,
     vmid: str,
     pool_id: str = None,
-   
+    db: Session = None
 ):
     try:
-        # Route only passes parameters and returns result
-        result = await service.start_vm_proxmox(vmid, pool_id, data.email)
+        cluster_data = get_cluster_by_id(db, vmid)
+        cluster_type = cluster_data.type.lower()      
+        result = await service.start_vm_proxmox(vmid, pool_id, data.email, cluster_type)
         return result
     except Exception as e:
         return response_format.error_response(500, "Failed to start VM", str(e))
@@ -276,10 +277,12 @@ async def stop_vm_endpoint(
     data: VMPowerRequest,
     vmid: str,
     pool_id: str = None,
+    db: Session = None
 ):
     try:
-        # Route only calls pure logic, no DB access here!
-        result = await service.stop_vm_proxmox(vmid, pool_id, data.email)
+        cluster_data = get_cluster_by_id(db, vmid)
+        cluster_type = cluster_data.type.lower()
+        result = await service.stop_vm_proxmox(vmid, pool_id, data.email, cluster_type)
         return result
     except Exception as e:
         return response_format.error_response(500, "Failed to stop VM", str(e))
@@ -288,10 +291,12 @@ async def reboot_vm_endpoint(
     data: VMPowerRequest,
     vmid: str,
     pool_id: str = None,
+    db: Session = None
 ):
     try:
-        # Only pass primitive types to logic layer!
-        result = await service.reboot_vm_proxmox(vmid, pool_id, data.email)
+        cluster_data = get_cluster_by_id(db, vmid)
+        cluster_type = cluster_data.type.lower()
+        result = await service.reboot_vm_proxmox(vmid, pool_id, data.email, cluster_type)
         return result
     except Exception as e:
         return response_format.error_response(500, "Failed to reboot VM", str(e))
@@ -300,10 +305,12 @@ async def shutdown_vm_endpoint(
     data: VMPowerRequest,
     vmid: str,
     pool_id: str = None,
+    db: Session = None
 ):
     try:
-        # Only pass primitive types to logic layer!
-        result = await service.shutdown_vm_proxmox(vmid, pool_id, data.email)
+        cluster_data = get_cluster_by_id(db, vmid)
+        cluster_type = cluster_data.type.lower()
+        result = await service.shutdown_vm_proxmox(vmid, pool_id, data.email, cluster_type)
         return result
     except Exception as e:
         return response_format.error_response(500, "Failed to shutdown VM", str(e))

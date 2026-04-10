@@ -101,7 +101,19 @@ async def create_machine_activity(machine_data: dict):
         # Create the machine in Guacamole first (external system)
         guaca_machine_response = await gucamoleService.creating_connection(machine_data)
         logger.info(f"Guacamole service response: {guaca_machine_response}")
+        if guaca_machine_response.get('type') == 'BAD_REQUEST' or guaca_machine_response.get('message'):
+            error_msg = guaca_machine_response.get('message', 'Unknown Guacamole error')
+            raise Exception(f"Guacamole connection creation failed: {error_msg}")
+
         machine_identifier = guaca_machine_response.get('identifier')
+
+        if not machine_identifier:
+            raise Exception(
+                f"Guacamole returned no identifier. Response: {guaca_machine_response}"
+            )
+        # print("guaca_machine_response--------------------------------------",guaca_machine_response,type(guaca_machine_response))
+        # machine_identifier = guaca_machine_response.get('identifier')
+        # print("machine_identifier--------------------------------------",machine_identifier,type(machine_identifier))
         machine_data['identifier'] = machine_identifier
 
         with db.no_autoflush:
@@ -181,11 +193,11 @@ async def delete_machine_activity(machine_identifier: str):
                 if cluster_data.type.lower() == "proxmox":
                     await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
                 elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
-                    response = await hyper_v_service.delete_hyperv_vm(vmid)
-                    if response:
-                        vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
-                        vhdpath += machine.name
-                        await hyper_v_service.delete_disk(vhdpath)
+                    response = await hyper_v_service.delete_hyperv_vm(vmid, db)
+                    # if response:
+                    #     vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
+                    #     vhdpath += machine.name
+                        # await hyper_v_service.delete_disk(vhdpath)
                
             except Exception as e:
                 logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")

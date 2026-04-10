@@ -165,7 +165,7 @@ class LiveMigrateWorkflow:
 @workflow.defn(sandboxed=False)
 class StartVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: str, pool_id: str, email:str):
+    async def run(self, vmid: str, pool_id: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -174,7 +174,7 @@ class StartVMProxmoxWorkflow:
         )
         result = await workflow.execute_activity(
             activities_proxmox.start_vm_proxmox_activity,
-            args=[vmid,pool_id,email],
+            args=[vmid,pool_id],
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=retry_policy
         )
@@ -184,7 +184,7 @@ class StartVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class StopVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: str, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -193,7 +193,7 @@ class StopVMProxmoxWorkflow:
         )
         result = await workflow.execute_activity(
             activities_proxmox.stop_vm_proxmox_activity,
-            args=[vmid,pool_id,email],
+            args=[vmid,pool_id],
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=retry_policy
         )
@@ -203,7 +203,7 @@ class StopVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class RebootVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: str, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -212,7 +212,7 @@ class RebootVMProxmoxWorkflow:
         )
         result = await workflow.execute_activity(
             activities_proxmox.reboot_vm_proxmox_activity,
-            args=[vmid,pool_id,email],
+            args=[vmid,pool_id],
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=retry_policy
         )
@@ -223,7 +223,7 @@ class RebootVMProxmoxWorkflow:
 @workflow.defn(sandboxed=False)
 class ShutdownVMProxmoxWorkflow:
     @workflow.run
-    async def run(self, vmid: str, pool_id: str, email: str):
+    async def run(self, vmid: str, pool_id: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -232,7 +232,7 @@ class ShutdownVMProxmoxWorkflow:
         )
         result = await workflow.execute_activity(
             activities_proxmox.shutdown_vm_proxmox_activity,
-            args=[vmid,pool_id,email],
+            args=[vmid,pool_id],
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=retry_policy
         )

@@ -1,8 +1,11 @@
+from typing import Union
+from typing import Optional
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from service.temporalResource.activity import activities_hyper_v
 import logging
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -185,3 +188,40 @@ class HyperVPoolRebuildWorkflow:
             # "new_parent": parent_result,
             "machine_results": machine_results
         }
+
+@workflow.defn(sandboxed=False)
+class PingAgentWorkflow:
+    @workflow.run
+    async def run(self, cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=30),
+            maximum_attempts=5,
+        )
+        result = await workflow.execute_activity(
+            activities_hyper_v.ping_agent_activity,
+            args=[cluster_id, db, ip, port],
+            retry_policy=retry_policy,
+            start_to_close_timeout=timedelta(minutes=5),
+        )
+        return result
+
+@workflow.defn(sandboxed=False)
+class VerifyStandaloneHyperVWorkflow:
+    @workflow.run
+    async def run(self, request: dict, db: Session, cluster_id: Optional[int] = None):
+        logger.info("VerifyStandaloneHyperVWorkflow started for ip=%s", request.get("ip"))
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=20),
+            maximum_attempts=5,
+        )
+        result = await workflow.execute_activity(
+            activities_hyper_v.verify_standalone_hyper_v_activity,
+            args=[request, db, cluster_id],
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=retry_policy,
+        )
+        return result

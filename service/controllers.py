@@ -285,7 +285,6 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
         raise HTTPException(status_code=404, detail="Machine not found")
 
     machine_name = machine.name  # Assuming the table has a 'name' column
-    userName = email
 
     try:
         asyncio.create_task(workers_machine.delete_machine_worker())
@@ -300,7 +299,7 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
         search_attributes={
             "Entity": [machine_name],  
             "Action": ["Machine-Deletion"],
-            "UserName": [userName]
+            "UserName": [email]
         },
     )
     result = await handle.result()
@@ -581,6 +580,22 @@ async def delete_cluster( db: Session, cluster_id: str, email: Optional[str] = N
     client = await connectionWithClient()
 
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    
+    if cluster:
+        connected_pools = False
+        all_pools = db.query(Pool).all()
+        for p in all_pools:
+            c_val = str(p.cluster_id) if p.cluster_id else ""
+            if c_val == str(cluster_id) or c_val.endswith(f"_{cluster_id}"):
+                connected_pools = True
+                break
+        
+        if connected_pools:
+            raise HTTPException(
+                status_code=400, 
+                detail="Cannot delete cluster: there are active Pools and Machines connected to it. Please delete the pools first."
+            )
+
     cluster_name = cluster.name if cluster else f"Cluster-{cluster_id}"
     userName = email if email else "Unknown User"
  

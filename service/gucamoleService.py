@@ -501,7 +501,7 @@ async def delete_connection(connection):
 async def modify_connection(machine_data:Machine):
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     guacamole_login =  await login_with_guacamole()
-    url = gucamole_update_url+machine_data['identifier']+"?token="+ guacamole_login
+    url = gucamole_update_url+str(machine_data['identifier'])+"?token="+ guacamole_login
     payload=return_payload(machine_data)
     headers = {
     'Content-Type': 'application/json'

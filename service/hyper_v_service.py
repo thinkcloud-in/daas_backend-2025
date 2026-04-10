@@ -30,7 +30,13 @@ async def resolve_cluster_from_vm(vm_id: str, db: Session) -> Cluster:
     pool = db.query(Pool).filter(Pool.id == machine.pool_id).first()
     if not pool:
         raise HTTPException(status_code=404, detail=f"Pool for machine {vm_id} not found")
-    cluster = db.query(Cluster).filter(Cluster.id == pool.cluster_id).first()
+    
+    try:
+        cluster_id_val = str(pool.cluster_id).split('_')[1] if '_' in str(pool.cluster_id) else pool.cluster_id
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id_val)).first()
+    except (IndexError, ValueError, TypeError):
+        raise HTTPException(status_code=500, detail=f"Invalid cluster reference in pool: {pool.cluster_id}")
+
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     return cluster
@@ -72,21 +78,35 @@ async def clone_vm_for_single_node(request) -> dict:
     result =  await handle.result()
     return result
 
-async def ping_agent(cluster_id: Optional[int], db: Session = None, ip: str = None, port: Union[int, str] = None):
-    if cluster_id:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        agent_url = get_agent_url(cluster)
-    elif ip:
-        agent_url = f"http://{ip}:{port or 8765}"
-    else:
-        raise HTTPException(status_code=400, detail="cluster_id or ip/port required")
-        
-    url = f"{agent_url}/v1/hyper-v/health"
+async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
+    workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
-        return data  
+    client = await connectionWithClient()
+    if client is None:
+        logger.error("Temporal client connection failed")
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    try:
+        from service.temporalResource.workflows import workflows_hyper_v
+        logger.info("Starting workflow %s with payload keys: %s", cluster_id, db, ip, port)
+        handle = await client.start_workflow(
+            workflows_hyper_v.PingAgentWorkflow.run,
+            args=[cluster_id, db, ip, port],
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+            # search_attributes={
+            #     "Entity": [str(cluster_id)],
+            #     "Action": [f"ping_agent_hyperv"],  
+            #     "UserName": [email]
+            # }
+        )
+
+    except Exception as e:
+        logger.exception("Failed to start workflow %s: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+
+    result =  await handle.result()
+    return result
 
 async def generate_mac_activity(cluster_id:int, db:Session) -> str:
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -184,7 +204,6 @@ async def delete_vm(cluster_id:int, vm_id: str, db:Session) -> dict:
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    agent_url = get_agent_url(cluster)
     client = await connectionWithClient()
     if client is None:
         logger.error("Temporal client connection failed")
@@ -245,15 +264,18 @@ async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
     
 async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
     payload = request.dict() if hasattr(request, "dict") else request
-    vm_name = payload.get("vm_name")
+    vm_id_val = payload.get("vm_id") or payload.get("vm_name")
     
     if not cluster_id:
-        cluster = await resolve_cluster_from_vm(vm_name, db)
+        cluster = await resolve_cluster_from_vm(vm_id_val, db)
     else:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
 
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
+        
+    # Inject cluster_id into the payload so the Temporal activity knows which agent to contact
+    payload["cluster_id"] = cluster.id
         
     client = await connectionWithClient()
     if client is None:
@@ -261,9 +283,11 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
 
     try:
         from service.temporalResource.workflows import workflows_hyper_v
+        workflow_id = f"hyperv-handle-action-{uuid.uuid4().hex}"
         handle = await client.start_workflow(
             workflows_hyper_v.HandleActionHyperVWorkflow.run,
             args=[payload],
+            id=workflow_id,
             task_queue="hyperv-task-queue",
         )
     except Exception as e:
@@ -347,7 +371,12 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
         pool = db.query(Pool).filter(Pool.id == pool_id).first()
         if not pool:
             raise HTTPException(status_code=404, detail="Pool not found")
-        cluster = db.query(Cluster).filter(Cluster.id == pool.cluster_id).first()
+            
+        cluster_id_val = pool.cluster_id
+        if cluster_id_val and "_" in str(cluster_id_val):
+            cluster_id_val = int(str(cluster_id_val).split("_")[1])
+            
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id_val).first()
     else:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
 
@@ -374,51 +403,32 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
         logger.error(f"Failed to start pool rebuild workflow: {e}")
         return {"status": "error", "error": str(e)}
 
-async def verify_standalone_hyper_v(request, cluster_id: int = None, db: Session = None ):
-    payload = request.dict() if hasattr(request, "dict") else request
-    
-    if cluster_id:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        agent_url = get_agent_url(cluster)
-    else:
-        # FALLBACK: Use IP and Port from the request body
-        ip = payload.get("ip")
-        port = payload.get("agent_port") or 8765
-        agent_url = f"http://{ip}:{port}"
-    
-    url = f"{agent_url}/v1/hyper-v/verify_standalone_hyper_v"
+async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
+    workflow_id = f"verify_standalone_hyper_v-{uuid.uuid4().hex}"
+
+    client = await connectionWithClient()
+    if client is None:
+        logger.error("Temporal client connection failed")
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload)
-            data = response.json()
+        from service.temporalResource.workflows import workflows_hyper_v
+        logger.info("Starting workflow %s with payload keys: %s",request.ip, request.username, request.password, request.agent_port, cluster_id) 
+        handle = await client.start_workflow(
+            workflows_hyper_v.VerifyStandaloneHyperVWorkflow.run,
+            args=[request, db, cluster_id],
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+            # search_attributes={
+            #     "Entity": [str(cluster_id)],
+            #     "Action": [f"ping_agent_hyperv"],  
+            #     "UserName": [email]
+            # }
+        )
 
-            # Propagate HTTP-level errors from the agent
-            if response.status_code != 200:
-                detail = (
-                    data.get("detail")
-                    or data.get("message")
-                    or data.get("msg")
-                    or "Hyper-V verification failed"
-                )
-                raise HTTPException(status_code=response.status_code, detail=detail)
-
-            agent_data = data.get("data", {})
-
-            # Propagate logical errors returned with HTTP 200
-            if isinstance(agent_data, dict) and agent_data.get("status") == "error":
-                detail = (
-                    agent_data.get("message")
-                    or agent_data.get("error")
-                    or "Hyper-V verification failed"
-                )
-                raise HTTPException(status_code=400, detail=detail)
-
-            return agent_data
-    except HTTPException:
-        raise
-    except httpx.TimeoutException:
-        logger.error("Timeout while verifying standalone Hyper-V at %s", url)
-        raise HTTPException(status_code=504, detail="Connection to Hyper-V agent timed out")
     except Exception as e:
-        logger.error("Error verifying standalone Hyper-V: %s", e)
-        raise HTTPException(status_code=500, detail=f"Hyper-V verification error: {str(e)}")
+        logger.exception("Failed to start workflow %s: %s", e)
+        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+
+    result =  await handle.result()
+    return result

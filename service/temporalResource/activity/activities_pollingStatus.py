@@ -127,7 +127,6 @@ async def poll_and_update_machine_status_activity():
         for machine in all_machines:
             if machine.status == "COMPLETED" and machine.vm_id in vmid_status_map:
                 machine.error_message = vmid_status_map[machine.vm_id]
-                print('machine activity---------------------------------------------------', machine.id, machine.vm_id, machine.error_message)
                 logger.info(f"Set Machine.id={machine.id} vm_id={machine.vm_id} error_message={machine.error_message}")
 
         db.commit()
