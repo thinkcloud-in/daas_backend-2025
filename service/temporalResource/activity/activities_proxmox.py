@@ -593,12 +593,14 @@ async def reboot_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
                 "cluster_id":cluster_id
             }
             result = await handle_action_activity(hyperv_request)
+            print('----------------------------------result_handle_action_activity', result)
             if result.get("status") == "success":
                 machine.error_message = "reboot"
                 db.commit()
                 return {"vm_status": "reboot", "msg": "VM rebooted successfully."}
             else:
-                return {"vm_status": "error", "msg": f"Reboot failed: {result.get('error', 'Unknown error')}"}
+                # return {"vm_status": "error", "msg": f"Reboot failed: {result.get('error', 'Unknown error')}"}
+                raise Exception(f"Reboot failed: {result.get('error', 'Unknown error')}")
 
         details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
         if details.get("status") != "success":
