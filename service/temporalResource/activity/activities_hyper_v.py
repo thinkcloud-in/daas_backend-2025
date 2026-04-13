@@ -491,17 +491,17 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
                     for v in pool.pool_vmids
                 ]
             
-            machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
-            for m in machines:
-                m.error_message = "power-off"
+            # machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
+            # for m in machines:
+            #     m.error_message = "power-off"
 
-            if request.get("vhdPath"):
-                if pool.pool_template_vm_id is None:
-                    pool.pool_template_vm_id = {}
-                # pool_template_vm_id dict hai — uske andar vhdPath update karo
-                updated_template = dict(pool.pool_template_vm_id)
-                updated_template["vhdPath"] = request.get("vhdPath")
-                pool.pool_template_vm_id = updated_template
+            # if request.get("vhdPath"):
+            #     if pool.pool_template_vm_id is None:
+            #         pool.pool_template_vm_id = {}
+            #     # pool_template_vm_id dict hai — uske andar vhdPath update karo
+            #     updated_template = dict(pool.pool_template_vm_id)
+            #     updated_template["vhdPath"] = request.get("vhdPath")
+            #     pool.pool_template_vm_id = updated_template
 
             db.commit()
 
