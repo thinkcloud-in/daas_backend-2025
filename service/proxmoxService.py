@@ -538,7 +538,7 @@ def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign
             new_status[k] = workflow_status_dict.get(k, {"status": None, "error": None})
     return dict(new_status)
 
-async def vm_rebuild(vmid: int, pool_id: str,email: str):
+async def vm_rebuild(vmid: int, pool_id: str):
     db = next(get_db())
     global _worker_started
     if not _worker_started:
@@ -552,7 +552,7 @@ async def vm_rebuild(vmid: int, pool_id: str,email: str):
         # Start the VM rebuild workflow
         handle = await client.start_workflow(
             workflows_proxmox.VmRebuildWorkflow.run,
-            args=[vmid, pool_id,email],
+            args=[vmid, pool_id],
             id=workflow_id,
             task_queue="vm-rebuild-task-queue",
         )

@@ -176,8 +176,6 @@ async def handle_action_activity(request: dict) -> dict:
         response = await client.post(url, json=agent_payload)
 
     data = response.json()
-    print('------------------------------activity_handle_action', data.get("code"))
-    logger.info("----------------Hyper-V handle_action response: %s", data)
     if data.get("code") == 200:
         # Update machine status immediately in the database so the UI enables/disables the correct buttons
         action_requested = request.get("action")
