@@ -90,12 +90,12 @@ def smtp_status_update(smtpStatus: bool, db):
     
 def smtp_test_mail(data, db):
     try:
-        config = db.query(SMTP).first()
-        if config is None:
-            raise HTTPException(status_code=404, detail="SMTP configuration not found")
+        # config = db.query(SMTP).first()
+        # if config is None:
+        #     raise HTTPException(status_code=404, detail="SMTP configuration not found")
         
         smtp_serverip = data.serverIP
-        smtp_port = data.serverPort
+        smtp_port = int(data.serverPort)
         smtp_mail = data.email
         smtp_username = data.userName
         smtp_password = data.password
@@ -115,7 +115,9 @@ def smtp_test_mail(data, db):
             server = smtplib.SMTP_SSL(smtp_serverip, smtp_port)
         else:
             server = smtplib.SMTP(smtp_serverip, smtp_port)
+            server.ehlo()
             server.starttls()
+            server.ehlo()
         
         if smtp_userAuth == "true": # Only login if authentication is enabled
             server.login(smtp_username, smtp_password)
@@ -124,8 +126,10 @@ def smtp_test_mail(data, db):
         server.sendmail(smtp_mail, smtp_receiverMail, text)
         server.quit()
         return {"message": "Test email sent successfully"}
+    except HTTPException as e:
+        raise
     except Exception as e:
-        if server:
+        if server is not None:
             try:
                 server.quit()
             except:
