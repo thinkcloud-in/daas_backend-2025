@@ -80,6 +80,8 @@ async def stop_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: Sess
 @proxmox_router.post("/reboot_vm", response_model=APIResponse[Any])
 async def reboot_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: Session = Depends(get_db)):
     res = await proxmox_controller.reboot_vm_endpoint(data, vmid, pool_id, db)
+    # if res.get("status") == "failed":
+    #     return response_format.error_response(500, "Failed to reboot VM.", res)
     return response_format.success_response(200, "VM rebooted successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/shutdown_vm", response_model=APIResponse[Any])

@@ -176,6 +176,8 @@ async def handle_action_activity(request: dict) -> dict:
         response = await client.post(url, json=agent_payload)
 
     data = response.json()
+    print('------------------------------activity_handle_action', data.get("code"))
+    logger.info("----------------Hyper-V handle_action response: %s", data)
     if data.get("code") == 200:
         # Update machine status immediately in the database so the UI enables/disables the correct buttons
         action_requested = request.get("action")
@@ -200,10 +202,11 @@ async def handle_action_activity(request: dict) -> dict:
         }
 
     logger.error("Hyper-V handle_action failed: %s", data)
-    return {
-        "status": "failed",
-        "error": data.get("msg", "Unknown error occurred")
-    }
+    # return {
+    #     "status": "failed",
+    #     "error": data.get("msg", "Unknown error occurred")
+    # }
+    raise Exception(data.get("msg", "Unknown error occurred"))
 #---------------------needs to check this is being used or not -------------------------------------
 @activity.defn
 async def delete_hyperv_disk_activity(request: dict) -> dict:

@@ -148,8 +148,8 @@ class LiveMigrateWorkflow:
                     initial_interval=timedelta(seconds=2),
                     backoff_coefficient=2.0,
                     maximum_interval=timedelta(seconds=30),
-                    maximum_attempts=5,
-                ),
+                    maximum_attempts=3,
+                ),  
                 start_to_close_timeout=timedelta(seconds=120),
             )
             new_time = result.get("max_time", last_time)
@@ -170,7 +170,7 @@ class StartVMProxmoxWorkflow:
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(seconds=30),
-            maximum_attempts=5,
+            maximum_attempts=3,
         )
         result = await workflow.execute_activity(
             activities_proxmox.start_vm_proxmox_activity,
@@ -189,7 +189,7 @@ class StopVMProxmoxWorkflow:
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(seconds=30),
-            maximum_attempts=5,
+            maximum_attempts=3,
         )
         result = await workflow.execute_activity(
             activities_proxmox.stop_vm_proxmox_activity,
@@ -208,7 +208,7 @@ class RebootVMProxmoxWorkflow:
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
             maximum_interval=timedelta(seconds=30),
-            maximum_attempts=5,
+            maximum_attempts=3,
         )
         result = await workflow.execute_activity(
             activities_proxmox.reboot_vm_proxmox_activity,

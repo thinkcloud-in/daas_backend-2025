@@ -23,6 +23,7 @@ INFLUXDB_URL = os.getenv("INFLUXDB_URL")
 INFLUXDB_ORG = os.getenv("INFLUXDB_ORG")
 INFLUXDB_TOKEN = os.getenv("INFLUXDB_TOKEN")
 INFLUXDB_BUCKET = os.getenv("INFLUXDB_BUCKET")
+INFLUXDB_PORT = os.getenv("INFLUXDB_PORT")
 
 
 def unique_id():
@@ -311,27 +312,22 @@ def delete_cluster_proxmox(cluster_data, db: Session):
         return f"Cluster '{cluster_data.name}' deleted successfully."
     else:
         return f"Cluster '{cluster_data.name}' not found in the database."
- 
- 
- 
 
-# Example: fetch from env
-
- 
 def add_influxdb_metric_server(cluster_data, payload):
     db = next(get_db())
     try:
         api_token = get_api_token(db, cluster_data.name)
         headers = {
             "Authorization": f"PVEAPIToken={api_token}",
-            "Content-Type": "application/json"
         }
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
         url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
         
+        # Prepare payload: ensure it matches the API schema and remove redundant 'id'
         payload = {k: v for k, v in payload.items()}
+        payload.pop("id", None)  # Already in URL
         
-        response = requests.post(url, headers=headers, data=json.dumps(payload), verify=False)
+        response = requests.post(url, headers=headers, data=payload, verify=False)
         response.raise_for_status()
         return response.json()
     finally:
@@ -381,13 +377,12 @@ def create_and_get_metric_server(cluster_data):
         "type": "influxdb",
         "id": cluster_data.name,
         "server": parsed_url.hostname,
-        "port": parsed_url.port if parsed_url.port else (443 if parsed_url.scheme == "https" else 80),
+        "port": int(INFLUXDB_PORT or (443 if parsed_url.scheme == "https" else 8086)),
         "influxdbproto": parsed_url.scheme,
         "organization": INFLUXDB_ORG,
         "bucket": INFLUXDB_BUCKET,
         "token": INFLUXDB_TOKEN,
         "verify-certificate": 0,
-        # "otel-verify-ssl": False
     }
     
     add_influxdb_metric_server(cluster_data, influxdb_payload)
@@ -435,7 +430,8 @@ def delete_influxdb_metric_server(cluster_data):
         }
 
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
+        server_id = cluster_data.name
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
         try:
             response = requests.delete(url, headers=headers, verify=False)
             response.raise_for_status()
@@ -452,7 +448,7 @@ def can_delete_metric_server(db, cluster_id):
         return False, "Metric server integration not found."
     if not (ms.monitoring and ms.is_custom_integration):
         return False, "You cannot delete this integration because it is not a custom DB integration managed by you."
-    return True, ""
+    return True
 
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
     db: Optional[Session] = None
