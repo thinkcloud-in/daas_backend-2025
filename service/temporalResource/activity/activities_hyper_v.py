@@ -444,6 +444,10 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "os_type": template_data.get("os_type"),
             "subnet": template_data.get("subnet"),
             "dns": template_data.get("dns"),
+            "domain": template_data.get("pool_ad_domain"),
+            "ou": template_data.get("pool_ad_path"),
+            "username": template_data.get("pool_ad_username"),
+            "domain_password": template_data.get("pool_ad_password"),
         }
 
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -488,6 +492,19 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
                     str(new_vm_id) if str(v) == str(old_vm_id) else str(v)
                     for v in pool.pool_vmids
                 ]
+            
+            machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
+            for m in machines:
+                m.error_message = "power-off"
+
+            if request.get("vhdPath"):
+                if pool.pool_template_vm_id is None:
+                    pool.pool_template_vm_id = {}
+                # pool_template_vm_id dict hai — uske andar vhdPath update karo
+                updated_template = dict(pool.pool_template_vm_id)
+                updated_template["vhdPath"] = request.get("vhdPath")
+                pool.pool_template_vm_id = updated_template
+
             db.commit()
 
         return {
