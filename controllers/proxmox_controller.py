@@ -352,7 +352,7 @@ async def rebuild_vm_endpoint(
         except ValueError:
             proxmox_vmid = vmid
             
-        vm_status = await service.vm_rebuild(proxmox_vmid, pool_id, data.email)
+        vm_status = await service.vm_rebuild(proxmox_vmid, pool_id)
         return {"vm_status": vm_status, "msg": "VM rebuild initiated."}
     # except HTTPException as he:
     #     # Re-raise HTTP exceptions, especially from get_cluster_by_id if any
