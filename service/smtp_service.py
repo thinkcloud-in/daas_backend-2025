@@ -90,9 +90,9 @@ def smtp_status_update(smtpStatus: bool, db):
     
 def smtp_test_mail(data, db):
     try:
-        config = db.query(SMTP).first()
-        if config is None:
-            raise HTTPException(status_code=404, detail="SMTP configuration not found")
+        # config = db.query(SMTP).first()
+        # if config is None:
+        #     raise HTTPException(status_code=404, detail="SMTP configuration not found")
         
         smtp_serverip = data.serverIP
         smtp_port = int(data.serverPort)
