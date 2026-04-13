@@ -442,10 +442,10 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "os_type": template_data.get("os_type"),
             "subnet": template_data.get("subnet"),
             "dns": template_data.get("dns"),
-            "domain": pool.get("pool_ad_domain"),
-            "ou": pool.get("pool_ad_path"),
-            "username": pool.get("pool_ad_username"),
-            "domain_password": pool.get("pool_ad_password"),
+            "domain": pool.pool_ad_domain,
+            "ou": pool.pool_ad_path,
+            "username": pool.pool_ad_username,
+            "domain_password": pool.pool_ad_password,
         }
 
         async with httpx.AsyncClient(timeout=180.0) as client:
