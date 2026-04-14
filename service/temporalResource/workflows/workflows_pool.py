@@ -188,5 +188,6 @@ class DomainJoinWorkflow:
             )
             return result
         except Exception as e:
-            raise Exception(f"Domain join workflow error: {str(e)}")
+            print("Error from Domain Join Workflow", e)
+            raise
 
