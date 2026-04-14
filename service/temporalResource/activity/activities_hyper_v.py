@@ -493,7 +493,7 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
                 if pool.pool_template_vm_id is None:
                     pool.pool_template_vm_id = {}
                 updated_template = dict(pool.pool_template_vm_id)
-                updated_template["vhdPath"] = request.get("vhdPath")
+                updated_template["PvhdPath"] = request.get("vhdPath")
                 pool.pool_template_vm_id = updated_template
             
             machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
