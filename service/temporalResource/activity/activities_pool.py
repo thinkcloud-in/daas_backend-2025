@@ -985,18 +985,6 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
                         print("Script attached successfully")
                         break
 
-                # cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
-
-                # stdin, stdout, stderr = ssh.exec_command(cmd)
-
-                # exit_status = stdout.channel.recv_exit_status()
-                # out = stdout.read().decode()
-                # err = stderr.read().decode()
-
-                # print("EXIT:", exit_status)
-                # print("OUT:", out)
-                # print("ERR:", err)
-
         except Exception as e:
             return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
         finally:

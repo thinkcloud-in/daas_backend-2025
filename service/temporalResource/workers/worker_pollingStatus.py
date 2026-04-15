@@ -11,14 +11,14 @@ async def status_poller_worker():
     try:
         client = await connectionWithClient()
         
-        # Create worker with proper configuration
         worker = Worker(
             client,
             task_queue="status-poller-task-queue",
             workflows=[workflows_pollingStatus.StatusPollerWorkflow],
             activities=[
                 activities_pollingStatus.poll_and_update_machine_status_activity,
-                activities_pollingStatus.get_proxmox_vm_status_activity,
+                # activities_pollingStatus.get_proxmox_vm_status_activity,
+                # activities_pollingStatus.get_hyperv_vm_status_activity,
             ],
             max_concurrent_workflow_tasks=10,
             max_concurrent_activities=5,
