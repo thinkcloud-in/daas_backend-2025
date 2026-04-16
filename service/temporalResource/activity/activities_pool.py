@@ -46,6 +46,7 @@ async def create_pool_activity(request: dict) -> dict:
         existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
         if existing_pool:
             return {
+                "code": 409,
                 "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
             }
         
@@ -111,13 +112,28 @@ async def create_pool_activity(request: dict) -> dict:
             cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
             if cluster_type in ("hyper-v", "hyperv"):
                 response = await clone_vm_for_single_node(clone_payload_dict)
+                if response.get("code") != 200:
+                    msg = response.get("msg")
+
+                    if not isinstance(msg, str):
+                        msg = str(msg)
+                    lines = [line.strip() for line in msg.split("\n") if line.strip()]
+
+                    clean_error = (
+                        lines[-1] if "0x" in lines[-1] or "exists" in lines[-1].lower()
+                        else lines[0] if lines
+                        else "Unknown error"
+                    )
+                    return {
+                        "code": response.get("code"),
+                        "msg": clean_error
+                    }
             elif cluster_type == "proxmox":
                 response = await clone_vm(clone_payload_dict)
                 if response.get("error_type") == "clone_failed":
                     return {
-                        "status": "error",
-                        "error_type": response.get("error_type"),
-                        "error": response.get("error")
+                        "code": 500,
+                        "msg": response.get("error_type") + ": " + response.get("error")
                     }
             assigned_vms = response.get("vms", [])
     

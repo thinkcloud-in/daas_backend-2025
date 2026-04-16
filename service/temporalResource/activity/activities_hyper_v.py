@@ -86,7 +86,10 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
             
         if data.get("code") != 200:
             logger.warning("Agent returned non-200 while cloning %s: %s", vm_name, data)
-            continue
+            msg = data.get("data")
+            if not isinstance(msg, str):
+                msg = str(msg)
+            return {"code": data.get("code"), "msg": msg}
 
         if isinstance(data.get("data"), dict) and "VM" in data.get("data"):
             vm_info = data["data"]["VM"]
