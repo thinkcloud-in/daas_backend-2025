@@ -438,7 +438,7 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "vhdPath": template_data.get("vhdPath"),
             "switch": template_data.get("switch"),
             "generation": template_data.get("generation"),
-            "PvhdPath": request.get("vhdPath"), 
+            "PvhdPath": request.get("vhdPath"),
             "ip": machine_ip,
             "password": template_data.get("password"),
             "gateway": template_data.get("gateway"),
