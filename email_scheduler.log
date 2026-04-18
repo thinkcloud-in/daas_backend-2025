@@ -1,5 +1,0 @@
-2024-12-16 11:11:04,190 - INFO - temporalService - Initializing Temporal schedules...
-2024-12-16 11:11:04,204 - INFO - temporalService - Schedule created successfully: user1-d-Se-2024121611-1104
-2024-12-16 11:11:04,205 - INFO - temporalService - Successfully connected to Temporal server
-2024-12-16 11:11:04,210 - WARNING - _restrictions - __mro_entries__ on http.client.IncompleteRead restricted
-2024-12-16 11:11:04,210 - ERROR - temporalService - Worker initialization error: Failed validating workflow TestEmail

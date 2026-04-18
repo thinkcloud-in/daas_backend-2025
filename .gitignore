@@ -12,3 +12,4 @@ env
 app.log
 email_scheduler.log
 scratch/
+alter_db2.py
