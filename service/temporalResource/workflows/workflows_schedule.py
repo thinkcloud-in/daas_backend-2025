@@ -1,4 +1,3 @@
-from fastapi import HTTPException
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
@@ -25,7 +24,7 @@ class get_report_data_workflow:
             )
             return result
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
         
 
 @workflow.defn(sandboxed=False)
@@ -47,7 +46,7 @@ class get_report_data_by_id_workflow:
             )
             return result
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
         
 
 @workflow.defn(sandboxed=False)
@@ -69,7 +68,7 @@ class get_report_along_report_workflow:
             )
             return result
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
         
 @workflow.defn(sandboxed=False)
 class update_schedule_data_id_workflow:
@@ -92,8 +91,7 @@ class update_schedule_data_id_workflow:
             
             return result
         except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
         
 
 @workflow.defn(sandboxed=False)
@@ -114,5 +112,5 @@ class delete_schedule_data_id_workflow:
                 start_to_close_timeout=timedelta(seconds=60),
             )            
             return result
-        except Exception as e:            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+        except Exception as e:
+            raise Exception(f"Error in workflow: {str(e)}")

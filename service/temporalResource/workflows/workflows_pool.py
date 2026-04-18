@@ -95,8 +95,8 @@ class RetrievePoolDataWorkflow:
             )
             
             return result
-        except Exception:
-             raise Exception(500, detail="Error in workflow")
+        except Exception as e:
+             raise Exception(f"Error in workflow: {str(e)}")
         
     
 @workflow.defn(sandboxed=False)
@@ -118,8 +118,8 @@ class GetListofPoolNamesWorkflow:
             )
             
             return result
-        except Exception:
-             raise Exception(500, detail="Error in workflow")
+        except Exception as e:
+             raise Exception(f"Error in workflow: {str(e)}")
         
 
 @workflow.defn(sandboxed=False)
@@ -141,8 +141,8 @@ class get_all_pools_workflow:
             )
             
             return result
-        except Exception:
-             raise Exception(500, detail="Error in workflow")
+        except Exception as e:
+             raise Exception(f"Error in workflow: {str(e)}")
         
 
 @workflow.defn(sandboxed=False)
@@ -166,8 +166,7 @@ class get_pool_details_ID_workflow:
             
             return result
         except Exception as e:
-            
-            raise HTTPException(status_code=500, detail=f"Error in workflow: {str(e)}")
+            raise Exception(f"Error in workflow: {str(e)}")
 
 @workflow.defn(sandboxed=False)
 class DomainJoinWorkflow:

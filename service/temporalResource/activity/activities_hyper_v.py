@@ -3,7 +3,7 @@ from typing import Optional, Union
 from temporalio import activity
 import httpx
 from service import hyper_v_service
-from db_configuration.config import SessionLocal
+from db_configuration.config import SessionLocal, get_db
 from models.models import Cluster 
 from sqlalchemy.orm import Session
 import logging
@@ -16,11 +16,14 @@ logger = logging.getLogger(__name__)
 @activity.defn
 async def clone_vm_single_node_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
-    with SessionLocal() as db:
+    db: Session = SessionLocal()
+    try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise Exception(f"Cluster with ID {cluster_id} not found")
         agent_url = hyper_v_service.get_agent_url(cluster)
+    finally:
+        db.close()
     
         url = f"{agent_url}/v1/hyper-v/clone_vm_for_single_node"
         template = request.get("template_vm_id", {}) or {}
@@ -42,10 +45,22 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
         ou = request.get("ou")
         username = request.get("username")
         domain_password = request.get("domain_password")
+        
+        # Pull resource settings from the top level (from the Pool columns)
+        # or fallback to the template if not present at the top level
+        dynamic_memory = request.get("dynamic_memory") if request.get("dynamic_memory") is not None else template.get("dynamic_memory")
+        minimum_memory = request.get("minimum_memory") if request.get("minimum_memory") is not None else template.get("minimum_memory")
+        maximum_memory = request.get("maximum_memory") if request.get("maximum_memory") is not None else template.get("maximum_memory")
+        buffer_memory = request.get("buffer_memory") if request.get("buffer_memory") is not None else template.get("buffer_memory")
+        processor_count = request.get("processor_count") if request.get("processor_count") is not None else template.get("processor_count")
 
         # Only fetch existing VM names from Hyper-V
         try:
-            hyperv_vms = await hyper_v_service.get_vms(cluster.id, db)
+            db_inner: Session = SessionLocal()
+            try:
+                hyperv_vms = await hyper_v_service.get_vms(cluster.id, db_inner)
+            finally:
+                db_inner.close()
             hyperv_names = []
             for vm in hyperv_vms:
                 name = vm.get("VMName") or vm.get("Name")
@@ -77,7 +92,12 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
             "domain": domain,
             "ou": ou,
             "username": username,
-            "domain_password": domain_password
+            "domain_password": domain_password,
+            "dynamic_memory": dynamic_memory,
+            "minimum_memory": minimum_memory,
+            "maximum_memory": maximum_memory,
+            "buffer_memory": buffer_memory,
+            "processor_count": processor_count
         }
         logger.debug("Payload for clone_vm_for_single_node: %s", payload)
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -115,11 +135,18 @@ async def clone_vm_single_node_activity(request: dict) -> dict:
 @activity.defn
 async def delete_vm_single_node_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
-    with SessionLocal() as db:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise Exception(f"Cluster with ID {cluster_id} not found")
-        agent_url = hyper_v_service.get_agent_url(cluster)
+    db: Session = SessionLocal()
+    try:
+        try:
+            cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if not cluster:
+                raise Exception(f"Cluster with ID {cluster_id} not found")
+            agent_url = hyper_v_service.get_agent_url(cluster)
+        except Exception as e:
+            logger.error("Error fetching cluster for VM deletion: %s", str(e))
+            raise
+    finally:
+        db.close()
     vm_id = request.get("vm_id")
 
     if not vm_id:
@@ -151,11 +178,15 @@ async def delete_vm_single_node_activity(request: dict) -> dict:
 @activity.defn
 async def handle_action_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
-    with SessionLocal() as db:
+    db: Session = SessionLocal()
+    try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise Exception(f"Cluster with ID {cluster_id} not found")
         agent_url = hyper_v_service.get_agent_url(cluster)
+    finally:
+        db.close()
+
     url = f"{agent_url}/v1/hyper-v/handle_action"
 
     logger.info("Hyper-V handle_action called with payload: %s", request)
@@ -180,17 +211,20 @@ async def handle_action_activity(request: dict) -> dict:
         # Update machine status immediately in the database so the UI enables/disables the correct buttons
         action_requested = request.get("action")
         try:
-            with SessionLocal() as db:
+            db_inner: Session = SessionLocal()
+            try:
                 from models.models import Machine
                 vm_id_val = request.get("vm_id") or request.get("vm_name")
                 if vm_id_val:
-                    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id_val)).first()
+                    machine = db_inner.query(Machine).filter(Machine.vm_id == str(vm_id_val)).first()
                     if machine:
                         if action_requested == "start":
                             machine.error_message = "power-on"
                         elif action_requested in ["stop", "force_off", "shutdown"]:
                             machine.error_message = "power-off"
-                        db.commit()
+                        db_inner.commit()
+            finally:
+                db_inner.close()
         except Exception as e:
             logger.error("Failed to update DB power state: %s", str(e))
 
@@ -209,11 +243,14 @@ async def handle_action_activity(request: dict) -> dict:
 @activity.defn
 async def delete_hyperv_disk_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
-    with SessionLocal() as db:
+    db: Session = SessionLocal()
+    try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
         if not cluster:
             raise Exception(f"Cluster with ID {cluster_id} not found")
         agent_url = hyper_v_service.get_agent_url(cluster)
+    finally:
+        db.close()
     disk_path = request.get("disk_path")
 
     if not disk_path:
@@ -249,8 +286,9 @@ async def delete_hyperv_disk_activity(request: dict) -> dict:
 async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
     from models.models import Machine, Pool
     vm_id = request.get("vm_id")
+    db: Session = SessionLocal()
     try:
-        with SessionLocal() as db:
+        try:
             cluster = await hyper_v_service.resolve_cluster_from_vm(vm_id, db)
             agent_url = hyper_v_service.get_agent_url(cluster)
             machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
@@ -286,6 +324,11 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
             subnet = template_data.get('subnet')
             dns = template_data.get('dns')
             ip = machine.hostname # Use existing IP assigned to machine
+            dynamic_memory = template_data.get("dynamic_memory")
+            minimum_memory = template_data.get("minimum_memory")
+            maximum_memory = template_data.get("maximum_memory")
+            buffer_memory = template_data.get("buffer_memory")
+            processor_count = template_data.get("processor_count")
 
             payload = {
                 "vm_name": machine.name,
@@ -303,7 +346,12 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
                 "domain": pool.pool_ad_domain,
                 "ou": pool.pool_ad_path,
                 "username": pool.pool_ad_username,
-                "domain_password": pool.pool_ad_password
+                "domain_password": pool.pool_ad_password,
+                "dynamic_memory": dynamic_memory,
+                "minimum_memory": minimum_memory,
+                "maximum_memory": maximum_memory,
+                "buffer_memory": buffer_memory,
+                "processor_count": processor_count
             }
 
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -352,14 +400,18 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
                 logger.error(f"Could not find new VM ID for {machine.name} after cloning")
 
             return {"status": "success", "vm_id": vm_id, "machine_name": machine.name}
-    except Exception as e:
-        logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
-        return {"status": "error", "error": str(e)}
+        except Exception as e:
+            db.rollback()
+            logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
+            return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 
 @activity.defn
 async def get_pool_rebuild_data_activity(request: dict) -> dict:
     from models.models import Pool, Machine
-    with SessionLocal() as db:
+    db: Session = SessionLocal()
+    try:
         pool_id = request.get("pool_id")
         try:
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
@@ -385,6 +437,8 @@ async def get_pool_rebuild_data_activity(request: dict) -> dict:
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
+    finally:
+        db.close()
 
 import re
 def normalize_template_paths(template_data: dict) -> dict:
@@ -409,12 +463,15 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
     machine_ip = m_data.get("hostname")
 
     try:
-        with SessionLocal() as db:
+        db: Session = SessionLocal()
+        try:
             cluster = await hyper_v_service.resolve_cluster_from_vm(old_vm_id, db)
             agent_url = hyper_v_service.get_agent_url(cluster)
             machine = db.query(Machine).filter(Machine.id == m_id).first()
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
             template_data = pool.pool_template_vm_id
+        finally:
+            db.close()
 
         delete_vm_url = f"{agent_url}/v1/hyper-v/delete_vm/{old_vm_id}"
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -481,7 +538,8 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
         if not new_vm_id:
             return {"status": "error", "machine": machine_name, "error": "VM ID not found after clone"}
 
-        with SessionLocal() as db:
+        db: Session = SessionLocal()
+        try:
             machine = db.query(Machine).filter(Machine.id == m_id).first()
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
             machine.vm_id = str(new_vm_id)
@@ -501,6 +559,8 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
                 m.error_message = "power-off"
 
             db.commit()
+        finally:
+            db.close()
 
         return {
             "status": "success",
@@ -515,62 +575,75 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
 
 
 @activity.defn
-async def ping_agent_activity(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
-    if cluster_id:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        agent_url = get_agent_url(cluster)
-    elif ip:
-        agent_url = f"http://{ip}:{port or 8765}"
-    else:
-        raise Exception("cluster_id or ip/port required")
-        
-    url = f"{agent_url}/v1/hyper-v/health"
+async def ping_agent_activity(cluster_id: Optional[int], ip: str, port: Union[int, str]):
+    db: Session = SessionLocal()
+    try:
+        try:
+            if cluster_id:
+                cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                agent_url = get_agent_url(cluster)
+            elif ip:
+                agent_url = f"http://{ip}:{port or 8765}"
+            else:
+                raise Exception("cluster_id or ip/port required")
+                
+            url = f"{agent_url}/v1/hyper-v/health"
 
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
-        return data
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.get(url)
+                data = resp.json()
+                return data
+        except Exception as e:
+            logger.error("ping_agent_activity failed: %s", str(e))
+            raise
+    finally:
+        db.close()
+
 
 @activity.defn
-async def verify_standalone_hyper_v_activity(request, db: Session, cluster_id: Optional[int] = None) -> dict:
-    payload = request.dict() if hasattr(request, "dict") else request
-    
-    if cluster_id:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        agent_url = get_agent_url(cluster)
-    else:
-        ip = payload.get("ip")
-        port = payload.get("agent_port") or 8765
-        agent_url = f"http://{ip}:{port}"
-    
-    url = f"{agent_url}/v1/hyper-v/verify_standalone_hyper_v"
+async def verify_standalone_hyper_v_activity(request, cluster_id: Optional[int] = None) -> dict:
+    db: Session = SessionLocal()
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(url, json=payload)
-            data = response.json()
+        try:
+            payload = request.dict() if hasattr(request, "dict") else request
+            
+            if cluster_id:
+                cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+                agent_url = get_agent_url(cluster)
+            else:
+                ip = payload.get("ip")
+                port = payload.get("agent_port") or 8765
+                agent_url = f"http://{ip}:{port}"
+            
+            url = f"{agent_url}/v1/hyper-v/verify_standalone_hyper_v"
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, json=payload)
+                data = response.json()
 
-            # Propagate HTTP-level errors from the agent
-            if response.status_code != 200:
-                detail = (
-                    data.get("detail")
-                    or data.get("message")
-                    or data.get("msg")
-                    or "Hyper-V verification failed"
-                )
-                raise Exception("Error while verifying standalone Hyper-V- ",detail)
+                # Propagate HTTP-level errors from the agent
+                if response.status_code != 200:
+                    detail = (
+                        data.get("detail")
+                        or data.get("message")
+                        or data.get("msg")
+                        or "Hyper-V verification failed"
+                    )
+                    raise Exception("Error while verifying standalone Hyper-V- ",detail)
 
-            agent_data = data.get("data", {})
+                agent_data = data.get("data", {})
 
-            # Propagate logical errors returned with HTTP 200
-            if isinstance(agent_data, dict) and agent_data.get("status") == "error":
-                detail = (
-                    agent_data.get("message")
-                    or agent_data.get("error")
-                    or "Hyper-V verification failed"
-                )
-                raise Exception("Error while verifying standalone Hyper-V",detail)
+                # Propagate logical errors returned with HTTP 200
+                if isinstance(agent_data, dict) and agent_data.get("status") == "error":
+                    detail = (
+                        agent_data.get("message")
+                        or agent_data.get("error")
+                        or "Hyper-V verification failed"
+                    )
+                    raise Exception("Error while verifying standalone Hyper-V",detail)
 
-            return agent_data
-    except Exception as e:
-        logger.error("Error verifying standalone Hyper-V: %s", e)
-        raise Exception(f"Hyper-V verification error: {str(e)}")
+                return agent_data
+        except Exception as e:
+            logger.error("Error verifying standalone Hyper-V: %s", e)
+            raise Exception(f"Hyper-V verification error: {str(e)}")
+    finally:
+        db.close()

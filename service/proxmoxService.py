@@ -11,7 +11,7 @@ import urllib3
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
 from models.models import Cluster, CreateClusterBase,Pool, Machine
-from db_configuration.config import get_db
+from db_configuration.config import SessionLocal, get_db
 import re
 from service.gucamoleService import connectionWithClient
 from service.temporalResource.workers import worker_proxmox
@@ -39,8 +39,19 @@ def get_all_proxmox_users(db):
 def is_valid_ip(ip):
     return ip and ip.strip() not in {'0', '.', ''}
 
-def get_cluster_nodes(cluster_data):
-    api_token = get_api_token(next(get_db()), cluster_data.name)
+def get_cluster_nodes(cluster_data, db: Optional[Session] = None):
+    close_db = False
+    if db is None:
+        db = SessionLocal()
+        close_db = True
+    try:
+        return _get_cluster_nodes_impl(cluster_data, db)
+    finally:
+        if close_db:
+            db.close()
+
+def _get_cluster_nodes_impl(cluster_data, db: Session):
+    api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",
         "Content-Type": "application/json"
@@ -198,14 +209,17 @@ async def clone_vm(clone_payload: dict):
     
 
 async def delete_proxmox_vm(vmid, cluster_data):
-    db: Session = next(get_db())
-    if not Cluster:
-        raise HTTPException(status_code=404, detail="No Proxmox cluster found in the database.")
-    vmid=int(vmid)
-    api_token = get_api_token(db, cluster_data.name)
-    headers = {"Authorization": f"PVEAPIToken={api_token}"}
-    nodes = get_all_nodes(cluster_data)
-    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    db: Session = SessionLocal()
+    try:
+        if not Cluster:
+            raise HTTPException(status_code=404, detail="No Proxmox cluster found in the database.")
+        vmid=int(vmid)
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {"Authorization": f"PVEAPIToken={api_token}"}
+        nodes = get_cluster_nodes(cluster_data, db)
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    finally:
+        db.close()
     if not nodes:
         raise RuntimeError("No reachable Proxmox nodes found for the cluster.")
 
@@ -241,8 +255,7 @@ async def delete_proxmox_vm(vmid, cluster_data):
 async def update_metric_server_token(cluster_id: int, new_token: str):
     db: Optional[Session] = None
     try:
-        # db = SessionLocal()
-        db = next(get_db())
+        db = SessionLocal()
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
         if ms:
             ms.token = new_token
@@ -251,9 +264,10 @@ async def update_metric_server_token(cluster_id: int, new_token: str):
             logger.warning(f"No MetricServer found for cluster_id={cluster_id}")
     except Exception as e:
         logger.error(f"Error updating MetricServer token for cluster_id={cluster_id}: {e}")
-    # finally:
-    #     if db:
-    #         db.close()
+    finally:
+        if db:
+            db.close()
+
  
 
 async def migrate_bucket_all_data(migration_payload: dict):
@@ -294,16 +308,16 @@ async def migrate_bucket_all_data(migration_payload: dict):
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
     db: Optional[Session] = None
     try:
-        # db = SessionLocal()
-        db = next(get_db())
+        db = SessionLocal()
         ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
         return ms
     except Exception as e:
         logger.error(f"Error fetching MetricServer for cluster_id={cluster_id}: {e}")
         return jsonable_encoder("error",e)
-    # finally:
-    #     if db:
-    #         db.close()
+    finally:
+        if db:
+            db.close()
+
 
 
 #---------------------------proxmox power state operations---------------------------
@@ -539,116 +553,118 @@ def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign
     return dict(new_status)
 
 async def vm_rebuild(vmid: int, pool_id: str):
-    db = next(get_db())
-    global _worker_started
-    if not _worker_started:
-        asyncio.create_task(worker_proxmox.vm_rebuild_worker())
-        _worker_started = True
-
-    uniqueId = unique_id()
-    client = await connectionWithClient()
-    workflow_id = f"vmrebuild-{uniqueId}"
+    db: Session = SessionLocal()
     try:
-        # Start the VM rebuild workflow
-        handle = await client.start_workflow(
-            workflows_proxmox.VmRebuildWorkflow.run,
-            args=[vmid, pool_id],
-            id=workflow_id,
-            task_queue="vm-rebuild-task-queue",
-        )
+        global _worker_started
+        if not _worker_started:
+            asyncio.create_task(worker_proxmox.vm_rebuild_worker())
+            _worker_started = True
 
-        # Set status to RUNNING as soon as workflow is started
-        machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
-        if machine_data:
-            current_ids = machine_data.workflowId or []
-            new_rebuild_id = workflow_id
-            new_assign_ip_id = None
-            updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
-            machine_data.workflowId = updated_ids
-
-            current_status = machine_data.workflow_status or {}
-            updated_status = update_workflow_status_dict(
-                current_status,
-                new_rebuild_id,
-                new_assign_ip_id,
-                "RUNNING",
-                "",
-                "RUNNING",
-                ""
+        uniqueId = unique_id()
+        client = await connectionWithClient()
+        workflow_id = f"vmrebuild-{uniqueId}"
+        try:
+            # Start the VM rebuild workflow
+            handle = await client.start_workflow(
+                workflows_proxmox.VmRebuildWorkflow.run,
+                args=[vmid, pool_id],
+                id=workflow_id,
+                task_queue="vm-rebuild-task-queue",
             )
-            machine_data.workflow_status = updated_status
-            db.commit()
-            db.refresh(machine_data)
 
-            # Also call update_workflow_status for rebuild workflow RUNNING
-            update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status="RUNNING", error="")
+            # Set status to RUNNING as soon as workflow is started
+            machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
+            if machine_data:
+                current_ids = machine_data.workflowId or []
+                new_rebuild_id = workflow_id
+                new_assign_ip_id = None
+                updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
+                machine_data.workflowId = updated_ids
 
-        result = await handle.result()  # Should contain child workflow id
-        logger.info(f"VM Rebuild workflow completed with result: {result}")
+                current_status = machine_data.workflow_status or {}
+                updated_status = update_workflow_status_dict(
+                    current_status,
+                    new_rebuild_id,
+                    new_assign_ip_id,
+                    "RUNNING",
+                    "",
+                    "RUNNING",
+                    ""
+                )
+                machine_data.workflow_status = updated_status
+                db.commit()
+                db.refresh(machine_data)
 
-        # Update with child workflow id after result
-        if machine_data:
-            new_assign_ip_id = result.get("wait_and_assign_result")
+                # Also call update_workflow_status for rebuild workflow RUNNING
+                update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status="RUNNING", error="")
 
-            # Update workflowId with child workflow
-            current_ids = machine_data.workflowId or []
-            updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
-            machine_data.workflowId = updated_ids
+            result = await handle.result()  # Should contain child workflow id
+            logger.info(f"VM Rebuild workflow completed with result: {result}")
 
-            # Determine statuses
-            if isinstance(result, dict) and "error" in result:
-                rebuild_status = "FAILED"
-                rebuild_error = result["error"]
-                assign_ip_status = machine_data.workflow_status.get(new_assign_ip_id, {}).get("status", "RUNNING")
-                assign_ip_error = machine_data.workflow_status.get(new_assign_ip_id, {}).get("error", "")
-            else:
-                rebuild_status = "COMPLETED"
-                rebuild_error = ""
-                assign_ip_status = "RUNNING" if new_assign_ip_id else None
-                assign_ip_error = ""
+            # Update with child workflow id after result
+            if machine_data:
+                new_assign_ip_id = result.get("wait_and_assign_result")
 
-            # Update workflow_status dict for 2nd and 3rd entries
-            current_status = machine_data.workflow_status or {}
-            updated_status = update_workflow_status_dict(
-                current_status,
-                new_rebuild_id,
-                new_assign_ip_id,
-                rebuild_status,
-                rebuild_error,
-                assign_ip_status,
-                assign_ip_error
-            )
-            machine_data.workflow_status = updated_status
-            db.commit()
-            db.refresh(machine_data)
+                # Update workflowId with child workflow
+                current_ids = machine_data.workflowId or []
+                updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
+                machine_data.workflowId = updated_ids
 
-            # Now call update_workflow_status for both main and child workflows
-            update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status=rebuild_status, error=rebuild_error, vm_status="")
-            if new_assign_ip_id and assign_ip_status:
-                update_workflow_status(db, machine_id=machine_data.id, wfid=new_assign_ip_id, status=assign_ip_status, error=assign_ip_error)
-        return result
-    except Exception as e:
-        db.rollback()
-        machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
-        if machine_data:
-            # On error, update workflow_status for rebuild workflow
-            current_status = machine_data.workflow_status or {}
-            updated_status = update_workflow_status_dict(
-                current_status,
-                workflow_id,
-                None,
-                "FAILED",
-                str(e),
-                None,
-                None
-            )
-            machine_data.workflow_status = updated_status
-            db.commit()
-            db.refresh(machine_data)
-            update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status="FAILED", error=str(e))
-        return {"error": str(e)}
+                # Determine statuses
+                if isinstance(result, dict) and "error" in result:
+                    rebuild_status = "FAILED"
+                    rebuild_error = result["error"]
+                    assign_ip_status = machine_data.workflow_status.get(new_assign_ip_id, {}).get("status", "RUNNING")
+                    assign_ip_error = machine_data.workflow_status.get(new_assign_ip_id, {}).get("error", "")
+                else:
+                    rebuild_status = "COMPLETED"
+                    rebuild_error = ""
+                    assign_ip_status = "RUNNING" if new_assign_ip_id else None
+                    assign_ip_error = ""
+
+                # Update workflow_status dict for 2nd and 3rd entries
+                current_status = machine_data.workflow_status or {}
+                updated_status = update_workflow_status_dict(
+                    current_status,
+                    new_rebuild_id,
+                    new_assign_ip_id,
+                    rebuild_status,
+                    rebuild_error,
+                    assign_ip_status,
+                    assign_ip_error
+                )
+                machine_data.workflow_status = updated_status
+                db.commit()
+                db.refresh(machine_data)
+
+                # Now call update_workflow_status for both main and child workflows
+                update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status=rebuild_status, error=rebuild_error, vm_status="")
+                if new_assign_ip_id and assign_ip_status:
+                    update_workflow_status(db, machine_id=machine_data.id, wfid=new_assign_ip_id, status=assign_ip_status, error=assign_ip_error)
+            return result
+        except Exception as e:
+            db.rollback()
+            machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
+            if machine_data:
+                # On error, update workflow_status for rebuild workflow
+                current_status = machine_data.workflow_status or {}
+                updated_status = update_workflow_status_dict(
+                    current_status,
+                    workflow_id,
+                    None,
+                    "FAILED",
+                    str(e),
+                    None,
+                    None
+                )
+                machine_data.workflow_status = updated_status
+                db.commit()
+                db.refresh(machine_data)
+                update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status="FAILED", error=str(e))
+            return {"error": str(e)}
     finally:
         db.close()
+
 
 
 

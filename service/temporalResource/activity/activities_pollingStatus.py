@@ -1,6 +1,6 @@
 from service.gucamoleService import connectionWithClient
 from temporalio.client import WorkflowExecutionStatus
-from db_configuration.config import get_db
+from db_configuration.config import SessionLocal, get_db
 from service import pollingStatus
 import logging
 from temporalio import activity
@@ -50,139 +50,142 @@ async def poll_and_update_machine_status_activity():
     error_details = []
     power_states = {}
 
-    db: Session = next(get_db())
+    db: Session = SessionLocal()
     try:
-        all_machines = db.query(Machine).all()
-        if not all_machines:
-            logger.info("No machines found")
-            return {
-                "message": "No machines to poll",
-                "statuses": {},
-                "errors": [],
-                "power_states": {}
-            }
-        proxmox_pools, hyperv_pools = split_pools_by_cluster_type(db)
-        # Run Proxmox and Hyper-V power-state collectors
         try:
-            proxmox_vm_status = await get_proxmox_vm_status_activity(db=db, pools=proxmox_pools)
-            logger.info(f"Proxmox pools collected: {len(proxmox_vm_status)}")
-            hyperv_vm_status = await get_hyperv_vm_status_activity(db=db, pools=hyperv_pools)
-            logger.info(f"Hyper-V pools collected: {len(hyperv_vm_status)}")
-        except Exception as e:
-            logger.error(f"Failed to run power-state collectors: {e}")
-            proxmox_vm_status = []
-            hyperv_vm_status = []
-
-        # Build a combined vmid -> status map (Proxmox VMIDs and Hyper-V ids may overlap
-        # so if you need a namespaced key (e.g., "hyperv:vmid") adjust accordingly)
-        vmid_status_map = {}
-        for pool in proxmox_vm_status:
-            for vm in pool.get("vms", []):
-                vmid_status_map[vm["vmid"]] = vm["status"]
-
-        for pool in hyperv_vm_status:
-            for vm in pool.get("vms", []):
-                # Use vmid as key; if Hyper-V vm ids collide with Proxmox vmids in your data
-                # you should disambiguate here (e.g. prefix with cluster or hypervisor name)
-                vmid_status_map[vm["vmid"]] = vm["status"]
-
-        # Aggregate power states per pool id for the response
-        for pool in proxmox_vm_status:
-            power_states[pool["pool_id"]] = pool["vms"]
-        for pool in hyperv_vm_status:
-            power_states[pool["pool_id"]] = pool["vms"]
-
-        # Now poll each machine's workflow(s)
-        for machine in all_machines:
-            workflow_ids = machine.workflowId or []
-            machine_statuses = []
-            if not workflow_ids:
-                logger.warning(f"Machine {machine.id} has no workflow IDs")
-                continue
-
-            workflow_statuses = machine.workflow_status or {}
-            if (
-                workflow_statuses and
-                all(
-                    ws.get("status") in ("COMPLETED", "FAILED")
-                    for ws in workflow_statuses.values()
-                )
-            ):
-                # all workflows finished -> skip polling
-                continue
-
+            all_machines = db.query(Machine).all()
+            if not all_machines:
+                logger.info("No machines found")
+                return {
+                    "message": "No machines to poll",
+                    "statuses": {},
+                    "errors": [],
+                    "power_states": {}
+                }
+            proxmox_pools, hyperv_pools = split_pools_by_cluster_type(db)
+            # Run Proxmox and Hyper-V power-state collectors
             try:
-                for wfid in workflow_ids:
-                    client = await connectionWithClient()
-                    handle = client.get_workflow_handle(wfid)
-                    desc = await handle.describe()
-                    if isinstance(desc.status, int):
-                        status = WorkflowExecutionStatus(desc.status).name
-                    else:
-                        status = str(desc.status)
-                    error = None
-                    vm_status = None
-
-                    if status not in ("RUNNING", "COMPLETED"):
-                        try:
-                            failure_info = await pollingStatus.get_workflow_failure_message_simple(wfid)
-                            error = failure_info.get("failure_message")
-                            machine.error_message = error
-                            logger.info(f"Updated Machine row {machine.id} with workflow error: {error}")
-                        except Exception as e:
-                            logger.warning(f"Failed to extract failure for workflow {wfid}: {str(e)}")
-
-                    # if you want to set vm_status from vmid_status_map here, do it by machine.vm_id
-                    if getattr(machine, "vm_id", None) in vmid_status_map:
-                        vm_status = vmid_status_map[machine.vm_id]
-
-                    pollingStatus.update_workflow_status(
-                        db, machine.id, wfid, status, error, vm_status
-                    )
-
-                    machine_statuses.append({
-                        "workflow_id": wfid,
-                        "status": status,
-                        "error": error,
-                        "vm_status": vm_status,
-                    })
-
-                statuses[machine.id] = machine_statuses
-
+                proxmox_vm_status = await get_proxmox_vm_status_activity(db=db, pools=proxmox_pools)
+                logger.info(f"Proxmox pools collected: {len(proxmox_vm_status)}")
+                hyperv_vm_status = await get_hyperv_vm_status_activity(db=db, pools=hyperv_pools)
+                logger.info(f"Hyper-V pools collected: {len(hyperv_vm_status)}")
             except Exception as e:
-                error_details.append({"machine_id": machine.id, "error": str(e)})
-                logger.error(f"Error polling machine {machine.id}: {str(e)}")
-                continue
+                logger.error(f"Failed to run power-state collectors: {e}")
+                proxmox_vm_status = []
+                hyperv_vm_status = []
 
-        # Update machine rows with vm status messages for COMPLETED machines (existing behavior)
-        for machine in all_machines:
-            if machine.status == "COMPLETED" and machine.vm_id in vmid_status_map:
-                machine.error_message = vmid_status_map[machine.vm_id]
-                logger.info(f"Set Machine.id={machine.id} vm_id={machine.vm_id} error_message={machine.error_message}")
+            # Build a combined vmid -> status map
+            vmid_status_map = {}
+            for pool in proxmox_vm_status:
+                for vm in pool.get("vms", []):
+                    vmid_status_map[vm["vmid"]] = vm["status"]
 
-        db.commit()
+            for pool in hyperv_vm_status:
+                for vm in pool.get("vms", []):
+                    vmid_status_map[vm["vmid"]] = vm["status"]
 
-        return {
-            "message": "Poll complete",
-            "statuses": statuses,
-            "errors": error_details,
-            "power_states": power_states
-        }
-    except Exception as e:
-        logger.error(f"Error in poll_and_update_machine_status_activity: {str(e)}")
-        if db:
+            # Aggregate power states per pool id for the response
+            for pool in proxmox_vm_status:
+                power_states[pool["pool_id"]] = pool["vms"]
+            for pool in hyperv_vm_status:
+                power_states[pool["pool_id"]] = pool["vms"]
+
+            # Now poll each machine's workflow(s)
+            for machine in all_machines:
+                workflow_ids = machine.workflowId or []
+                machine_statuses = []
+                if not workflow_ids:
+                    logger.warning(f"Machine {machine.id} has no workflow IDs")
+                    continue
+
+                workflow_statuses = machine.workflow_status or {}
+                if (
+                    workflow_statuses and
+                    all(
+                        ws.get("status") in ("COMPLETED", "FAILED")
+                        for ws in workflow_statuses.values()
+                    )
+                ):
+                    # all workflows finished -> skip polling
+                    continue
+
+                try:
+                    for wfid in workflow_ids:
+                        client = await connectionWithClient()
+                        handle = client.get_workflow_handle(wfid)
+                        desc = await handle.describe()
+                        if isinstance(desc.status, int):
+                            status = WorkflowExecutionStatus(desc.status).name
+                        else:
+                            status = str(desc.status)
+                        error = None
+                        vm_status = None
+
+                        if status not in ("RUNNING", "COMPLETED"):
+                            try:
+                                failure_info = await pollingStatus.get_workflow_failure_message_simple(wfid)
+                                error = failure_info.get("failure_message")
+                                machine.error_message = error
+                                logger.info(f"Updated Machine row {machine.id} with workflow error: {error}")
+                            except Exception as e:
+                                logger.warning(f"Failed to extract failure for workflow {wfid}: {str(e)}")
+
+                        # set vm_status from vmid_status_map
+                        if getattr(machine, "vm_id", None) in vmid_status_map:
+                            vm_status = vmid_status_map[machine.vm_id]
+
+                        pollingStatus.update_workflow_status(
+                            db, machine.id, wfid, status, error, vm_status
+                        )
+
+                        machine_statuses.append({
+                            "workflow_id": wfid,
+                            "status": status,
+                            "error": error,
+                            "vm_status": vm_status,
+                        })
+
+                    statuses[machine.id] = machine_statuses
+
+                except Exception as e:
+                    error_details.append({"machine_id": machine.id, "error": str(e)})
+                    logger.error(f"Error polling machine {machine.id}: {str(e)}")
+                    continue
+
+            # Update machine rows with vm status messages for COMPLETED machines
+            for machine in all_machines:
+                if machine.status == "COMPLETED" and machine.vm_id in vmid_status_map:
+                    machine.error_message = vmid_status_map[machine.vm_id]
+                    logger.info(f"Set Machine.id={machine.id} vm_id={machine.vm_id} error_message={machine.error_message}")
+
+            db.commit()
+
+            return {
+                "message": "Poll complete",
+                "statuses": statuses,
+                "errors": error_details,
+                "power_states": power_states
+            }
+        except Exception as e:
+            logger.error(f"Error in poll_and_update_machine_status_activity: {str(e)}")
             db.rollback()
-        raise
+            raise Exception("Error during poll activity") from e
     finally:
-        if db:
-            db.close()
+        db.close()
+
 
 async def get_proxmox_vm_status_activity(db: Session = None, pools: list = None):
 
-    own_db = False
     if db is None:
-        db = next(get_db())
-        own_db = True
+        db = SessionLocal()
+        try:
+            return await _get_proxmox_vm_status_logic(db, pools)
+        finally:
+            db.close()
+    else:
+        return await _get_proxmox_vm_status_logic(db, pools)
+
+async def _get_proxmox_vm_status_logic(db: Session, pools: list = None):
     try:
         if pools is None:
             proxmox_pools, _ = split_pools_by_cluster_type(db)
@@ -241,21 +244,23 @@ async def get_proxmox_vm_status_activity(db: Session = None, pools: list = None)
 
         return list(pool_map.values())
     except Exception as e:
-        logger.error(f"Error in get_proxmox_vm_status_activity: {str(e)}")
-        if db:
-            db.rollback()
+        logger.error(f"Error in get_proxmox_vm_status_activity logic: {str(e)}")
         raise
-    finally:
-        if own_db:
-            db.close()
+
 
 
 async def get_hyperv_vm_status_activity(db: Session = None, pools: list = None):
 
-    own_db = False
     if db is None:
-        db = next(get_db())
-        own_db = True
+        db = SessionLocal()
+        try:
+            return await _get_hyperv_vm_status_logic(db, pools)
+        finally:
+            db.close()
+    else:
+        return await _get_hyperv_vm_status_logic(db, pools)
+
+async def _get_hyperv_vm_status_logic(db: Session, pools: list = None):
     try:
         if pools is None:
             _, hyperv_pools = split_pools_by_cluster_type(db)
@@ -299,6 +304,6 @@ async def get_hyperv_vm_status_activity(db: Session = None, pools: list = None):
                     continue
 
         return list(pool_map.values())
-    finally:
-        if own_db:
-            db.close()
+    except Exception as e:
+        logger.error(f"Error in get_hyperv_vm_status_activity logic: {str(e)}")
+        raise

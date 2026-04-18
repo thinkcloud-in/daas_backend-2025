@@ -1,6 +1,5 @@
 import requests
 import asyncio
-from datetime import datetime
 import logging
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
@@ -9,7 +8,6 @@ from fastapi import HTTPException
 from service.clusterService import get_api_token
 from service.gucamoleService import connectionWithClient
 from service.proxmoxService import is_valid_ip
-from utils import response_format
 from .temporalResource.workflows import workflows_machine
 from .temporalResource.workers import workers_machine
 from service.temporalResource.workers import  workers_pool

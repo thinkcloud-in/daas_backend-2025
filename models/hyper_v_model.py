@@ -14,11 +14,11 @@ class CloneVMRequest(BaseModel):
     ou: Optional[str] = Field(None, description="Organizational unit")
     username: Optional[str] = Field(None, description="Username")
     domain_password: Optional[str] = Field(None, description="Domain password")
-    # os_type: str
-    # mac_add: str
-    # gateway: str
-    # password: str
-    # ip: str
+    dynamic_memory: Optional[bool] = False
+    minimum_memory: Optional[int] = 0
+    maximum_memory: Optional[int] = 0
+    buffer_memory: Optional[int] = 0 
+    processor_count: Optional[int] = 0
 
 class HandleActionRequest(BaseModel):
     vm_id: str = Field(..., description="ID of the VM")

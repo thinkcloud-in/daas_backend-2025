@@ -3,7 +3,7 @@ from fastapi import  Depends, APIRouter, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from db_configuration.config import get_db
+from db_configuration.config import SessionLocal, get_db
 import service.proxmoxService as service
 from service.controllers import get_cluster_details
 from service import clusterService
@@ -321,15 +321,13 @@ async def rebuild_vm_endpoint(
     pool_id: str = None,
     db: Session = None,
 ):
+    close_db = False
     try:
         # Handle optional db argument for reverse compatibility or standalone calls
         if db is None:
-            from db_configuration.config import SessionLocal
             db = SessionLocal()
             close_db = True
-        else:
-            close_db = False
-
+        
         cluster_data = get_cluster_by_id(db, vmid)
         if not cluster_data:
             raise HTTPException(status_code=404, detail="Cluster not found")
@@ -337,6 +335,20 @@ async def rebuild_vm_endpoint(
         if cluster_data.type.lower() in ("hyper-v", "hyperv"):
             import service.hyper_v_service as hyper_v_service
             # Hyper-V rebuild expects a request object or dict with vm_id, pool_id, and email
+            rebuild_request = {
+                "vm_id": vmid,
+                "pool_id": pool_id,
+                "email": data.email
+            }
+            res = await hyper_v_service.vm_rebuild(rebuild_request, db)
+            return res
+        else:
+            cluster_data = get_cluster_by_id(db, vmid)
+            if not cluster_data:
+                raise HTTPException(status_code=404, detail="Cluster not found")
+
+            if cluster_data.type.lower() in ("hyper-v", "hyperv"):
+                import service.hyper_v_service as hyper_v_service
             rebuild_request = {
                 "vm_id": vmid,
                 "pool_id": pool_id,
@@ -360,7 +372,7 @@ async def rebuild_vm_endpoint(
     except Exception as e:
         return response_format.error_response(500, "Failed", str(e))
     finally:
-        if 'close_db' in locals() and close_db:
+        if close_db:
             db.close()
 
 

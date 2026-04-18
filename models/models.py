@@ -171,6 +171,11 @@ class Pool(Base):
     # pool_template_vm_id = Column(Integer, nullable=True) #Column(JSON, nullable=True) #Column(Integer, nullable=True)  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes = Column(ARRAY(String), nullable=True)  # Selected node for the pool
     pool_status = Column(String, nullable=True)  # Status of the pool
+    pool_dynamic_memory = Column(Boolean, nullable=True)
+    pool_minimum_memory = Column(Integer, nullable=True)
+    pool_maximum_memory = Column(Integer, nullable=True)
+    pool_buffer_memory = Column(Integer, nullable=True)
+    pool_processor_count = Column(Integer, nullable=True)
 
 #Pydantic model for create pool
 class CreatePoolBase(BaseModel):
@@ -323,6 +328,11 @@ class CreatePoolBase(BaseModel):
     pool_template_vm_id: Optional[Dict[str, Any]] = None 
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
     pool_status: Optional[str] = None  # Status of the pool
+    pool_dynamic_memory: Optional[bool] = None
+    pool_minimum_memory: Optional[int] = None
+    pool_maximum_memory: Optional[int] = None
+    pool_buffer_memory: Optional[int] = None
+    pool_processor_count: Optional[int] = None
 
 class NodeRequest(BaseModel):
     nodes: Optional[List[str]] = None
@@ -476,6 +486,11 @@ class UpdatePoolBase(BaseModel):
     pool_template_vm_id: Optional[Dict[str, Any]] = None 
     # pool_template_vm_id: Optional[int] = None  # Template VM ID for cloning VMs in the pool
     pool_selected_nodes: Optional[List[str]] = None  # Selected nodes for the pool
+    pool_dynamic_memory: Optional[bool] = None
+    pool_minimum_memory: Optional[int] = None
+    pool_maximum_memory: Optional[int] = None
+    pool_buffer_memory: Optional[int] = None
+    pool_processor_count: Optional[int] = None
 
 class Machine(Base):
     __tablename__ = 'machines_clone'
@@ -624,6 +639,11 @@ class Machine(Base):
     pool_id = Column(Integer, nullable=True)
     users_assigned = Column(ARRAY(String), nullable=True)
     date_created = Column(DateTime, default=datetime.datetime.utcnow)
+    pool_dynamic_memory = Column(Boolean, nullable=True)
+    pool_minimum_memory = Column(Integer, nullable=True)
+    pool_maximum_memory = Column(Integer, nullable=True)
+    pool_buffer_memory = Column(Integer, nullable=True)
+    pool_processor_count = Column(Integer, nullable=True)
     is_custom_machine = Column(Boolean)
     identifier = Column(String) 
     workflowId = Column(ARRAY(String), default=[])
@@ -773,6 +793,11 @@ class CreateMachineBase(BaseModel):
     clone_workflow_id: Optional[Union[str, List[str]]] = None
     status: Optional[str] = "RUNNING"
     error_message: Optional[str] = "power-off"
+    pool_dynamic_memory: Optional[bool] = None
+    pool_minimum_memory: Optional[int] = None
+    pool_maximum_memory: Optional[int] = None
+    pool_buffer_memory: Optional[int] = None
+    pool_processor_count: Optional[int] = None
     workflow_status: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 #pydantic model to update machine
 class UpdateMachineBase(BaseModel):
@@ -783,6 +808,11 @@ class UpdateMachineBase(BaseModel):
     guacd_port:Optional[int] = None
     guacd_encryption:str
     guacd_hostname:str
+    pool_dynamic_memory: Optional[bool] = None
+    pool_minimum_memory: Optional[int] = None
+    pool_maximum_memory: Optional[int] = None
+    pool_buffer_memory: Optional[int] = None
+    pool_processor_count: Optional[int] = None
     max_connections: Optional[int] = None
     max_connections_per_user: Optional[int] = None
     weight:Optional[int] = None
