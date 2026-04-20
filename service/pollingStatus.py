@@ -1,10 +1,7 @@
-import asyncio
 from models.models import Machine
-from service.gucamoleService import connectionWithClient
 from temporalio.client import WorkflowExecutionStatus
 from service.temporalResource.workflows import workflows_pollingStatus
-from service.temporalResource.workers import worker_pollingStatus
-from db_configuration.config import get_db
+from utils.temporal_client import TemporalClientManager
 import logging
 from service import controllers
 from temporalio.api.enums.v1 import EventType
@@ -46,7 +43,7 @@ def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: s
     return machine.workflow_status, machine.status, machine.error_message
 
 async def get_workflow_failure_message_simple(workflow_id):
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
     desc = await handle.describe()
     status = WorkflowExecutionStatus(desc.status).name if isinstance(desc.status, int) else str(desc.status)
@@ -71,13 +68,13 @@ async def get_workflow_failure_message_simple(workflow_id):
     return {"failure_message": "power-off", "status": status}
 
 
-_worker_task = None
+# _status_poller_workflow_id now managed in main.py indirectly or on demand
 _status_poller_workflow_id = None
 
 async def is_status_poller_cron_running():
 
     try:
-        client = await connectionWithClient()
+        client = await TemporalClientManager.get_temporal_client()
         async for workflow in client.list_workflows("WorkflowId STARTS_WITH 'status-poller-'"):
             if workflow.status == WorkflowExecutionStatus.RUNNING:
                 return True, workflow.id
@@ -87,7 +84,7 @@ async def is_status_poller_cron_running():
         return False, None
 
 async def start_status_poller_workflow():
-    global _worker_task, _status_poller_workflow_id
+    global _status_poller_workflow_id
     
     is_running, existing_id = await is_status_poller_cron_running()
     if is_running:
@@ -99,21 +96,9 @@ async def start_status_poller_workflow():
         }
     
     uniqueId = controllers.unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     
-    try:
-        if _worker_task is None or _worker_task.done():
-      
-            _worker_task = asyncio.create_task(worker_pollingStatus.status_poller_worker())
-            await asyncio.sleep(3)
-        else:
-           
-            logger.info("Status poller worker is already running")
-            
-    except Exception as e:
-        logger.error(f"Error starting worker: {e}")
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
+
     
     try:
         handle = await client.start_workflow(

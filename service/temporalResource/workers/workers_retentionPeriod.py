@@ -3,22 +3,14 @@ from temporalio.client import Client
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_retentionPeriod
 from service.temporalResource.activity import activities_retentionPeriod
+from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 
 load_dotenv()
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        
-        raise e
 
 async def get_namespaces_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -38,7 +30,7 @@ async def get_namespaces_worker():
 
 
 async def update_retentionPeriod_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -56,3 +48,16 @@ async def update_retentionPeriod_worker():
         
     except Exception as e:
         raise e
+
+
+async def run_all_retention_workers():
+    """Starts all retention-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        get_namespaces_worker(),
+        update_retentionPeriod_worker()
+    ]
+    
+    print("Starting all retention workers...")
+    await asyncio.gather(*tasks)

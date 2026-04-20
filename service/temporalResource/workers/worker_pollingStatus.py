@@ -1,5 +1,5 @@
 from temporalio.worker import Worker
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workflows import workflows_pollingStatus
 from service.temporalResource.activity import activities_pollingStatus
 import logging
@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 async def status_poller_worker():
 
     try:
-        client = await connectionWithClient()
+        client = await TemporalClientManager.get_temporal_client()
         
         worker = Worker(
             client,

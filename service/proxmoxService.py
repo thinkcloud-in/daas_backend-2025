@@ -11,11 +11,10 @@ import urllib3
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
 from models.models import Cluster, CreateClusterBase,Pool, Machine
-from db_configuration.config import SessionLocal, get_db
+from db_configuration.config import SessionLocal
 import re
-from service.gucamoleService import connectionWithClient
-from service.temporalResource.workers import worker_proxmox
 from service.temporalResource.workflows import workflows_proxmox
+from utils.temporal_client import TemporalClientManager
 from service.clusterService import getting_Proxmox_host,get_api_token,get_all_nodes
 from models.proxmox_model import MetricServer
 from service.pollingStatus import update_workflow_status
@@ -179,17 +178,9 @@ def unique_id():
     logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-_worker_started = False
-_vm_rebuild_worker_started = False
-
 async def clone_vm(clone_payload: dict):
-    global _worker_started
-    if not _worker_started:
-        asyncio.create_task(worker_proxmox.clone_vm_worker())
-        _worker_started = True
-
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"clonevms-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
     try:
@@ -271,14 +262,8 @@ async def update_metric_server_token(cluster_id: int, new_token: str):
  
 
 async def migrate_bucket_all_data(migration_payload: dict):
-    global _worker_started
-    if not _worker_started:
-        # Start your worker (if you have a worker runner, or omit if static process)
-        asyncio.create_task(worker_proxmox.migrate_worker())
-        _worker_started = True
-
     uniqueId = unique_id()  # Or use any unique ID generator you have
-    client = await connectionWithClient()  # Or Client.connect("localhost:7233") directly
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"Migration-{uniqueId}"
     SRC_BUCKET = migration_payload.get("src_bucket")
     DST_BUCKET = migration_payload.get("dst_bucket")
@@ -397,7 +382,7 @@ def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
 
 async def start_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"start_vm_{cluster_type}-{uniqueId}"
     # clone_payload["workflowId"] = workflow_id
     try:
@@ -425,7 +410,7 @@ async def start_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: st
 async def stop_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"stop_vm_{cluster_type}-{uniqueId}"
 
     try:
@@ -451,7 +436,7 @@ async def stop_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str)
 async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"reboot_vm_{cluster_type}-{uniqueId}"
 
     try:
@@ -477,7 +462,7 @@ async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: st
 async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
 
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"shutdown_vm_{cluster_type}-{uniqueId}"
 
     try:
@@ -555,13 +540,8 @@ def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign
 async def vm_rebuild(vmid: int, pool_id: str):
     db: Session = SessionLocal()
     try:
-        global _worker_started
-        if not _worker_started:
-            asyncio.create_task(worker_proxmox.vm_rebuild_worker())
-            _worker_started = True
-
         uniqueId = unique_id()
-        client = await connectionWithClient()
+        client = await TemporalClientManager.get_temporal_client()
         workflow_id = f"vmrebuild-{uniqueId}"
         try:
             # Start the VM rebuild workflow

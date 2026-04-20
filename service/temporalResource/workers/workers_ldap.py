@@ -3,18 +3,10 @@ from temporalio.client import Client
 import os
 from service.temporalResource.activity import activities_ldap
 from service.temporalResource.workflows import workflows_ldap
+from utils.temporal_client import TemporalClientManager
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        
-        raise e
 async def ad_ldap_configuration_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="ADLdapConfiguration-task-queue",
@@ -29,7 +21,7 @@ async def ad_ldap_configuration_worker():
 
 
 async def get_lDAPS_from_keycloak_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="GetLDAPSFromKeycloak-task-queue",
@@ -44,7 +36,7 @@ async def get_lDAPS_from_keycloak_worker():
         raise e
 
 async def test_ldap_connection_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="TestLdapConnection-task-queue",
@@ -60,7 +52,7 @@ async def test_ldap_connection_worker():
 
 
 async def test_ldap_authentication_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="TestLdapAuthentication-task-queue",
@@ -76,7 +68,7 @@ async def test_ldap_authentication_worker():
 
 
 async def delete_ldap_config_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="DeleteLdapConfig-task-queue",
@@ -92,7 +84,7 @@ async def delete_ldap_config_worker():
 
 
 async def get_LDAP_by_id_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="GetLdapById-task-queue",
@@ -108,7 +100,7 @@ async def get_LDAP_by_id_worker():
 
 
 async def sync_user_from_keycloak_Byid_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="SyncUserFromKeycloakById-task-queue",
@@ -124,7 +116,7 @@ async def sync_user_from_keycloak_Byid_worker():
 
 
 async def sync_changed_users_from_keycloak_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="SyncChangedUsers-task-queue",
@@ -140,7 +132,7 @@ async def sync_changed_users_from_keycloak_worker():
 
     
 async def unlink_users_from_keycloak_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="UnlinkUsers-task-queue",
@@ -156,7 +148,7 @@ async def unlink_users_from_keycloak_worker():
 
     
 async def remove_imported_users_from_keycloak_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="RemoveImportedUsers-task-queue",
@@ -172,7 +164,7 @@ async def remove_imported_users_from_keycloak_worker():
 
 
 async def update_ldap_config_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="UpdateLdapConfig-task-queue",
@@ -182,7 +174,27 @@ async def update_ldap_config_worker():
     
     try:
         await worker.run()
-        
     except Exception as e:
         raise e
+
+async def run_all_ldap_workers():
+    """Starts all LDAP-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        ad_ldap_configuration_worker(),
+        get_lDAPS_from_keycloak_worker(),
+        test_ldap_connection_worker(),
+        test_ldap_authentication_worker(),
+        delete_ldap_config_worker(),
+        get_LDAP_by_id_worker(),
+        sync_user_from_keycloak_Byid_worker(),
+        sync_changed_users_from_keycloak_worker(),
+        unlink_users_from_keycloak_worker(),
+        remove_imported_users_from_keycloak_worker(),
+        update_ldap_config_worker()
+    ]
+    
+    print("Starting all LDAP workers...")
+    await asyncio.gather(*tasks)
     

@@ -9,7 +9,7 @@ from service.controllers import get_cluster_details
 from service import clusterService
 from models.models import Cluster, Machine,Pool
 from models.proxmox_model import MigrateRequest, VMPowerRequest, MetricServer
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 import os, logging, sys
 from utils import response_format
 
@@ -200,7 +200,7 @@ async def delete_influxdb_metric_server_endpoint(cluster_id: str, db: Session):
             # Stop workflow if exists
             if ms.workflow_id:
                 try:
-                    client = await connectionWithClient()  # Your Temporal client get method
+                    client = await TemporalClientManager.get_temporal_client()  # Your Temporal client get method
                     await client.get_workflow_handle(ms.workflow_id).cancel()
                 except Exception as e:
                     raise HTTPException(status_code=500, detail=f"Failed to stop migration workflow: {str(e)}")

@@ -3,22 +3,14 @@ from temporalio.worker import Worker
 from temporalio.client import Client
 from service.temporalResource.activity import activities_machine
 from service.temporalResource.workflows import workflows_machine
+from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 
 load_dotenv()
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        
-        raise e
 
 async def create_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="create-machine-task-queue",  
@@ -35,7 +27,7 @@ async def create_machine_worker():
 
 
 async def delete_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="delete-machine-task-queue",  
@@ -50,7 +42,7 @@ async def delete_machine_worker():
         raise e
 
 async def update_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="update-machine-task-queue",  
@@ -67,7 +59,7 @@ async def update_machine_worker():
 
 
 async def get_all_machines_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="get-all-machines-task-queue",  
@@ -84,7 +76,7 @@ async def get_all_machines_worker():
 
 
 async def update_is_custom_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="update-is-custom-task-queue",  
@@ -100,7 +92,7 @@ async def update_is_custom_machine_worker():
         
 
 async def add_user_to_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="add-user-to-machine-task-queue",  
@@ -117,7 +109,7 @@ async def add_user_to_machine_worker():
 
 
 async def delete_user_from_machine_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="delete-user-from-machine-task-queue",  
@@ -133,7 +125,7 @@ async def delete_user_from_machine_worker():
         
 
 async def list_all_machine_in_pool_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="list-all-machine-in-pool-task-queue",  
@@ -150,7 +142,7 @@ async def list_all_machine_in_pool_worker():
 
 
 async def list_all_asigned_users_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="list-all-asigned_users-task-queue",  
@@ -167,7 +159,7 @@ async def list_all_asigned_users_worker():
 
 
 async def get_machine_details_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="get-machine-details-task-queue",  
@@ -180,4 +172,25 @@ async def get_machine_details_worker():
         
     except Exception as e:
         raise e
+
+
+async def run_all_machine_workers():
+    """Starts all machine-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        create_machine_worker(),
+        delete_machine_worker(),
+        update_machine_worker(),
+        get_all_machines_worker(),
+        update_is_custom_machine_worker(),
+        add_user_to_machine_worker(),
+        delete_user_from_machine_worker(),
+        list_all_machine_in_pool_worker(),
+        list_all_asigned_users_worker(),
+        get_machine_details_worker()
+    ]
+    
+    print("Starting all machine workers...")
+    await asyncio.gather(*tasks)
         

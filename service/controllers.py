@@ -6,11 +6,9 @@ from sqlalchemy.orm import Session
 from models.models import Pool, IsCustomeValue, CreateMachineBase,Pool, Machine,CreateClusterBase,Cluster,UpdateClusterBase,UpdateMachineBase
 from fastapi import HTTPException
 from service.clusterService import get_api_token
-from service.gucamoleService import connectionWithClient
 from service.proxmoxService import is_valid_ip
+from utils.temporal_client import TemporalClientManager
 from .temporalResource.workflows import workflows_machine
-from .temporalResource.workers import workers_machine
-from service.temporalResource.workers import  workers_pool
 from service.temporalResource.workflows import  workflows_pool
 from models import task_models
 from typing import Optional
@@ -96,7 +94,7 @@ async def get_proxmox_storages(payload, db):
 
 async def create_pool(pool_data: dict, db) -> dict:
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get('email', "UnknownUser")
     pool_ad_domain = pool_data.get('pool_ad_domain', "UnknownDomain")
@@ -104,11 +102,6 @@ async def create_pool(pool_data: dict, db) -> dict:
     pool_ad_username = pool_data.get('pool_ad_username', "UnknownUsername")
     pool_ad_path = pool_data.get('pool_ad_path', "")
     workflow_id = f"{pool_name} Creating-{uniqueId}"
-    try:
-        asyncio.create_task(workers_pool.create_pool_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    
     handle = await client.start_workflow(
         workflows_pool.PoolCreationWorkflow.run,
         pool_data,
@@ -134,11 +127,6 @@ async def create_pool(pool_data: dict, db) -> dict:
     if isinstance(result, dict) and "pool" in result:
         pool_id = result["pool"]["id"]
         if pool_ad_domain != "UnknownDomain":
-            try:
-                asyncio.create_task(workers_pool.domain_join_worker())
-            except Exception as e:
-                logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
-            
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -154,7 +142,7 @@ async def create_pool(pool_data: dict, db) -> dict:
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get("email", "UnknownUser")
     pool_ad_domain = pool_data.get('pool_ad_domain', "UnknownDomain")
@@ -162,10 +150,6 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
     pool_ad_username = pool_data.get('pool_ad_username', "UnknownUsername")
     pool_ad_path = pool_data.get('pool_ad_path', "")
     workflow_id = f"{pool_name} Updating-{uniqueId}"
-    try:
-        asyncio.create_task(workers_pool.update_pool_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_pool.PoolUpdateWorkflow.run,
         args=[pool_id,pool_data],
@@ -181,11 +165,6 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
     if isinstance(result, dict) and "pool" in result:
         pool_id = result["pool"]["id"]
         if pool_ad_domain != "UnknownDomain":
-            try:
-                asyncio.create_task(workers_pool.domain_join_worker())
-            except Exception as e:
-                logger.error(f"Failed to start domain join worker for pool {pool_name}: {e}")
-                
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -210,7 +189,7 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
         own_db = True
     try:
         uniqueId = unique_id()
-        client = await connectionWithClient()
+        client = await TemporalClientManager.get_temporal_client()
         machine_name = machine_data.name
         userName = machine_data.email
         Pool_data = db.query(Pool).filter(Pool.id == machine_data.pool_id).first()
@@ -241,10 +220,6 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
         else:
             logger.info("Pool type is Manual, skipping additional workflow IDs.")
             workflow_status_map = None
-        try:
-            asyncio.create_task(workers_machine.create_machine_worker())
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Error while starting worker task: {str(e)}")
         machine_data_dict = machine_data.dict() if hasattr(machine_data, "dict") else dict(machine_data)
         machine_data_dict["workflowId"] = workflowId_list
         machine_data_dict.pop("clone_workflow_id", None)
@@ -276,7 +251,7 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
 
 async def delete_machine(machine_identifier: str, email: Optional[str], db: Session):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
 
     machine = db.query(Machine).filter(Machine.identifier == machine_identifier).first()
     
@@ -285,11 +260,7 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
 
     machine_name = machine.name  # Assuming the table has a 'name' column
 
-    try:
-        asyncio.create_task(workers_machine.delete_machine_worker())
-        logger.info(f"Started worker task for deleting machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    machine_name = machine.name  # Assuming the table has a 'name' column
     handle = await client.start_workflow(
         workflows_machine.DeleteMachineWorkflow.run,
         machine_identifier,
@@ -307,7 +278,7 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
 
 async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
 
     pool = db.query(Pool).filter(Pool.id == pool_id).first()
     if pool is None:
@@ -315,14 +286,7 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
 
     pool_name = pool.pool_name
     userName = email if email else "Unknown User"  # Use email from frontend
-
     workflow_id = f"{pool_name}-deleting-{uniqueId}"
-
-    try:
-        asyncio.create_task(workers_pool.delete_pool_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
     handle = await client.start_workflow(
         workflows_pool.PoolDeletionWorkflow.run,
         pool_id,
@@ -339,12 +303,7 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
         
 async def add_user_to_machine( machine_identifier: str, username: str):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_machine.add_user_to_machine_worker())
-        logger.info(f"Started worker task for assigning user to machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_machine.AddUserToMachineWorkflow.run,
         args = [machine_identifier, username],
@@ -356,12 +315,7 @@ async def add_user_to_machine( machine_identifier: str, username: str):
 #remove assigned user from a machine 
 async def delete_user_from_machine(machine_identifier: str, user_id: str):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_machine.delete_user_from_machine_worker())
-        logger.info(f"Started worker task for removing user from machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_machine.DeleteUserFromMachineWorkflow.run,
         args = [machine_identifier, user_id],
@@ -375,15 +329,11 @@ async def delete_user_from_machine(machine_identifier: str, user_id: str):
 
 async def update_machine(machine_identifier: str, machine_data: UpdateMachineBase):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     machine_name = machine_data.name
     userName = machine_data.email
     workflow_id = f"{machine_name} update-machine-{uniqueId}"
-    try:
-        asyncio.create_task(workers_machine.update_machine_worker())
-        logger.info(f"Started worker task for updating machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    workflow_id = f"{machine_name} update-machine-{uniqueId}"
     handle = await client.start_workflow(
         workflows_machine.UpdateMachineWorkflow.run,
         args = [machine_identifier,machine_data.dict()],
@@ -398,31 +348,23 @@ async def update_machine(machine_identifier: str, machine_data: UpdateMachineBas
     result = await handle.result()
     return result  
 
-async def get_machines():
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def get_machines(db: Session = None):
+    """Directly query the database for all machines (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_machine.get_all_machines_worker())
-        logger.info(f"Started worker task for getting all machines with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_machine.GetAllMachinesWorkflow.run,
-        id=f"get-all-machines-{uniqueId}",
-        task_queue="get-all-machines-task-queue"
-    )
-    result = await handle.result()
-    return result
+        machines = db.query(Machine).all()
+        return jsonable_encoder(machines)
+    finally:
+        if own_db:
+            db.close()
 
 async def update_is_custom_machine(machine_identifier: str, machine_details: IsCustomeValue):
     
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_machine.update_is_custom_machine_worker())
-        logger.info(f"Started worker task for updating custom machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_machine.UpdateIsCustomMachineWorkflow.run,
         args = [machine_identifier, machine_details.dict()],
@@ -433,129 +375,171 @@ async def update_is_custom_machine(machine_identifier: str, machine_details: IsC
     return result
 
 
-async def list_of_all_machine_in_pool(pool_id : str):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def list_of_all_machine_in_pool(pool_id: str, db: Session = None):
+    """Directly query the database for machines in a specific pool (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_machine.list_all_machine_in_pool_worker())
-        logger.info(f"Started worker task for listing all machines in pool with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_machine.GetAllMachineInPoolWorkflow.run,
-        pool_id,
-        id=f"list-all-machine-in-pool-{uniqueId}",
-        task_queue="list-all-machine-in-pool-task-queue"
-    )
-    result = await handle.result()
-    return result
+        machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
+        return jsonable_encoder(machines)
+    finally:
+        if own_db:
+            db.close()
 
 #list all the assigned users to a machine
-async def list_assigned_users( machine_id: str):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def list_assigned_users(machine_id: str, db: Session = None):
+    """Directly query the database for users assigned to a machine (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_machine.list_all_asigned_users_worker())
-        logger.info(f"Started worker task for listing all assigned users to machine with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_machine.ListOfAsignedUsersWorkflow.run,
-        machine_id,
-        id=f"list-all-asigned_users-{uniqueId}",
-        task_queue="list-all-asigned_users-task-queue"
-    )
-    result = await handle.result()
-    return result
+        machine = db.query(Machine).filter(Machine.id == machine_id).first()
+        if not machine:
+            # Fallback to identifier if id not found
+            machine = db.query(Machine).filter(Machine.identifier == machine_id).first()
+        return machine.users_assigned if machine else []
+    finally:
+        if own_db:
+            db.close()
 
-async def get_pool_details(pool_id:int):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def get_pool_details(pool_id: int, db: Session = None):
+    """Directly query the database for pool details (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        pool_json = jsonable_encoder(pool)
+        if pool_json:
+            cluster_id_raw = pool_json.get("cluster_id")
+            if cluster_id_raw:
+                c_id = str(cluster_id_raw).split("_")[-1] if "_" in str(cluster_id_raw) else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_json["cluster"] = cluster.name
+                    else:
+                        pool_json["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_json["cluster"] = "NA"
+            else:
+                pool_json["cluster"] = "NA"
+                
+            return {"msg": "Pool Retrived Successfully", "pool": pool_json}
+        else:
+            return {"msg": "Pool not found"}
+    finally:
+        if own_db:
+            db.close()
 
-        asyncio.create_task(workers_pool.get_pool_details_ID_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_pool.get_pool_details_ID_workflow.run,
-        pool_id,
-        id=f"Get-pool-details_ID-{uniqueId}",
-        task_queue="GetpooldetailsID-task-queue",
-    )
-    result =  await handle.result()
-    return result
-
-async def retrive_pool_data(pool_name:str,db:Session):
-
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def retrive_pool_data(pool_name: str, db: Session = None):
+    """Directly query the database for pool data by name (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_pool.retrieve_pool_data_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_pool.RetrievePoolDataWorkflow.run,
-        pool_name,
-        id=f"Retrieving-pool-data-{uniqueId}",
-        task_queue="Retrievepooldata-task-queue",
-    )
-    result =  await handle.result()
-    return result
+        pool = db.query(Pool).filter(Pool.pool_name == pool_name).first()
+        pool_json = jsonable_encoder(pool)
+        
+        if pool_json:
+            cluster_id_raw = pool_json.get("cluster_id")
+            if cluster_id_raw:
+                c_id = str(cluster_id_raw).split("_")[-1] if "_" in str(cluster_id_raw) else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_json["cluster"] = cluster.name
+                    else:
+                        pool_json["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_json["cluster"] = "NA"
+            else:
+                pool_json["cluster"] = "NA"
+                
+            return {"msg": f"{pool_name} Pool found ", "pool": pool_json}
+        else:
+            return {"msg": f"{pool_name} Pool not found"}
+    finally:
+        if own_db:
+            db.close()
 
-async def get_all_pool_names(db: Session):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def get_all_pool_names(db: Session = None):
+    """Directly query the database for pool names (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_pool.get_all_pool_names_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_pool.GetListofPoolNamesWorkflow.run,
-        id=f"Get-pool-names-{uniqueId}",
-        task_queue="Getallpoolsnames-task-queue",
-    )
-    result =  await handle.result()
-    return result
+        pools = db.query(Pool).all()
+        pool_names = [pool_item.pool_name for pool_item in pools]
+        return {"msg": "listed all the Pool names successfully", "pool_names": pool_names}
+    finally:
+        if own_db:
+            db.close()
 
-
-async def get_all_pools():
-    uniqueId = unique_id()
-    client = await connectionWithClient()
-    workflow_id = f"Get-all-pools-{uniqueId}"
+async def get_all_pools(db: Session = None):
+    """Directly query the database for all pools (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_pool.get_all_pools_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_pool.get_all_pools_workflow.run,
-        id=workflow_id,
-        task_queue="Getallpools-task-queue",
-    )
-    result =  await handle.result()
-    return result
+        pools = db.query(Pool).all()
+        pools_json = jsonable_encoder(pools)
+        
+        # Fetch cluster names for each pool
+        for pool_data in pools_json:
+            cluster_id_raw = pool_data.get("cluster_id")
+            if cluster_id_raw:
+                # Handle the case where cluster_id is formatted as "poolid_clusterid"
+                c_id = str(cluster_id_raw).split("_")[-1] if "_" in str(cluster_id_raw) else cluster_id_raw
+                try:
+                    c_id_int = int(c_id)
+                    cluster = db.query(Cluster).filter(Cluster.id == c_id_int).first()
+                    if cluster:
+                        pool_data["cluster"] = cluster.name
+                    else:
+                        pool_data["cluster"] = "NA"
+                except (ValueError, TypeError):
+                    pool_data["cluster"] = "NA"
+            else:
+                pool_data["cluster"] = "NA"
+                
+        return {"msg": "listed all the Pools successfully", "pools": pools_json}
+    finally:
+        if own_db:
+            db.close()
 
-async def get_machine_details( machine_id: str):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+async def get_machine_details(machine_id: str, db: Session = None):
+    """Directly query the database for machine details (Bypasses Temporal for responsiveness)."""
+    own_db = False
+    if db is None:
+        db = SessionLocal()
+        own_db = True
     try:
-        asyncio.create_task(workers_machine.get_machine_details_worker())
-        logger.info(f"Started worker task for getting machine details with unique ID {uniqueId}.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_machine.GetMachineDetailsWorkflow.run,
-        machine_id,
-        id=f"get-machine-details-{uniqueId}",
-        task_queue="get-machine-details-task-queue"
-    )
-    result = await handle.result()
-    return result
+        from models.models import Machine
+        machine = db.query(Machine).filter(Machine.identifier == machine_id).first()
+        if not machine:
+            # Try by vm_id if identifier fails
+            machine = db.query(Machine).filter(Machine.vm_id == machine_id).first()
+            
+        return jsonable_encoder(machine) if machine else {"msg": "Machine not found"}
+    finally:
+        if own_db:
+            db.close()
     
 
 
 async def create_cluster(cluster_data: CreateClusterBase):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     cluster_name = cluster_data['name']
     userName = cluster_data.get('email', "UnknownUser")
     
@@ -576,7 +560,7 @@ async def create_cluster(cluster_data: CreateClusterBase):
 
 async def delete_cluster( db: Session, cluster_id: str, email: Optional[str] = None, ):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
 
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     
@@ -614,7 +598,7 @@ async def delete_cluster( db: Session, cluster_id: str, email: Optional[str] = N
     
 async def update_cluster(db, cluster_id: str, cluster_data: UpdateClusterBase):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     
     cluster_data_dict = jsonable_encoder(cluster_data)
     cluster_name = cluster_data_dict.get('name')

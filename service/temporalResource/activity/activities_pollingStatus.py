@@ -1,4 +1,4 @@
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 from temporalio.client import WorkflowExecutionStatus
 from db_configuration.config import SessionLocal, get_db
 from service import pollingStatus
@@ -111,7 +111,7 @@ async def poll_and_update_machine_status_activity():
 
                 try:
                     for wfid in workflow_ids:
-                        client = await connectionWithClient()
+                        client = await TemporalClientManager.get_temporal_client()
                         handle = client.get_workflow_handle(wfid)
                         desc = await handle.describe()
                         if isinstance(desc.status, int):

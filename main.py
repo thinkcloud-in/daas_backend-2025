@@ -18,6 +18,14 @@ from service.temporalResource.workers import workers_cluster
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
 from service.temporalResource.workers import worker_hyper_v
+from service.temporalResource.workers import workers_pool
+from service.temporalResource.workers import workers_machine
+from service.temporalResource.workers import workers_guacmole
+from service.temporalResource.workers import workers_ipmi
+from service.temporalResource.workers import workers_schedule
+from service.temporalResource.workers import workers_retentionPeriod
+from service.temporalResource.workers import workers_RBAC
+from service.temporalResource.workers import workers_ldap
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
@@ -72,13 +80,61 @@ def start_async_worker(target):
             loop.close()
     threading.Thread(target=run, daemon=True).start()
 
+async def run_worker_group(name, *worker_funcs):
+    """Runs a group of workers in a specific event loop."""
+    import asyncio
+    print(f"Starting worker group: {name}")
+    try:
+        await asyncio.gather(*(func() for func in worker_funcs))
+    except Exception as e:
+        print(f"[Worker Group Error - {name}]: {e}")
+
+def start_thread_manager(name, *worker_funcs):
+    """Helper to start a group of workers in a dedicated thread and event loop."""
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_worker_group(name, *worker_funcs))
+    
+    thread = threading.Thread(target=run, daemon=True, name=f"WorkerThread-{name}")
+    thread.start()
+    return thread
+
 @app.on_event("startup")
 def start_workers():
-    start_async_worker(workers_cluster.combined_worker)
-    start_async_worker(worker_pollingStatus.status_poller_worker)
-    start_async_worker(worker_proxmox.vm_power_worker)
-    start_async_worker(worker_proxmox.vm_rebuild_worker)
-    start_async_worker(worker_hyper_v.hyperv_worker)
-    start_async_worker(listen_for_machine_changes)
-    start_async_worker(run_email_worker)
+    # 1. Core Workers (Pools, Machines)
+    start_thread_manager("Core", 
+        workers_pool.run_all_pool_workers, 
+        workers_machine.run_all_machine_workers
+    )
+    
+    # 2. Identity & Access (LDAP, RBAC)
+    start_thread_manager("Identity", 
+        workers_ldap.run_all_ldap_workers, 
+        workers_RBAC.run_all_rbac_workers
+    )
+    
+    # 3. Infrastructure (Proxmox, Hyper-V, IPMI)
+    start_thread_manager("Infrastructure", 
+        worker_proxmox.run_all_proxmox_workers,
+        worker_hyper_v.hyperv_worker,
+        workers_ipmi.run_all_ipmi_workers
+    )
+    
+    # 4. Reporting & Schedule (Guacamole, Retention)
+    start_thread_manager("Reporting", 
+        workers_guacmole.run_all_guacamole_workers,
+        workers_schedule.run_all_schedule_workers,
+        workers_retentionPeriod.run_all_retention_workers
+    )
+    
+    # 5. Monitoring & System
+    start_thread_manager("System", 
+        workers_cluster.combined_worker,
+        worker_pollingStatus.status_poller_worker,
+        listen_for_machine_changes,
+        run_email_worker
+    )
+    
+    print("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

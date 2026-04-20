@@ -9,7 +9,7 @@ import urllib3
 from db_configuration.config import SessionLocal, get_db
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 import os
 import logging
@@ -51,11 +51,11 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
 
 # Step 2: Create a new user
 
-_worker_started = False  # Global flag to track if worker has started
+
 async def create_user(cluster_data: dict, root_username: str, root_password: str):
     uniqueId = unique_id()
     cred = init_proxmox_context()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     userName = cluster_data.get('email', "UnknownUser")
     handle = await client.start_workflow(
         workflows_cluster.CreateUserWorkflow.run,
@@ -79,7 +79,7 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
 
 async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     userName = cluster_data.get('email', "UnknownUser")
     cred = init_proxmox_context()
     handle = await client.start_workflow(

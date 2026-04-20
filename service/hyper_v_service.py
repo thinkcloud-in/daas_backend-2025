@@ -4,7 +4,7 @@ from fastapi.encoders import jsonable_encoder
 import httpx
 import os
 from datetime import datetime
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 import logging
 import uuid
 from db_configuration.config import get_db, SessionLocal
@@ -57,7 +57,7 @@ async def clone_vm_for_single_node(request) -> dict:
     req_dict = jsonable_encoder(request)
     workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
 
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         logger.error("Temporal client connection failed")
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
@@ -81,7 +81,7 @@ async def clone_vm_for_single_node(request) -> dict:
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
 
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         logger.error("Temporal client connection failed")
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
@@ -204,7 +204,7 @@ async def delete_vm(cluster_id:int, vm_id: str, db:Session) -> dict:
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         logger.error("Temporal client connection failed")
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
@@ -277,7 +277,7 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
     # Inject cluster_id into the payload so the Temporal activity knows which agent to contact
     payload["cluster_id"] = cluster.id
         
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
@@ -311,7 +311,7 @@ async def delete_disk(request, db:Session, cluster_id:int=None) -> dict:
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
         
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
@@ -347,7 +347,7 @@ async def vm_rebuild(request, db:Session, cluster_id:int=None):
             return {"status": "error", "error": f"Machine with vm_id {vm_id} not found in DB."}
         
         uniqueId = unique_id()
-        client = await connectionWithClient()
+        client = await TemporalClientManager.get_temporal_client()
         workflow_id = f"vmrebuild_hyperv-{uniqueId}-{uuid.uuid4().hex[:4]}"
         
         from service.temporalResource.workflows import workflows_hyper_v
@@ -383,7 +383,7 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
 
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         return {"status": "error", "error": "Temporal client connection failed"}
     
@@ -406,7 +406,7 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
 async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
     workflow_id = f"verify_standalone_hyper_v-{uuid.uuid4().hex}"
 
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         logger.error("Temporal client connection failed")
         raise HTTPException(status_code=500, detail="Temporal client connection failed")

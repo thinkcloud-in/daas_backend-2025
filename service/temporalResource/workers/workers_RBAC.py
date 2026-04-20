@@ -3,22 +3,15 @@ from temporalio.worker import Worker
 from temporalio.client import Client
 from service.temporalResource.activity import activities_RBAC
 from service.temporalResource.workflows import workflows_RBAC
+from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 
 load_dotenv()
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        raise e
 
 
 async def get_client_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="get_client_taskqueue",  
@@ -35,7 +28,7 @@ async def get_client_worker():
 
 
 async def get_client_roles_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="get_client_roles_taskqueue",  
@@ -51,7 +44,7 @@ async def get_client_roles_worker():
         
 
 async def creating_role_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="creating_role_taskqueue",  
@@ -67,7 +60,7 @@ async def creating_role_worker():
 
 
 async def deleting_role_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="deleting_role_taskqueue",  
@@ -84,7 +77,7 @@ async def deleting_role_worker():
 
 
 async def updating_role_component_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="updating_role_component_taskqueue",  
@@ -100,7 +93,7 @@ async def updating_role_component_worker():
         
 
 async def getting_role_component_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="getting_role_component_taskqueue",  
@@ -117,7 +110,7 @@ async def getting_role_component_worker():
 
 
 async def assign_user_role_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="assign_user_role_taskqueue",  
@@ -134,7 +127,7 @@ async def assign_user_role_worker():
 
 
 async def get_user_permissions_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="get_user_permissions_taskqueue",  
@@ -150,7 +143,7 @@ async def get_user_permissions_worker():
         
 
 async def delete_role_from_user_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="delete_role_from_user_taskqueue",  
@@ -160,7 +153,25 @@ async def delete_role_from_user_worker():
     
     try:
         await worker.run()
-        
     except Exception as e:
         raise e
+
+async def run_all_rbac_workers():
+    """Starts all RBAC-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        get_client_worker(),
+        get_client_roles_worker(),
+        creating_role_worker(),
+        deleting_role_worker(),
+        updating_role_component_worker(),
+        getting_role_component_worker(),
+        assign_user_role_worker(),
+        get_user_permissions_worker(),
+        delete_role_from_user_worker()
+    ]
+    
+    print("Starting all RBAC workers...")
+    await asyncio.gather(*tasks)
         

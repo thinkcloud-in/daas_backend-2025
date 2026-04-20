@@ -1,6 +1,6 @@
 from temporalio.client import Client
 from temporalio.worker import Worker
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workflows import workflows_proxmox
 from service.temporalResource.activity.activities_proxmox import (
     clone_vm_activity,
@@ -15,9 +15,11 @@ from service.temporalResource.activity.activities_proxmox import (
 
 )
 
+import logging
+
     
 async def clone_vm_worker():
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return 
@@ -42,7 +44,7 @@ async def clone_vm_worker():
         
 
 async def migrate_worker():
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return 
@@ -56,7 +58,7 @@ async def migrate_worker():
     await worker.run()
 
 async def vm_power_worker():
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return 
@@ -80,7 +82,7 @@ async def vm_power_worker():
 
 
 async def vm_rebuild_worker():
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     worker = Worker(
         client,
         task_queue="vm-rebuild-task-queue",
@@ -100,4 +102,19 @@ async def vm_rebuild_worker():
         
     except Exception as e:
         raise Exception(f"Error in VM rebuild worker: {e}")
+
+
+async def run_all_proxmox_workers():
+    """Starts all Proxmox-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        clone_vm_worker(),
+        migrate_worker(),
+        vm_power_worker(),
+        vm_rebuild_worker()
+    ]
+    
+    print("Starting all Proxmox workers...")
+    await asyncio.gather(*tasks)
         

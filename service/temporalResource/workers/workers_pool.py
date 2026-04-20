@@ -1,22 +1,13 @@
-from temporalio.client import Client
 from temporalio.worker import Worker
-import os
 from service.temporalResource.activity import activities_pool
 from service.temporalResource.workflows import workflows_pool
+from utils.temporal_client import TemporalClientManager
 from fastapi import HTTPException
 
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        raise e    
 
 
 async def create_pool_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         return None
 
@@ -35,7 +26,7 @@ async def create_pool_worker():
 
  
 async def update_pool_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -55,7 +46,7 @@ async def update_pool_worker():
 
 
 async def delete_pool_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -75,7 +66,7 @@ async def delete_pool_worker():
 
 
 async def retrieve_pool_data_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return None
@@ -93,7 +84,7 @@ async def retrieve_pool_data_worker():
         raise RuntimeError(str(e))
     
 async def get_all_pool_names_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return None
@@ -112,7 +103,7 @@ async def get_all_pool_names_worker():
     
 
 async def get_all_pools_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return None
@@ -131,7 +122,7 @@ async def get_all_pools_worker():
     
 
 async def get_pool_details_ID_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return None
@@ -149,7 +140,7 @@ async def get_pool_details_ID_worker():
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
 
 async def domain_join_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         return None
 
@@ -163,3 +154,22 @@ async def domain_join_worker():
         await worker.run()
     except Exception as e: 
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
+
+
+async def run_all_pool_workers():
+    """Starts all pool-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        create_pool_worker(),
+        update_pool_worker(),
+        delete_pool_worker(),
+        retrieve_pool_data_worker(),
+        get_all_pool_names_worker(),
+        get_all_pools_worker(),
+        get_pool_details_ID_worker(),
+        domain_join_worker()
+    ]
+    
+    print("Starting all pool workers...")
+    await asyncio.gather(*tasks)

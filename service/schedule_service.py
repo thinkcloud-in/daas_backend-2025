@@ -2,7 +2,6 @@ import threading
 from fastapi import HTTPException
 from models.schedule_model import Schdeule
 from datetime import datetime
-from service.temporalResource.workers import workers_schedule
 from service.temporalResource.workflows import workflows_schedule
 from .temporalService import temporal_schedules
 import asyncio
@@ -106,151 +105,116 @@ def unique_id():
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-async def connectionWithClient():
-    try:
-        return await TemporalClientManager.get_temporal_client()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")  
     
 async def get_data():
     uniqueId = unique_id()
-    client =await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     
-    try:
-        
-        asyncio.create_task(workers_schedule.get_report_data_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_data_workflow.run,
         id=f"Retrieving-schedule-data-{uniqueId}",
         task_queue="GetReportData-task-queue",
     )
-    result =  await handle.result()
+    result = await handle.result()
     return result
 
 
 async def get_data_id(item_id:int):
     uniqueId = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     
-    try:
-        
-        asyncio.create_task(workers_schedule.get_report_data_by_id_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_data_by_id_workflow.run,
         item_id,
         id=f"Retrieving-schedule-data-{uniqueId}",
         task_queue="GetReportDataById-task-queue",
-        
     )
-    result =  await handle.result()
+    result = await handle.result()
     return result
 
 
 async def get_data_report(report:str, limit: int, offset: int,db):
     uniqueID = unique_id()
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     
-    try:
-        
-        asyncio.create_task(workers_schedule.get_schedule_data_along_report_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
     handle = await client.start_workflow(
         workflows_schedule.get_report_along_report_workflow.run,
         args=[report, limit, offset],
         id=f"Retrieving-schedule-data-{report}-{uniqueID}",
         task_queue="GetScheduleDataAlongReport-task-queue",
     )
-    result =  await handle.result()
+    result = await handle.result()
     return result
 
-async def update_data_id(item_id:int, item,db):
+async def update_data_id(item_id: int, item, db):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    
+    client = await TemporalClientManager.get_temporal_client()
+
     try:
-        
-        asyncio.create_task(workers_schedule.update_schedule_data_id_worker())
-        
         handle = await client.start_workflow(
             workflows_schedule.update_schedule_data_id_workflow.run,
-            args=[item_id,item],
+            args=[item_id, item],
             id=f"Updating-schedule-data-ID-{item_id}-{uniqueId}",
             task_queue="UpdateScheduleDataById-task-queue",
         )
-        result =  await handle.result()
+        result = await handle.result()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
     if result['code'] != 200:
         raise HTTPException(status_code=result["code"], detail=result['msg'])
 
     return result['data']
 
 
-async def delete_data_id(item_id:int,db):
+async def delete_data_id(item_id: int, db):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    
-    try:
-        
-        asyncio.create_task(workers_schedule.delete_schedule_data_id_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
+
     handle = await client.start_workflow(
         workflows_schedule.delete_schedule_data_id_workflow.run,
         item_id,
         id=f"Deleting-schedule-data-ID-{item_id}-{uniqueId}",
         task_queue="DeleteScheduleDataById-task-queue",
     )
-    result =  await handle.result()
-    return result 
+    result = await handle.result()
+    return result
 
 
-async def get_temporal_status(schedule_id : str):
-
+async def get_temporal_status(schedule_id: str):
     async def get_schedule_execution_details(schedule_id):
-        client = await Client.connect(os.getenv("TEMPORAL_SERVER"))
+        client = await TemporalClientManager.get_temporal_client()
         schedule_handle = client.get_schedule_handle(schedule_id)
         try:
             description = await schedule_handle.describe()
             if not description.info.recent_actions:
-                return("PENDING")
+                return "PENDING"
             latest_action = description.info.recent_actions[-1]
             if isinstance(latest_action.action, ScheduleActionExecutionStartWorkflow):
                 workflow_id = latest_action.action.workflow_id
                 run_id = latest_action.action.first_execution_run_id
-                # return workflow_id, run_id, client
-                # workflow_id, run_id, client = await get_schedule_execution_details("workflow-schedule-id")
                 if workflow_id and run_id:
                     workflow_handle = client.get_workflow_handle(workflow_id)
-                    status = await workflow_handle.describe() #status
-                    #
+                    status = await workflow_handle.describe()
                     if status.status == 1:
-                        return("RUNNING")
+                        return "RUNNING"
                     elif status.status == 2:
-                        return("COMPLETED")
+                        return "COMPLETED"
                     elif status.status == 3:
-                        return("FAILED") 
+                        return "FAILED"
                     elif status.status == 4:
-                        return("CANCELED") 
+                        return "CANCELED"
                     elif status.status == 5:
-                        return("TERMINATED") 
+                        return "TERMINATED"
                     elif status.status == 6:
-                        return("TIMED_OUT")  
+                        return "TIMED_OUT"
                 else:
-                    
-                    return("Workflow not found...")
+                    return "Workflow not found..."
         except Exception as e:
-            # 
-            # 
-            return (f"Error : {e}")
+            return f"Error : {e}"
+
     try:
         return await get_schedule_execution_details(schedule_id)
     except Exception as e:
-        
         return str(e)
 

@@ -5,8 +5,8 @@ import json
 import requests
 import os
 from fastapi import HTTPException
-from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workflows import workflows_ldap
+from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 load_dotenv()
 def get_login_from_keycloak():
@@ -35,22 +35,10 @@ def get_login_from_keycloak():
 def unique_id():
     return str(uuid.uuid4())
 
-async def connectionWithClient():
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))
-       
-        return client
-    except Exception as e:
-       
-        raise HTTPException(status_code=500, detail=f"Failed to connect to Temporal server: {e}")
 
 async def configuration_ad(ldap_data: dict) -> dict:
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:   
-        asyncio.create_task(workers_ldap.ad_ldap_configuration_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.ad_ldap_configuration_workflow.run,
         ldap_data,
@@ -89,11 +77,7 @@ def get_componeant_id_from_keycloak(auth_headers):
 
 async def test_ldap_connection(ldap_data):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.test_ldap_connection_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.test_ldap_connection_workflow.run,
         ldap_data,
@@ -106,11 +90,7 @@ async def test_ldap_connection(ldap_data):
 
 async def test_ldap_authentication(ldap_data):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.test_ldap_authentication_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.test_ldap_authentication_workflow.run,
         ldap_data,
@@ -123,11 +103,7 @@ async def test_ldap_authentication(ldap_data):
  
 async def delete_ldap_config(ldap_id):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.delete_ldap_config_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.delete_ldap_config_workflow.run,
         ldap_id,
@@ -139,44 +115,87 @@ async def delete_ldap_config(ldap_id):
 
 
 async def get_LDAPs_from_keycloak():
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+    """Directly fetch LDAP configurations from Keycloak (Bypasses Temporal for responsiveness)."""
     try:
-        asyncio.create_task(workers_ldap.get_lDAPS_from_keycloak_worker())
+        headers = get_login_from_keycloak()
+        if not headers:
+             return {"msg": "Error occurred", "error": "Failed to authenticate with Keycloak."}
+        
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        parentId = get_realm_id_from_keycloak(headers)
+        
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components?parentId={parentId}&type=org.keycloak.storage.UserStorageProvider"
+        res = requests.get(url, headers=headers)
+        
+        if res.status_code != 200:
+             return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}"}
+        
+        return res.json()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_ldap.get_LDAPs_from_keycloak_workflow.run,
-        id=f"Getting-LDAPs-from-Keycloak-{uniqueId}",
-        task_queue="GetLDAPSFromKeycloak-task-queue",
-    )
-    result =  await handle.result()
-    return result
+        return {"msg": "Error occurred", "error": str(e)}
 
 async def get_LDAP_by_id(ldap_id):
-    uniqueId = unique_id()
-    client = await connectionWithClient()
+    """Directly fetch a specific LDAP configuration from Keycloak (Bypasses Temporal for responsiveness)."""
     try:
-        asyncio.create_task(workers_ldap.get_LDAP_by_id_worker())
+        headers = get_login_from_keycloak()
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components/{ldap_id}"
+        res = requests.get(url, headers=headers)
+        
+        if res.status_code != 200:
+             return {"msg": "Error occurred", "error": f"Keycloak returned status {res.status_code}"}
+        
+        res_json = res.json()
+        # Map the structure as expected by the frontend
+        mapped_data = {
+            "name": res_json.get("name", ""),
+            "vendor": res_json.get('config', {}).get('vendor', [''])[0],
+            "connectionUrl": res_json.get('config', {}).get("connectionUrl", [""])[0],
+            "startTls": res_json.get('config', {}).get("startTls", [False])[0],
+            "useTruststoreSpi": res_json.get('config', {}).get("useTruststoreSpi", [""])[0],
+            "connectionPooling": res_json.get('config', {}).get("connectionPooling", [False])[0],
+            "connectionTimeout": res_json.get('config', {}).get("connectionTimeout", [""])[0],
+            "authType": res_json.get('config', {}).get("authType", [""])[0],
+            "bindDn": res_json.get('config', {}).get("bindDn", [""])[0],
+            "bindCredential": res_json.get('config', {}).get("bindCredential", [""])[0],
+            "editMode": res_json.get('config', {}).get("editMode", [""])[0],
+            "usersDn": res_json.get('config', {}).get("usersDn", [""])[0],
+            "usernameLDAPAttribute": res_json.get('config', {}).get("usernameLDAPAttribute", [""])[0],
+            "rdnLDAPAttribute": res_json.get('config', {}).get("rdnLDAPAttribute", [""])[0],
+            "uuidLDAPAttribute": res_json.get('config', {}).get("uuidLDAPAttribute", [""])[0],
+            "userObjectClasses": res_json.get('config', {}).get("userObjectClasses", [""])[0],
+            "searchScope": res_json.get('config', {}).get("searchScope", [""])[0],
+            "readTimeout": res_json.get('config', {}).get("readTimeout", [""])[0],
+            "pagination": res_json.get('config', {}).get("pagination", [False])[0],
+            "referral": res_json.get('config', {}).get("referral", [""])[0],
+            "importEnabled": res_json.get('config', {}).get("importEnabled", [True])[0],
+            "syncRegistrations": res_json.get('config', {}).get("syncRegistrations", [True])[0],
+            "batchSizeForSync": res_json.get('config', {}).get("batchSizeForSync", [""])[0],
+            "fullSyncPeriod": int(res_json.get('config', {}).get("fullSyncPeriod", ["-1"])[0]),
+            "changedSyncPeriod": int(res_json.get('config', {}).get("changedSyncPeriod", ["-1"])[0]),
+            "allowKerberosAuthentication": res_json.get('config', {}).get("allowKerberosAuthentication", [False])[0],
+            "useKerberosForPasswordAuthentication": res_json.get('config', {}).get("useKerberosForPasswordAuthentication", [False])[0],
+            "cachePolicy": res_json.get('config', {}).get("cachePolicy", ["DEFAULT"])[0],
+            "usePasswordModifyExtendedOp": res_json.get('config', {}).get("usePasswordModifyExtendedOp", [False])[0],
+            "validatePasswordPolicy": res_json.get('config', {}).get("validatePasswordPolicy", [False])[0],
+            "trustEmail": res_json.get('config', {}).get("trustEmail", [False])[0],
+            "customUserSearchFilter": res_json.get('config', {}).get("customUserSearchFilter", [""])[0],
+            "debug": res_json.get('config', {}).get("debug", [False])[0],
+            "enabled": res_json.get('config', {}).get("enabled", [True])[0],
+            "kerberosRealm": res_json.get('config', {}).get("kerberosRealm", [""])[0],
+            "keyTab": res_json.get('config', {}).get("keyTab", [""])[0],
+            "lastSync": res_json.get('config', {}).get("lastSync", [""])[0],
+            "serverPrincipal": res_json.get('config', {}).get("serverPrincipal", [""])[0],
+            "krbPrincipalAttribute": res_json.get('config', {}).get("krbPrincipalAttribute", [""])[0]
+        }
+        return mapped_data
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-    handle = await client.start_workflow(
-        workflows_ldap.get_LDAP_by_id_workflow.run,
-        ldap_id,
-        id=f"Getting-LDAP-by-ID-{uniqueId}",
-        task_queue="GetLdapById-task-queue",
-    )
-    result =  await handle.result()
-    return result
+        return {"msg": "Error occurred: " + str(e)}
 
 
 async def update_ldap_config(ldap_data:dict,ldap_id:str) :
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.update_ldap_config_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.update_ldap_config_workflow.run,
         args=[ldap_data,ldap_id],
@@ -188,11 +207,7 @@ async def update_ldap_config(ldap_data:dict,ldap_id:str) :
     
 async def sync_user_from_keycloak(ldap_id):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.sync_user_from_keycloak_Byid_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.sync_user_from_keycloak_Byid_workflow.run,
         ldap_id,
@@ -204,11 +219,7 @@ async def sync_user_from_keycloak(ldap_id):
     
 async def sync_changed_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.sync_changed_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.sync_changed_users_from_keycloak_workflow.run,
         ldap_id,
@@ -220,11 +231,7 @@ async def sync_changed_users_from_keycloak(ldap_id):
     
 async def unlink_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.unlink_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.unlink_users_from_keycloak_workflow.run,
         ldap_id,
@@ -237,11 +244,7 @@ async def unlink_users_from_keycloak(ldap_id):
     
 async def remove_imported_users_from_keycloak(ldap_id):
     uniqueId = unique_id()
-    client = await connectionWithClient()
-    try:
-        asyncio.create_task(workers_ldap.remove_imported_users_from_keycloak_worker())
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
         workflows_ldap.remove_imported_users_from_keycloak_workflow.run,
         ldap_id,

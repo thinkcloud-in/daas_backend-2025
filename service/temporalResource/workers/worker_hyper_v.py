@@ -1,4 +1,4 @@
-from service.gucamoleService import connectionWithClient
+from utils.temporal_client import TemporalClientManager
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_hyper_v
 from service.temporalResource.activity import activities_hyper_v
@@ -6,7 +6,7 @@ from service.temporalResource.activity import activities_hyper_v
 import logging
 
 async def hyperv_worker():
-    client = await connectionWithClient()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         return
 

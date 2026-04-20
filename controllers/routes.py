@@ -1,3 +1,4 @@
+from utils.temporal_client import TemporalClientManager
 import json
 from fastapi import APIRouter, HTTPException, Depends, Request 
 from fastapi.encoders import jsonable_encoder
@@ -300,22 +301,15 @@ def get_enable_browser_guacamole_authflow():
     return  key_config.get_Auth_flow_Value_guacamole_browser()
 
 
-async def get_temporal_client():
-    """Establish connection with the Temporal server."""
-    try:
-        client = await Client.connect(TEMPORAL_SERVER)
-        return client
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"Cannot connect to Temporal server: {str(e)}")
-
-# Set IST timezone (Indian Standard Time)
-IST_TZ = pytz.timezone("Asia/Kolkata")
-
 @router.get("/workflows")
 async def list_workflows():
     """Fetch and return active workflows from Temporal."""
-    client = await get_temporal_client()
+    client = await TemporalClientManager.get_temporal_client()
     time_format = "%Y-%m-%dT%H:%M:%S.%fZ"  
+    
+    # Set IST timezone (Indian Standard Time)
+    import pytz
+    IST_TZ = pytz.timezone("Asia/Kolkata")
 
 
     workflows = []

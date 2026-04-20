@@ -3,21 +3,13 @@ from temporalio.worker import Worker
 import os
 from service.temporalResource.activity import activities_ipmi
 from service.temporalResource.workflows import workflows_ipmi
+from utils.temporal_client import TemporalClientManager
 from fastapi import HTTPException
-async def connectionWithTemporal():
-    
-    try:
-        client = await Client.connect(os.getenv('TEMPORAL_SERVER'))  
-        
-        return client
-    except Exception as e:
-        
-        return e
    
 # worker function for create ipmi
  
 async def create_ipmi_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -34,7 +26,7 @@ async def create_ipmi_worker():
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
     
 async def update_ipmi_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
         
         return None
@@ -54,7 +46,7 @@ async def update_ipmi_worker():
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
     
 async def delete_ipmi_worker():
-    client = await connectionWithTemporal()
+    client = await TemporalClientManager.get_temporal_client()
     if client is None:
 
         return None
@@ -70,4 +62,18 @@ async def delete_ipmi_worker():
         await worker.run()
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error in Temporal worker: {e}")
+
+
+async def run_all_ipmi_workers():
+    """Starts all IPMI-related workers concurrently in the same event loop."""
+    import asyncio
+    
+    tasks = [
+        create_ipmi_worker(),
+        update_ipmi_worker(),
+        delete_ipmi_worker()
+    ]
+    
+    print("Starting all IPMI workers...")
+    await asyncio.gather(*tasks)
  
