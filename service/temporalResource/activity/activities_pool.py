@@ -52,9 +52,23 @@ async def create_pool_activity(request: dict) -> dict:
         try:
             existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
             if existing_pool:
-                return {
-                    "msg": f"Pool already exists with this pool_name {existing_pool.pool_name}."
-                }
+                # If pool exists, check if it already has machines. 
+                # If it has machines, it might be a successful retry.
+                # If it has no machines, it's a failed previous attempt.
+                machines_count = db.query(Machine).filter(Machine.pool_id == existing_pool.id).count()
+                if machines_count > 0:
+                    return {
+                        "msg": f"Pool '{existing_pool.pool_name}' already exists and contains {machines_count} machine(s).",
+                        "pool": jsonable_encoder(existing_pool),
+                        "status": "already_exists"
+                    }
+                else:
+                    # If it exists but has no machines, we might want to delete it and retry, 
+                    # but for safety, just report it.
+                    return {
+                        "msg": f"Pool '{existing_pool.pool_name}' exists but has no machines. Please delete it before retrying.",
+                        "status": "exists_no_machines"
+                    }
 
             # Second guard before database operations
             if str(pool_data.get("cluster_id", "")).lower() == "nan":
@@ -89,9 +103,17 @@ async def create_pool_activity(request: dict) -> dict:
                 num_requested = vm_count
                 num_missing = num_requested - num_allocated
 
-                if num_allocated == 0:
+                if num_allocated < num_requested:
                     db.rollback()
-                    return {"msg": "No available IPs in the selected IP pools to create any VMs."}
+                    # Release the IPs we just allocated since we are aborting
+                    for ip_entry, _ in allocated_ips:
+                        ip_obj = db.query(IPEntry).filter(IPEntry.ip == ip_entry["ip"]).first()
+                        if ip_obj:
+                            ip_obj.status = "unused"
+                    db.commit()
+                    return {
+                        "msg": f"Insufficient IPs: Requested {num_requested}, but only {num_allocated} available in the selected pools."
+                    }
 
                 ip_list = [ip_entry["ip"] for ip_entry, _ in allocated_ips]
                 ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]

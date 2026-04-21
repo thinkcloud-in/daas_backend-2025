@@ -93,10 +93,9 @@ def allocate_ips_across_pools(db: Session, pool_names, count):
             .limit(remaining)
             .all()
         )
-        res_ips = jsonable_encoder(ips)
-        for ip in res_ips:
-            allocated.append((ip, pool_name))
-            ip['status'] = "used"
+        for ip_obj in ips:
+            allocated.append((jsonable_encoder(ip_obj), pool_name))
+            ip_obj.status = "used"
         remaining -= len(ips)
         if remaining <= 0:
             break

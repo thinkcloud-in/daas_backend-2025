@@ -20,7 +20,7 @@ class PoolCreationWorkflow:
                 activities_pool.create_pool_activity,
                 pool_data,  
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             return result
         except Exception:
@@ -42,7 +42,7 @@ class PoolUpdateWorkflow:
                 activities_pool.update_pool_activity,
                 args=[pool_id,pool_data],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
@@ -66,7 +66,7 @@ class PoolDeletionWorkflow:
                 activities_pool.delete_pool_activity,
                 args=[pool_id],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
@@ -91,7 +91,7 @@ class RetrievePoolDataWorkflow:
                 activities_pool.retrieve_pool_data_activity,
                 args=[pool_name],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
@@ -114,7 +114,7 @@ class GetListofPoolNamesWorkflow:
             result = await workflow.execute_activity(
                 activities_pool.list_all_pool_names_activity,
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
@@ -137,7 +137,7 @@ class get_all_pools_workflow:
             result = await workflow.execute_activity(
                 activities_pool.get_all_pools_activity,
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
@@ -161,7 +161,7 @@ class get_pool_details_ID_workflow:
                 activities_pool.get_pool_details_id_activity,
                 args=[pool_id],
                 retry_policy=retry_policy,
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(minutes=30),
             )
             
             return result
