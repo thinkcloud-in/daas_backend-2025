@@ -118,10 +118,7 @@ async def create_pool(pool_data: dict, db) -> dict:
     if isinstance(result, dict) and result.get("status") == "error":
         raise HTTPException(
             status_code=400,
-            detail={ 
-                "error_type": result.get("error_type"),
-                "error": result.get("error")
-            }
+            detail=result.get("error") or result.get("msg") or "Pool creation failed"
         )
 
     if isinstance(result, dict) and "pool" in result:
@@ -162,6 +159,12 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
         },
     )
     result =  await handle.result()
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or result.get("msg") or "Pool update failed"
+        )
+
     if isinstance(result, dict) and "pool" in result:
         pool_id = result["pool"]["id"]
         if pool_ad_domain != "UnknownDomain":
@@ -299,6 +302,11 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
         },
     )
     result = await handle.result()
+    if isinstance(result, dict) and result.get("status") == "error":
+        raise HTTPException(
+            status_code=400,
+            detail=result.get("error") or result.get("msg") or "Pool deletion failed"
+        )
     return result  
         
 async def add_user_to_machine( machine_identifier: str, username: str):

@@ -66,8 +66,10 @@ async def create_pool_activity(request: dict) -> dict:
                     # If it exists but has no machines, we might want to delete it and retry, 
                     # but for safety, just report it.
                     return {
-                        "msg": f"Pool '{existing_pool.pool_name}' exists but has no machines. Please delete it before retrying.",
-                        "status": "exists_no_machines"
+                        "status": "error",
+                        "error_type": "pool_exists_no_machines",
+                        "error": f"Pool '{existing_pool.pool_name}' exists but has no machines. Please delete it before retrying.",
+                        "msg": f"Pool '{existing_pool.pool_name}' exists but has no machines. Please delete it before retrying."
                     }
 
             # Second guard before database operations
@@ -95,7 +97,12 @@ async def create_pool_activity(request: dict) -> dict:
                 if not cluster_data:
                     # Roll back the pool row we just created before returning.
                     db.rollback()
-                    return {"msg": f"Cluster not found for id: {cluster_id}"}
+                    return {
+                        "status": "error",
+                        "error_type": "cluster_not_found",
+                        "error": f"Cluster not found for id: {cluster_id}",
+                        "msg": f"Cluster not found for id: {cluster_id}"
+                    }
 
                 nodes = node if isinstance(node, list) else [node]
                 allocated_ips = allocate_ips_across_pools(db, ip_pool_names, vm_count)
@@ -112,6 +119,9 @@ async def create_pool_activity(request: dict) -> dict:
                             ip_obj.status = "unused"
                     db.commit()
                     return {
+                        "status": "error",
+                        "error_type": "insufficient_ips", 
+                        "error": f"Insufficient IPs: Requested {num_requested}, but only {num_allocated} available in the selected pools.",
                         "msg": f"Insufficient IPs: Requested {num_requested}, but only {num_allocated} available in the selected pools."
                     }
 
@@ -498,7 +508,12 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             allocated_ips = allocate_ips_across_pools(db, ip_pool_names, added_count)
             if not allocated_ips:
-                return {"msg": "No available IPs in the selected IP pools to create any additional VMs."}
+                return {
+                    "status": "error",
+                    "error_type": "insufficient_ips",
+                    "error": "No available IPs in the selected IP pools to create any additional VMs.",
+                    "msg": "No available IPs in the selected IP pools to create any additional VMs."
+                }
 
             num_allocated = len(allocated_ips)
             ip_list = [ip_entry["ip"] for ip_entry, _ in allocated_ips]
@@ -773,7 +788,12 @@ async def delete_pool_activity(pool_id: int) -> dict:
         try:
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
             if not pool:
-                return {"msg": f"Pool not found with id - {pool_id}"}
+                return {
+                    "status": "error",
+                    "error_type": "pool_not_found",
+                    "error": f"Pool not found with id - {pool_id}",
+                    "msg": f"Pool not found with id - {pool_id}"
+                }
             pool_machines = pool.pool_machines or []
             pool_vmids = pool.pool_vmids or []
             cluster_pool_id = pool.cluster_id
