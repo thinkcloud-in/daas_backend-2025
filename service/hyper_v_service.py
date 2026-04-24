@@ -53,30 +53,113 @@ async def get_vms(cluster_id:int, db:Session):
         data = response.json()
         return data['data']
 
-async def clone_vm_for_single_node(request) -> dict:
-    req_dict = jsonable_encoder(request)
-    workflow_id = f"clone_vm_hyperv-{uuid.uuid4().hex}"
+async def clone_vm_hyper_v_service(request) -> dict:
+    req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
 
-    client = await TemporalClientManager.get_temporal_client()
-    if client is None:
-        logger.error("Temporal client connection failed")
-        raise HTTPException(status_code=500, detail="Temporal client connection failed")
-
+    cluster_id = req_dict.get("cluster_id")
+    db: Session = SessionLocal()
     try:
-        from service.temporalResource.workflows import workflows_hyper_v
-        logger.info("Starting workflow %s with payload keys: %s", list(req_dict.keys()))
-        handle = await client.start_workflow(
-            workflows_hyper_v.CloneVMHyperVWorkflow.run,
-            args=[req_dict],
-            id=workflow_id,
-            task_queue="hyperv-task-queue",
-        )
-    except Exception as e:
-        logger.exception("Failed to start workflow %s: %s", e)
-        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise HTTPException(status_code=404, detail=f"Cluster with ID {cluster_id} not found")
+        agent_url = get_agent_url(cluster)
+    finally:
+        db.close()
 
-    result =  await handle.result()
-    return result
+    node_type = str(cluster.node_type).lower().replace(" ", "") if cluster and cluster.node_type else ""
+    is_cluster = node_type == "multinode"
+
+    url = f"{agent_url}/v1/hyper-v/clone_vm_hyper_v"
+    template = req_dict.get("template_vm_id", {}) or {}
+
+    vhdPath          = template.get("vhdPath")
+    PvhdPath         = template.get("PvhdPath")
+    generation       = template.get("generation")
+    memory           = template.get("memory")
+    switch           = template.get("switch")
+    os_type          = template.get("os_type")
+    ip_list          = req_dict.get("ip_list")
+    password         = template.get("password")
+    gateway          = template.get("gateway")
+    subnet           = template.get("subnet")
+    dns              = template.get("dns")
+    number_of_vms    = req_dict.get("count", 1)
+    base_vm_name     = req_dict.get("name_template", "cloned_vm")
+    domain           = req_dict.get("domain")
+    ou               = req_dict.get("ou")
+    username         = req_dict.get("username")
+    domain_password  = req_dict.get("domain_password")
+
+    # Extract resource settings with fallback to template (checking both prefixed and non-prefixed keys)
+    dynamic_memory  = req_dict.get("dynamic_memory")  if req_dict.get("dynamic_memory")  is not None else (template.get("dynamic_memory")  if template.get("dynamic_memory")  is not None else template.get("pool_dynamic_memory"))
+    minimum_memory  = req_dict.get("minimum_memory")  if req_dict.get("minimum_memory")  is not None else (template.get("minimum_memory")  if template.get("minimum_memory")  is not None else template.get("pool_minimum_memory"))
+    maximum_memory  = req_dict.get("maximum_memory")  if req_dict.get("maximum_memory")  is not None else (template.get("maximum_memory")  if template.get("maximum_memory")  is not None else template.get("pool_maximum_memory"))
+    buffer_memory   = req_dict.get("buffer_memory")   if req_dict.get("buffer_memory")   is not None else (template.get("buffer_memory")   if template.get("buffer_memory")   is not None else template.get("pool_buffer_memory"))
+    processor_count = req_dict.get("processor_count") if req_dict.get("processor_count") is not None else (template.get("processor_count") if template.get("processor_count") is not None else template.get("pool_processor_count"))
+    priority        = req_dict.get("priority")        if req_dict.get("priority")        is not None else (template.get("priority")        if template.get("priority")        is not None else template.get("pool_priority", 2000))
+
+    # Fetch existing VM names from agent to avoid conflicts
+    try:
+        db_inner: Session = SessionLocal()
+        try:
+            hyperv_vms = await get_vms(cluster.id, db_inner)
+        finally:
+            db_inner.close()
+        hyperv_names = [vm.get("VMName") or vm.get("Name") for vm in hyperv_vms if vm.get("VMName") or vm.get("Name")]
+    except Exception:
+        hyperv_names = []
+
+    from service import proxmoxService
+    new_names = proxmoxService.generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+    if not new_names:
+        return {"error": "No unique VM names available for cloning."}
+
+    result_vms = []
+    for vm_name, ip in zip(new_names, ip_list):
+        payload = {
+            "vm_name": vm_name, "memory": memory, "vhdPath": vhdPath,
+            "switch": switch, "generation": generation, "PvhdPath": PvhdPath,
+            "ip": ip, "password": password, "gateway": gateway, "os_type": os_type,
+            "subnet": subnet, "dns": dns, "domain": domain, "ou": ou,
+            "username": username, "domain_password": domain_password,
+            "dynamic_memory": dynamic_memory, "minimum_memory": minimum_memory,
+            "maximum_memory": maximum_memory, "buffer_memory": buffer_memory,
+            "processor_count": processor_count, "priority": priority,
+            "is_cluster": is_cluster,
+        }
+        logger.debug("Cloning VM %s with payload: %s", vm_name, payload)
+        print('----------------------------------------------------payload',payload)
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(url, json=payload)
+            data = response.json()
+
+        if data.get("code") != 200:
+            logger.warning("Agent returned non-200 while cloning %s: %s", vm_name, data)
+            continue
+
+        agent_data = data.get("data")
+        if isinstance(agent_data, dict) and "VM" in agent_data:
+            vm_info = agent_data["VM"]
+            result_vms.append({
+                "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+                "vmid": vm_info.get("Id") or vm_info.get("VMId")
+            })
+        elif isinstance(agent_data, list):
+            for vm_item in agent_data:
+                if isinstance(vm_item, dict) and "VM" in vm_item:
+                    vm_info = vm_item["VM"]
+                    result_vms.append({
+                        "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+                        "vmid": vm_info.get("Id") or vm_info.get("VMId")
+                    })
+        else:
+            result_vms.append({"name": vm_name})
+
+    return {
+        "machines_created": len(result_vms),
+        "created_names": new_names,
+        "vms": result_vms,
+    }
 
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
@@ -108,61 +191,7 @@ async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Unio
     result =  await handle.result()
     return result
 
-async def generate_mac_activity(cluster_id:int, db:Session) -> str:
-    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-    agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/generate_mac_add"
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.post(url)
-        data = resp.json()
-        return data["data"]["MAC_Add"]
 
-async def create_iso_activity(cluster_id:int, payload: dict) -> str:
-    with SessionLocal() as db:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        agent_url = get_agent_url(cluster)
-        url = f"{agent_url}/v1/hyper-v/create_iso"
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(url, json=payload)
-            data = resp.json()
-            return data["data"]["iso_path"]
-
-async def get_switches_activity(cluster_id:int, db:Session) -> str:
-    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-    agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/get_switches"
-    async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(url)
-        data = resp.json()
-        return data["data"]["Name"]
-
-async def clone_vm_activity(cluster_id:int, payload: dict) -> dict:
-    with SessionLocal() as db:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        agent_url = get_agent_url(cluster)
-        url = f"{agent_url}/v1/hyper-v/clone_vm_for_single_node"
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(url, json=payload)
-            return resp.json()["data"]
-
-async def attach_iso_activity(cluster_id:int, payload: dict) -> dict:
-    with SessionLocal() as db:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        if not cluster:
-            raise HTTPException(status_code=404, detail="Cluster not found")
-        agent_url = get_agent_url(cluster)
-        url = f"{agent_url}/v1/hyper-v/attach_iso"
-        async with httpx.AsyncClient(timeout=20) as client:
-            resp = await client.post(url, json=payload)
-            return resp.json()["data"]
 
 async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
     if not cluster_id:
@@ -199,36 +228,7 @@ async def get_switches(cluster_id:int, db:Session):
         data = response.json()
         return data['data']
 
-async def delete_vm(cluster_id:int, vm_id: str, db:Session) -> dict:
-    # workflow_id = f"delete_vm_hyperv-{uuid.uuid4().hex}"
-    cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-    client = await TemporalClientManager.get_temporal_client()
-    if client is None:
-        logger.error("Temporal client connection failed")
-        raise HTTPException(status_code=500, detail="Temporal client connection failed")
 
-    request = {"vm_id": vm_id}
-
-    try:
-        from service.temporalResource.workflows import workflows_hyper_v
-        logger.info("Starting workflow %s with payload keys: %s", request)
-        handle = await client.start_workflow(
-            workflows_hyper_v.DeleteVMHyperVWorkflow.run,
-            args=[request],
-            # id=workflow_id,
-            task_queue="hyperv-task-queue",
-        )
-    except Exception as e:
-        logger.exception("Failed to start delete VM workflow")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to start delete workflow: {str(e)}"
-        )
-
-    result = await handle.result()
-    return result
 async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
     if not cluster_id:
         cluster = await resolve_cluster_from_vm(vm_id, db)
@@ -239,11 +239,13 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/delete_vm/{vm_id}"
+    node_type = str(cluster.node_type).lower().replace(" ", "") if cluster.node_type else ""
+    is_cluster = node_type == "multinode"
+    url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.delete(url)
         data = response.json()
-        return data['data']
+        return data
 
 async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
     if not cluster_id:
@@ -300,34 +302,7 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
     result = await handle.result()
     return result
         
-async def delete_disk(request, db:Session, cluster_id:int=None) -> dict:
-    payload = request.dict() if hasattr(request, "dict") else request
-    cid = cluster_id or payload.get("cluster_id")
-    
-    if not cid:
-         raise HTTPException(status_code=400, detail="cluster_id is required for disk deletion")
 
-    cluster = db.query(Cluster).filter(Cluster.id == cid).first()
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Cluster not found")
-        
-    client = await TemporalClientManager.get_temporal_client()
-    if client is None:
-        raise HTTPException(status_code=500, detail="Temporal client connection failed")
-
-    try:
-        from service.temporalResource.workflows import workflows_hyper_v
-        handle = await client.start_workflow(
-            workflows_hyper_v.DeleteHyperVDiskWorkflow.run,
-            args=[payload],
-            task_queue="hyperv-task-queue",
-        )
-    except Exception as e:
-        logger.exception("Failed to start delete disk workflow")
-        raise HTTPException(status_code=500, detail=f"Failed to start workflow: {str(e)}")
-
-    result = await handle.result()
-    return result
 
 async def vm_rebuild(request, db:Session, cluster_id:int=None):
     payload = request.dict() if hasattr(request, "dict") else request

@@ -26,9 +26,9 @@ async def ping_agent(
 ):
     return await hyper_v_controller.ping_agent(cluster_id, db, ip, port)
 
-# @hyper_v_router.post("/clone_vm_for_single_node", response_model=APIResponse[Any]) 
-# async def clone_vm_for_single_node(request: CloneVMRequest, db: Session = Depends(get_db)):
-#         return await controller.clone_vm_for_single_node(request, db)
+# @hyper_v_router.post("/clone_vm_hyper_v", response_model=APIResponse[Any]) 
+# async def clone_vm_hyper_v(request: CloneVMRequest, db: Session = Depends(get_db)):
+#         return await hyper_v_controller.clone_vm_hyper_v_controller(request, db)
 
 @hyper_v_router.get("/get_vm_info/{vm_id}", response_model=APIResponse[Any])
 async def get_vm_info(vm_id: str, db: Session = Depends(get_db)):

@@ -379,8 +379,13 @@ async def rebuild_vm_endpoint(
 def get_cluster_by_id(db: Session, vm_id: str) -> Cluster:
     try:
         vm_id_str = str(vm_id)
-        machine_data = db.query(Machine).filter(Machine.vm_id == vm_id_str).first()
+        # Search by both vm_id and identifier to be more robust
+        machine_data = db.query(Machine).filter(
+            (Machine.vm_id == vm_id_str) | (Machine.identifier == vm_id_str)
+        ).first()
+
         if not machine_data:
+            logger.error(f"Machine lookup failed for VM ID: {vm_id_str}. This might be because the machine record hasn't been committed yet or the ID is incorrect.")
             raise HTTPException(status_code=404, detail=f"Machine with vm_id {vm_id} not found")
 
         pool_id = machine_data.pool_id

@@ -72,22 +72,29 @@ async def get_workflow_failure_message_simple(workflow_id):
 _status_poller_workflow_id = None
 
 async def is_status_poller_cron_running():
-
     try:
+        print("[Poller] Checking if status-poller is already running...")
         client = await TemporalClientManager.get_temporal_client()
-        async for workflow in client.list_workflows("WorkflowId STARTS_WITH 'status-poller-'"):
-            if workflow.status == WorkflowExecutionStatus.RUNNING:
-                return True, workflow.id
+        handle = client.get_workflow_handle("status-poller")
+        try:
+            desc = await handle.describe()
+            if desc.status == WorkflowExecutionStatus.RUNNING:
+                print(f"[Poller] Found running workflow: {handle.id}")
+                return True, handle.id
+        except Exception:
+            # Workflow doesn't exist or is not running
+            pass
         return False, None
     except Exception as e:
+        print(f"[Poller] Error during check: {e}")
         logger.error(f"Error checking status poller workflow: {e}")
         return False, None
 
-async def start_status_poller_workflow():
+async def start_status_poller_workflow(force=False):
     global _status_poller_workflow_id
     
     is_running, existing_id = await is_status_poller_cron_running()
-    if is_running:
+    if is_running and not force:
         _status_poller_workflow_id = existing_id
         return {
             "message": "Status poller workflow already running",
@@ -95,8 +102,17 @@ async def start_status_poller_workflow():
             "status": "already_running"
         }
     
-    uniqueId = controllers.unique_id()
     client = await TemporalClientManager.get_temporal_client()
+    if is_running and force:
+        try:
+            print(f"[Poller] Terminating existing workflow {existing_id} for force restart...")
+            handle = client.get_workflow_handle(existing_id)
+            await handle.terminate(reason="Force restart requested")
+            print("[Poller] Termination successful.")
+        except Exception as e:
+            print(f"[Poller] Termination failed (might already be closed): {e}")
+
+    uniqueId = controllers.unique_id()
     
 
     
@@ -121,10 +137,10 @@ async def start_status_poller_workflow():
         from fastapi import HTTPException
         raise HTTPException(status_code=500, detail=f"Error starting status poller workflow: {str(e)}")
 
-async def ensure_status_poller_running():
+async def ensure_status_poller_running(force=False):
     try:
-        result = await start_status_poller_workflow()
-        logger.info(f"Status poller ensured: {result}")
+        result = await start_status_poller_workflow(force=force)
+        logger.info(f"Status poller ensured (force={force}): {result}")
         return result
     except Exception as e:
         logger.error(f"Error ensuring status poller: {e}")

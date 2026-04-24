@@ -82,12 +82,18 @@ def start_async_worker(target):
 
 async def run_worker_group(name, *worker_funcs):
     """Runs a group of workers in a specific event loop."""
-    import asyncio
     print(f"Starting worker group: {name}")
-    try:
-        await asyncio.gather(*(func() for func in worker_funcs))
-    except Exception as e:
-        print(f"[Worker Group Error - {name}]: {e}")
+    
+    async def safe_run(func):
+        try:
+            print(f"[Group {name}] Starting {func.__name__}...")
+            await func()
+        except Exception as e:
+            print(f"[Group {name}] Error in {func.__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+
+    await asyncio.gather(*(safe_run(func) for func in worker_funcs))
 
 def start_thread_manager(name, *worker_funcs):
     """Helper to start a group of workers in a dedicated thread and event loop."""

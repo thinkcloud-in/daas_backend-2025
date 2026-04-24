@@ -7,8 +7,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 async def status_poller_worker():
-
     try:
+        from service.pollingStatus import ensure_status_poller_running
+        await ensure_status_poller_running(force=True)
         client = await TemporalClientManager.get_temporal_client()
         
         worker = Worker(

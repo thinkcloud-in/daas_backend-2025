@@ -26,7 +26,7 @@ class CloneVMHyperVWorkflow:
         logger.info("This workflow id: %s run id: %s", wf_id, wf_run_id)
 
         result = await workflow.execute_activity(
-            activities_hyper_v.clone_vm_single_node_activity,
+            activities_hyper_v.clone_vm_hyper_v_activity,
             args=[request],
             start_to_close_timeout=timedelta(seconds=120),
             retry_policy=retry_policy
@@ -58,7 +58,7 @@ class DeleteVMHyperVWorkflow:
         )
         wf_id = workflow.info().workflow_id
         result = await workflow.execute_activity(
-            activities_hyper_v.delete_vm_single_node_activity,
+            activities_hyper_v.delete_vm_hyper_v_activity,
             args=[request],
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,

@@ -14,8 +14,8 @@ async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Unio
     return success_response(200, "Successfully pinged Hyper-V agent", result)
 
 
-async def clone_vm_for_single_node(request, db):
-    result = await service.clone_vm_for_single_node(request)
+async def clone_vm_hyper_v_controller(request, db):
+    result = await service.clone_vm_hyper_v_service(request)
     return success_response(200, "Successfully cloned Hyper-V VM for single node", result)
 
 async def get_vm_info(vm_id, db):

@@ -10,7 +10,7 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-from service.hyper_v_service import clone_vm_for_single_node,delete_hyperv_vm,delete_disk
+from service.hyper_v_service import delete_hyperv_vm,clone_vm_hyper_v_service
 import json
 
 
@@ -45,6 +45,13 @@ async def create_pool_activity(request: dict) -> dict:
             template_vm_id = pool_data.get("pool_template_vm_id")
             name_template = pool_data.get("pool_naming_pattern")
             pool_storage = pool_data.get("pool_storage")
+
+            # Parse template_vm_id if it's a JSON string (common for Hyper-V)
+            if isinstance(template_vm_id, str):
+                try:
+                    template_vm_id = json.loads(template_vm_id)
+                except Exception:
+                    pass
 
         # ── Database operations (shared by ALL pool types) ───────────────────
         # FIX: this try block was incorrectly nested inside the Automated-only
@@ -128,6 +135,10 @@ async def create_pool_activity(request: dict) -> dict:
                 ip_list = [ip_entry["ip"] for ip_entry, _ in allocated_ips]
                 ip_pool_assignments = [pool_name for _, pool_name in allocated_ips]
 
+                # Robust cluster detection
+                node_type = str(cluster_data.node_type).lower().replace(" ", "") if cluster_data and cluster_data.node_type else ""
+                actual_is_cluster = node_type == "multinode"
+
                 clone_payload_dict = {
                     "cluster_id": str(cluster_data.id),
                     "node": nodes,
@@ -141,26 +152,32 @@ async def create_pool_activity(request: dict) -> dict:
                     "ou": pool_data.get("pool_ad_path"),
                     "username": pool_data.get("pool_ad_username"),
                     "domain_password": pool_data.get("pool_ad_password"),
-                    "dynamic_memory": pool_data.get("pool_dynamic_memory"),
-                    "minimum_memory": pool_data.get("pool_minimum_memory"),
-                    "maximum_memory": pool_data.get("pool_maximum_memory"),
-                    "buffer_memory": pool_data.get("pool_buffer_memory"),
-                    "processor_count": pool_data.get("pool_processor_count"),
+                    "is_cluster": actual_is_cluster,
                 }
 
                 cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
                 if cluster_type in ("hyper-v", "hyperv"):
-                    response = await clone_vm_for_single_node(clone_payload_dict)
+                    response = await clone_vm_hyper_v_service(clone_payload_dict)
                 elif cluster_type == "proxmox":
                     response = await clone_vm(clone_payload_dict)
+                    if isinstance(response, dict) and "error" in response:
+                        raise Exception(response["error"])
                     if response.get("error_type") == "clone_failed":
-                        return {
-                            "status": "error",
-                            "error_type": response.get("error_type"),
-                            "error": response.get("error"),
-                        }
+                        raise Exception(response.get("error", "Proxmox cloning failed"))
 
                 assigned_vms = response.get("vms", [])
+
+                # ── Release any unused IPs (if cloning failed or partially failed) ───
+                used_ip_values = {vm.get("ip") for vm in assigned_vms if vm.get("ip")}
+                for ip_entry_dict, _ in allocated_ips:
+                    ip_val = ip_entry_dict["ip"]
+                    if ip_val not in used_ip_values:
+                        ip_obj = db.query(IPEntry).filter(IPEntry.ip == ip_val).first()
+                        if ip_obj:
+                            ip_obj.status = "unused"
+                            ip_obj.vm_id = None
+                db.commit()
+
                 pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
                 db.commit()
                 db.refresh(pool)
@@ -173,17 +190,12 @@ async def create_pool_activity(request: dict) -> dict:
                     ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
 
                     # ── Mark IP as used ──────────────────────────────────────
-                    try:
-                        if ip:
-                            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                            if ip_entry:
-                                ip_entry.status = "used"
-                                ip_entry.vm_id = str(vmid)
-                        db.commit()
-                    except Exception as e:
-                        db.rollback()
-                        raise e
-
+                    if ip:
+                        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+                        if ip_entry:
+                            ip_entry.status = "used"
+                            ip_entry.vm_id = str(vmid)
+                    
                     # ── Create machine record ────────────────────────────────
                     try:
                         workflow_ids = [
@@ -286,18 +298,16 @@ async def create_pool_activity(request: dict) -> dict:
                             "email": email,
                             "clone_workflow_id": workflow_ids,
                             "error_message": "power-off",
-                            "pool_dynamic_memory": pool.pool_dynamic_memory,
-                            "pool_minimum_memory": pool.pool_minimum_memory,
-                            "pool_maximum_memory": pool.pool_maximum_memory,
-                            "pool_buffer_memory": pool.pool_buffer_memory,
-                            "pool_processor_count": pool.pool_processor_count,
+
                         }
                         machine_data_obj = CreateMachineBase(**machine_data)
                         machine_result = await controllers.create_machine(machine_data_obj, db=db)
                         machines_json.append(jsonable_encoder(machine_result))
                     except Exception as e:
-                        db.rollback()
-                        raise e
+                        print(f"Error creating machine for vmid {vmid}: {e}")
+                        continue
+                
+                db.commit()
 
                 msg = f"Pool and {num_allocated} VM(s) created successfully."
                 if num_missing > 0:
@@ -426,11 +436,6 @@ def machinedata(email,machine, db_pool):
         "args": db_pool.pool_args,
         "is_custom_machine": False,
         "email": email,
-        "pool_dynamic_memory": db_pool.pool_dynamic_memory,
-        "pool_minimum_memory": db_pool.pool_minimum_memory,
-        "pool_maximum_memory": db_pool.pool_maximum_memory,
-        "pool_buffer_memory": db_pool.pool_buffer_memory,
-        "pool_processor_count": db_pool.pool_processor_count
         }
     return machine_data
 
@@ -542,6 +547,10 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             else:
                 template_for_clone = template_vm_id
 
+            # Robust cluster detection
+            node_type = str(cluster_data.node_type).lower().replace(" ", "") if cluster_data and cluster_data.node_type else ""
+            actual_is_cluster = node_type == "multinode"
+
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),
                 "node": nodes,
@@ -555,16 +564,12 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "ou": pool_data.get("pool_ad_path", db_pool.pool_ad_path),
                 "username": pool_data.get("pool_ad_username", db_pool.pool_ad_username),
                 "domain_password": pool_data.get("pool_ad_password", db_pool.pool_ad_password),
-                "dynamic_memory": pool_data.get("pool_dynamic_memory", db_pool.pool_dynamic_memory),
-                "minimum_memory": pool_data.get("pool_minimum_memory", db_pool.pool_minimum_memory),
-                "maximum_memory": pool_data.get("pool_maximum_memory", db_pool.pool_maximum_memory),
-                "buffer_memory": pool_data.get("pool_buffer_memory", db_pool.pool_buffer_memory),
-                "processor_count": pool_data.get("pool_processor_count", db_pool.pool_processor_count),
+                "is_cluster": actual_is_cluster,
             }
 
             try:
                 if cluster_type in ("hyper-v", "hyperv"):
-                    response = await clone_vm_for_single_node(clone_payload_dict)
+                    response = await clone_vm_hyper_v_service(clone_payload_dict)
                 else:
                     response = await clone_vm(clone_payload_dict)
 
@@ -583,7 +588,18 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                     vm_add_error = f"but new VMs were NOT added: {err_msg}"
                     vms = []
                 else:
-                    raise  # FIX: re-raise the original exception, not a new wrapper
+                    raise
+
+            # ── Release any unused IPs (if cloning failed or partially failed) ───
+            used_ip_values = {vm.get("ip") for vm in vms if vm.get("ip")}
+            for ip_entry_dict, _ in allocated_ips:
+                ip_val = ip_entry_dict["ip"]
+                if ip_val not in used_ip_values:
+                    ip_obj = db.query(IPEntry).filter(IPEntry.ip == ip_val).first()
+                    if ip_obj:
+                        ip_obj.status = "unused"
+                        ip_obj.vm_id = None
+            db.commit()
 
         # ── Apply field updates to the pool row ──────────────────────────────
         # FIX: always exclude pool_number_of_vms and email from the blind setattr
@@ -616,12 +632,10 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                         if ip_entry:
                             ip_entry.status = "used"
                             ip_entry.vm_id = str(vmid)
-                            db.commit()
                 except Exception as e:
-                    db.rollback()
                     # FIX: log instead of silently swallowing; re-raise so callers
                     #      know IP tracking failed (prevents phantom IPs).
-                    raise Exception(f"Failed to mark IP {ip} as used: {e}") from e
+                    print(f"Failed to mark IP {ip} as used: {e}")
 
                 # Create machine record
                 try:
@@ -725,21 +739,17 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                         "email": email,
                         "clone_workflow_id": workflow_ids,
                         "error_message": "power-off",
-                        "pool_dynamic_memory": db_pool.pool_dynamic_memory,
-                        "pool_minimum_memory": db_pool.pool_minimum_memory,
-                        "pool_maximum_memory": db_pool.pool_maximum_memory,
-                        "pool_buffer_memory": db_pool.pool_buffer_memory,
-                        "pool_processor_count": db_pool.pool_processor_count,
                     }
                     machine_data_obj = CreateMachineBase(**machine_data)
                     machine_result = await controllers.create_machine(machine_data_obj, db=db)
                     machines_json.append(jsonable_encoder(machine_result))
                 except Exception as e:
-                    db.rollback()
                     # FIX: was silently `continue`-ing, masking machine creation
                     #      failures. Log + continue is safer than swallowing.
                     print(f"[update_pool] Warning: failed to create machine for vmid={vmid}: {e}")
                     continue
+            
+            db.commit()
 
         # ── Sync existing (non-custom) machines with updated pool config ──────
         existing_machines = (

@@ -23,7 +23,7 @@ def unique_id():
     return u_id
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("create_machine_activity")
@@ -122,8 +122,11 @@ async def create_pool(pool_data: dict, db) -> dict:
         )
 
     if isinstance(result, dict) and "pool" in result:
-        pool_id = result["pool"]["id"]
-        if pool_ad_domain != "UnknownDomain":
+        pool_dict = result["pool"]
+        # Safely get ID (handles cases where result['pool'] might be malformed or missing keys)
+        pool_id = pool_dict.get("id") if isinstance(pool_dict, dict) else None
+        
+        if pool_id and pool_ad_domain != "UnknownDomain":
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -166,8 +169,11 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
         )
 
     if isinstance(result, dict) and "pool" in result:
-        pool_id = result["pool"]["id"]
-        if pool_ad_domain != "UnknownDomain":
+        pool_dict = result["pool"]
+        # Safely get ID (handles cases where result['pool'] might be malformed or missing keys)
+        pool_id_val = pool_dict.get("id") if isinstance(pool_dict, dict) else None
+
+        if pool_id_val and pool_ad_domain != "UnknownDomain":
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],

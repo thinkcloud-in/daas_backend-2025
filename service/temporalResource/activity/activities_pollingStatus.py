@@ -24,7 +24,11 @@ def split_pools_by_cluster_type(db: Session):
 
     for pool in pool_data:
         try:
-            clusterid = pool.cluster_id.split("_")[1]
+            raw_cluster_id = pool.cluster_id
+            if "_" in str(raw_cluster_id):
+                clusterid = str(raw_cluster_id).split("_")[1]
+            else:
+                clusterid = raw_cluster_id
         except Exception:
             continue
 
@@ -45,7 +49,7 @@ def split_pools_by_cluster_type(db: Session):
 
 @activity.defn
 async def poll_and_update_machine_status_activity():
-
+    print("\n[Poller Activity] Starting status update cycle...")
     statuses = {}
     error_details = []
     power_states = {}
@@ -55,6 +59,7 @@ async def poll_and_update_machine_status_activity():
         try:
             all_machines = db.query(Machine).all()
             if not all_machines:
+                print("[Poller Activity] No machines found to poll.")
                 logger.info("No machines found")
                 return {
                     "message": "No machines to poll",
@@ -66,10 +71,11 @@ async def poll_and_update_machine_status_activity():
             # Run Proxmox and Hyper-V power-state collectors
             try:
                 proxmox_vm_status = await get_proxmox_vm_status_activity(db=db, pools=proxmox_pools)
-                logger.info(f"Proxmox pools collected: {len(proxmox_vm_status)}")
+                print(f"[Poller Activity] Proxmox pools collected: {len(proxmox_vm_status)}")
                 hyperv_vm_status = await get_hyperv_vm_status_activity(db=db, pools=hyperv_pools)
-                logger.info(f"Hyper-V pools collected: {len(hyperv_vm_status)}")
+                print(f"[Poller Activity] Hyper-V pools collected: {len(hyperv_vm_status)}")
             except Exception as e:
+                print(f"[Poller Activity] ERROR collecting pool states: {e}")
                 logger.error(f"Failed to run power-state collectors: {e}")
                 proxmox_vm_status = []
                 hyperv_vm_status = []
@@ -113,11 +119,16 @@ async def poll_and_update_machine_status_activity():
                     for wfid in workflow_ids:
                         client = await TemporalClientManager.get_temporal_client()
                         handle = client.get_workflow_handle(wfid)
-                        desc = await handle.describe()
-                        if isinstance(desc.status, int):
-                            status = WorkflowExecutionStatus(desc.status).name
-                        else:
-                            status = str(desc.status)
+                        try:
+                            desc = await handle.describe()
+                            if isinstance(desc.status, int):
+                                status = WorkflowExecutionStatus(desc.status).name
+                            else:
+                                status = str(desc.status)
+                        except Exception as e:
+                            logger.warning(f"Workflow {wfid} not found or inaccessible: {e}")
+                            status = "UNKNOWN"
+                        
                         error = None
                         vm_status = None
 

@@ -16,6 +16,10 @@ class TemporalClientManager:
         if cls._client is None:
             try:
                 temporal_server = os.getenv('TEMPORAL_SERVER', 'localhost:7233')
+                # Remove protocol if present
+                if "://" in temporal_server:
+                    temporal_server = temporal_server.split("://")[1]
+                
                 logger.info(f"Connecting to Temporal server at {temporal_server}...")
                 cls._client = await Client.connect(temporal_server)
                 logger.info("Successfully connected to Temporal server.")
@@ -27,11 +31,5 @@ class TemporalClientManager:
     @classmethod
     async def close(cls):
         if cls._client:
-            # Temporal client doesn't strictly require a close method in some versions, 
-            # but it's good practice if the library supports it or for cleanup logic.
-            # Currently, the python sdk client doesn't expose a close awaitable in the same way 
-            # as some other clients, but we can set it to None.
-            # If the underlying connection needs closing, it depends on the framework.
-            # For now, we just reset the singleton.
             cls._client = None
             logger.info("Temporal client connection reset.")

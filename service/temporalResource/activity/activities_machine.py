@@ -17,7 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger("machine_activity_logger")
@@ -187,14 +187,22 @@ async def delete_machine_activity(machine_identifier: str):
                     logger.warning("Pool not found for the machine.")
                     return {"msg": "Pool not found for the machine"}
                 cluster_pool_id = pool.cluster_id
-                
-                id_cluster = cluster_pool_id.split("_")[1]
+                if "_" in str(cluster_pool_id):
+                    id_cluster = str(cluster_pool_id).split("_")[1]
+                else:
+                    id_cluster = cluster_pool_id
+                id_cluster = int(id_cluster)
                 cluster_data = db.query(model.Cluster).filter(model.Cluster.id == id_cluster).first()
+                if not cluster_data:
+                    logger.error(f"Cluster with ID {id_cluster} not found for deletion.")
+                    return {"msg": "Cluster not found"}
+
+                cluster_type = (cluster_data.type or "").lower().replace("-", "")
                 try:
-                    if cluster_data.type.lower() == "proxmox":
+                    if cluster_type == "proxmox":
                         await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
-                    elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
-                        response = await hyper_v_service.delete_hyperv_vm(vmid, db)
+                    elif cluster_type == "hyperv":
+                        response = await hyper_v_service.delete_hyperv_vm(vmid, db, cluster_id=cluster_data.id)
                    
                 except Exception as e:
                     logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")

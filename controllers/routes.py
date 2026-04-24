@@ -59,21 +59,6 @@ async def delete_pool_route(pool_id: str, request: Request, db: Session = Depend
     return response_format.success_response(200, "Pool deleted successfully.", result)
 
 
-@router.delete("/delete_machine/{machine_id}", response_model=APIResponse)
-async def delete_machine_by_id(machine_id: str, request: Request, db: Session = Depends(get_db)):
-    raw_body = await request.body()  # Get raw request body
-    if not raw_body:
-        raise HTTPException(status_code=400, detail="Empty request body")
-
-    body = json.loads(raw_body) 
-    email = body.get("email")
-
-    if not email:
-        raise HTTPException(status_code=400, detail="Email is required")
-
-    data = await controller.delete_machine(machine_id, email, db)
-    return response_format.success_response(200, "Machine deleted successfully.", data)
-
 
 @router.get('/pools_names', response_model=APIResponse)
 async def list_pools_names(db: Session = Depends(get_db)):
@@ -99,13 +84,12 @@ async def create_machine_endpoint(machine_data: models.CreateMachineBase):
     return response_format.success_response(200, "Machine created successfully.", data)
 
 @router.delete("/delete_machine/{machine_id}", response_model=APIResponse)
-async def delete_machine_by_id(machine_id: str, request: Request, db: Session = Depends(get_db)):
-    body = await request.json()
-    email = body.get("email") 
+async def delete_machine_by_id(machine_id: str, email: str, db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
-    res = await controller.delete_machine(machine_id, email, db)
-    return response_format.success_response(200, "Machine deleted successfully.", res)
+
+    data = await controller.delete_machine(machine_id, email, db)
+    return response_format.success_response(200, "Machine deleted successfully.", data)
 
 #Route to update a machine/connection
 @router.put('/update_machine/{machine_identifier}', response_model=APIResponse)

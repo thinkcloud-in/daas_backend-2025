@@ -2,7 +2,7 @@ import os
 from dotenv import load_dotenv
 import logging
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.ERROR)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
