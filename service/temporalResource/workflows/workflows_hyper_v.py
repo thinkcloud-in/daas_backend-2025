@@ -45,6 +45,7 @@ class CloneVMHyperVWorkflow:
         logger.info("CloneVMHyperVWorkflow completed. workflow_id=%s", wf_id)
         return result
 
+
 @workflow.defn(sandboxed=False)
 class DeleteVMHyperVWorkflow:
     @workflow.run
@@ -67,6 +68,7 @@ class DeleteVMHyperVWorkflow:
             result["delete_workflow_id"] = wf_id
         logger.info("DeleteVMHyperVWorkflow completed, workflow_id=%s", wf_id)
         return result
+
 
 @workflow.defn(sandboxed=False)
 class HandleActionHyperVWorkflow:
@@ -95,6 +97,7 @@ class HandleActionHyperVWorkflow:
         logger.info("HandleActionHyperVWorkflow completed, workflow_id=%s", wf_id)
         return result
 
+
 @workflow.defn(sandboxed=False)
 class DeleteHyperVDiskWorkflow:
     @workflow.run
@@ -118,6 +121,7 @@ class DeleteHyperVDiskWorkflow:
         logger.info("DeleteHyperVDiskWorkflow completed, workflow_id=%s", wf_id)
         return result
 
+
 @workflow.defn(sandboxed=False)
 class VmRebuildHyperVWorkflow:
     @workflow.run
@@ -135,6 +139,7 @@ class VmRebuildHyperVWorkflow:
             start_to_close_timeout=timedelta(minutes=5),
         )
         return result
+
 
 @workflow.defn(sandboxed=False)
 class HyperVPoolRebuildWorkflow:
@@ -192,7 +197,7 @@ class HyperVPoolRebuildWorkflow:
 @workflow.defn(sandboxed=False)
 class PingAgentWorkflow:
     @workflow.run
-    async def run(self, cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
+    async def run(self, cluster_id: Optional[int], ip: str, port: Union[int, str]):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -201,17 +206,36 @@ class PingAgentWorkflow:
         )
         result = await workflow.execute_activity(
             activities_hyper_v.ping_agent_activity,
-            args=[cluster_id, db, ip, port],
+            args=[cluster_id, ip, port],
             retry_policy=retry_policy,
             start_to_close_timeout=timedelta(minutes=5),
         )
         return result
 
+
 @workflow.defn(sandboxed=False)
-class VerifyStandaloneHyperVWorkflow:
+class FetchClusterNodesWorkflow:
     @workflow.run
-    async def run(self, request: dict, db: Session, cluster_id: Optional[int] = None):
-        logger.info("VerifyStandaloneHyperVWorkflow started for ip=%s", request.get("ip"))
+    async def run(self, request: dict):
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=2),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=20),
+            maximum_attempts=3,
+        )
+        result = await workflow.execute_activity(
+            activities_hyper_v.fetch_cluster_nodes_activity,
+            args=[request],
+            start_to_close_timeout=timedelta(seconds=60),
+            retry_policy=retry_policy,
+        )
+        return result
+
+@workflow.defn(sandboxed=False)
+class VerifyHyperVWorkflow:
+    @workflow.run
+    async def run(self, request: dict, cluster_id: Optional[int] = None):
+        logger.info("VerifyHyperVWorkflow started for ip=%s", request.get("ip"))
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -219,8 +243,8 @@ class VerifyStandaloneHyperVWorkflow:
             maximum_attempts=5,
         )
         result = await workflow.execute_activity(
-            activities_hyper_v.verify_standalone_hyper_v_activity,
-            args=[request, db, cluster_id],
+            activities_hyper_v.verify_hyper_v_activity,
+            args=[request, cluster_id],
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,
         )

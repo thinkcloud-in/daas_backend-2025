@@ -67,7 +67,7 @@ async def clone_vm_hyper_v_service(request) -> dict:
         db.close()
 
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster and cluster.node_type else ""
-    is_cluster = node_type == "multinode"
+    is_cluster = node_type in ("multinode", "cluster")
 
     url = f"{agent_url}/v1/hyper-v/clone_vm_hyper_v"
     template = req_dict.get("template_vm_id", {}) or {}
@@ -128,7 +128,6 @@ async def clone_vm_hyper_v_service(request) -> dict:
             "is_cluster": is_cluster,
         }
         logger.debug("Cloning VM %s with payload: %s", vm_name, payload)
-        print('----------------------------------------------------payload',payload)
         async with httpx.AsyncClient(timeout=180.0) as client:
             response = await client.post(url, json=payload)
             data = response.json()
@@ -174,7 +173,7 @@ async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Unio
         logger.info("Starting workflow %s with payload keys: %s", cluster_id, db, ip, port)
         handle = await client.start_workflow(
             workflows_hyper_v.PingAgentWorkflow.run,
-            args=[cluster_id, db, ip, port],
+            args=[cluster_id, ip, port],
             id=workflow_id,
             task_queue="hyperv-task-queue",
             # search_attributes={
@@ -240,7 +239,7 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
 
     agent_url = get_agent_url(cluster)
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster.node_type else ""
-    is_cluster = node_type == "multinode"
+    is_cluster = node_type in ("multinode", "cluster")
     url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.delete(url)
@@ -378,8 +377,8 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
         logger.error(f"Failed to start pool rebuild workflow: {e}")
         return {"status": "error", "error": str(e)}
 
-async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
-    workflow_id = f"verify_standalone_hyper_v-{uuid.uuid4().hex}"
+async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
+    workflow_id = f"verify_hyper_v-{uuid.uuid4().hex}"
 
     client = await TemporalClientManager.get_temporal_client()
     if client is None:
@@ -390,8 +389,8 @@ async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[i
         from service.temporalResource.workflows import workflows_hyper_v
         logger.info("Starting workflow %s with payload keys: %s",request.ip, request.username, request.password, request.agent_port, cluster_id) 
         handle = await client.start_workflow(
-            workflows_hyper_v.VerifyStandaloneHyperVWorkflow.run,
-            args=[request, db, cluster_id],
+            workflows_hyper_v.VerifyHyperVWorkflow.run,
+            args=[request, cluster_id],
             id=workflow_id,
             task_queue="hyperv-task-queue",
             # search_attributes={
@@ -407,3 +406,24 @@ async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[i
 
     result =  await handle.result()
     return result
+
+async def fetch_hyper_v_cluster_nodes(request, db: Session):
+    workflow_id = f"fetch_cluster_nodes-{uuid.uuid4().hex}"
+    client = await TemporalClientManager.get_temporal_client()
+    if client is None:
+        raise HTTPException(status_code=500, detail="Temporal client connection failed")
+
+    try:
+        from service.temporalResource.workflows import workflows_hyper_v
+        handle = await client.start_workflow(
+            workflows_hyper_v.FetchClusterNodesWorkflow.run,
+            args=[request],
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+        result = await handle.result()
+        return result
+    except Exception as e:
+        logger.exception("Failed to start FetchClusterNodesWorkflow: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
+

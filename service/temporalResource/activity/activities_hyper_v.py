@@ -294,7 +294,7 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
                 return {"status": "error", "error": "No template data found in pool."}
 
             # 1. Delete existing VM
-            is_cluster = cluster.node_type == "multi node"
+            is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
             delete_url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
             async with httpx.AsyncClient(timeout=60.0) as client:
                 del_resp = await client.delete(delete_url)
@@ -344,7 +344,7 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
                 "buffer_memory": buffer_memory,
                 "processor_count": processor_count,
                 "priority": template_data.get("priority", 2000),
-                "is_cluster": cluster.node_type == "multi node",
+                "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
             }
 
             async with httpx.AsyncClient(timeout=120.0) as client:
@@ -466,7 +466,7 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
         finally:
             db.close()
 
-        is_cluster = cluster.node_type == "multi node"
+        is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
         delete_vm_url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{old_vm_id}?is_cluster={str(is_cluster).lower()}"
         async with httpx.AsyncClient(timeout=60.0) as client:
             await client.delete(delete_vm_url)
@@ -498,7 +498,7 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "username": pool.pool_ad_username,
             "domain_password": pool.pool_ad_password,
             "priority": template_data.get("priority", 2000),
-            "is_cluster": cluster.node_type == "multi node",
+            "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
         }
 
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -583,7 +583,7 @@ async def ping_agent_activity(cluster_id: Optional[int], ip: str, port: Union[in
             else:
                 raise Exception("cluster_id or ip/port required")
                 
-            url = f"{agent_url}/v1/hyper-v/health"
+            url = f"{agent_url}/v1/hyper-v/health_check"
 
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(url)
@@ -597,7 +597,7 @@ async def ping_agent_activity(cluster_id: Optional[int], ip: str, port: Union[in
 
 
 @activity.defn
-async def verify_standalone_hyper_v_activity(request, cluster_id: Optional[int] = None) -> dict:
+async def verify_hyper_v_activity(request, cluster_id: Optional[int] = None) -> dict:
     db: Session = SessionLocal()
     try:
         try:
@@ -611,7 +611,7 @@ async def verify_standalone_hyper_v_activity(request, cluster_id: Optional[int] 
                 port = payload.get("agent_port") or 8765
                 agent_url = f"http://{ip}:{port}"
             
-            url = f"{agent_url}/v1/hyper-v/verify_standalone_hyper_v"
+            url = f"{agent_url}/v1/hyper-v/verify_hyper_v"
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(url, json=payload)
                 data = response.json()
@@ -624,7 +624,7 @@ async def verify_standalone_hyper_v_activity(request, cluster_id: Optional[int] 
                         or data.get("msg")
                         or "Hyper-V verification failed"
                     )
-                    raise Exception("Error while verifying standalone Hyper-V- ",detail)
+                    raise Exception("Error while verifying Hyper-V- ",detail)
 
                 agent_data = data.get("data", {})
 
@@ -635,11 +635,37 @@ async def verify_standalone_hyper_v_activity(request, cluster_id: Optional[int] 
                         or agent_data.get("error")
                         or "Hyper-V verification failed"
                     )
-                    raise Exception("Error while verifying standalone Hyper-V",detail)
+                    raise Exception("Error while verifying Hyper-V",detail)
 
                 return agent_data
         except Exception as e:
-            logger.error("Error verifying standalone Hyper-V: %s", e)
+            logger.error("Error verifying Hyper-V: %s", e)
             raise Exception(f"Hyper-V verification error: {str(e)}")
     finally:
         db.close()
+
+
+@activity.defn
+async def fetch_cluster_nodes_activity(request: dict) -> list:
+    db: Session = SessionLocal()
+    try:
+        ip = request.get("ip")
+        port = request.get("agent_port") or 8765
+        agent_url = f"http://{ip}:{port}"
+        
+        url = f"{agent_url}/v1/hyper-v/get_node_status_from_cluster"
+        logger.info("Fetching cluster nodes from agent: %s", url)
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            if response.status_code != 200:
+                raise Exception(f"Agent failed to return cluster nodes: {response.text}")
+            
+            data = response.json()
+            return data.get("data", [])
+    except Exception as e:
+        logger.error("fetch_cluster_nodes_activity failed: %s", str(e))
+        raise Exception(f"Failed to fetch cluster nodes: {str(e)}")
+    finally:
+        db.close()
+

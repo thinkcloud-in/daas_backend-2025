@@ -4,7 +4,7 @@ from models.hyper_v_model import HandleRebuildActionRequest
 from fastapi import APIRouter, Depends
 from controllers import hyper_v_controller
 from models.API_Response_model import APIResponse
-from models.hyper_v_model import CloneVMRequest, HandleActionRequest, HandleDeleteDiskRequest, VerifyStandaloneHyperVRequest
+from models.hyper_v_model import VerifyHyperVRequest
 from typing import Any
 from db_configuration.config import get_db
 from sqlalchemy.orm import Session
@@ -62,6 +62,17 @@ async def pool_rebuild(request: HandlePoolRebuildActionRequest, db: Session = De
 # async def delete_disk(request: HandleDeleteDiskRequest, db: Session = Depends(get_db)):
 #         return await controller.delete_disk(request, db)
 
-@hyper_v_router.post("/verify_standalone_hyper_v", response_model=APIResponse[Any])
-async def verify_standalone_hyper_v(request: VerifyStandaloneHyperVRequest, db: Session = Depends(get_db), cluster_id: Optional[int] = None ):
-        return await hyper_v_controller.verify_standalone_hyper_v(request,db,cluster_id)
+@hyper_v_router.post("/verify_hyper_v", response_model=APIResponse[Any])
+async def verify_hyper_v(request: VerifyHyperVRequest, db: Session = Depends(get_db), cluster_id: Optional[int] = None ):
+        return await hyper_v_controller.verify_hyper_v(request,db,cluster_id)
+
+
+@hyper_v_router.get("/get_node_status_from_cluster", response_model=APIResponse[Any])
+async def get_node_status_from_cluster(
+    db: Session = Depends(get_db),
+    ip: Optional[str] = None,
+    agent_port: Optional[int] = None,
+    cluster_id: Optional[int] = None
+):
+    request_data = {"ip": ip, "agent_port": agent_port, "cluster_id": cluster_id}
+    return await hyper_v_controller.get_node_status_from_cluster(request_data, db)

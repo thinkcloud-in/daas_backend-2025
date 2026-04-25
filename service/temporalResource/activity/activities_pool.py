@@ -137,7 +137,7 @@ async def create_pool_activity(request: dict) -> dict:
 
                 # Robust cluster detection
                 node_type = str(cluster_data.node_type).lower().replace(" ", "") if cluster_data and cluster_data.node_type else ""
-                actual_is_cluster = node_type == "multinode"
+                actual_is_cluster = node_type in ("multinode", "cluster")
 
                 clone_payload_dict = {
                     "cluster_id": str(cluster_data.id),
@@ -549,7 +549,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             # Robust cluster detection
             node_type = str(cluster_data.node_type).lower().replace(" ", "") if cluster_data and cluster_data.node_type else ""
-            actual_is_cluster = node_type == "multinode"
+            actual_is_cluster = node_type in ("multinode", "cluster")
 
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),

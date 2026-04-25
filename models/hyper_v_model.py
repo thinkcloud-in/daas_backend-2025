@@ -36,8 +36,9 @@ class HandlePoolRebuildActionRequest(BaseModel):
     pool_id: Union[int, str] = Field(..., description="ID of the pool")
     vhdPath: str = Field(..., description="Path of the base VHD file")
 
-class VerifyStandaloneHyperVRequest(BaseModel):
+class VerifyHyperVRequest(BaseModel):
     ip: str = Field(..., description="IP Address or FQDN")
     username: str = Field(..., description="Username")
     password: str = Field(..., description="Password")
     agent_port: Optional[Union[str, int]] = Field(None, description="Agent Port")
+    type: str = Field(..., description="Type of the Hyper-V")

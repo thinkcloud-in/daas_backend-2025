@@ -50,6 +50,11 @@ async def pool_rebuild(request, db):
     result = await service.pool_rebuild(request, db)
     return success_response(200, "Pool rebuild initiated.", result)
 
-async def verify_standalone_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
-    result = await service.verify_standalone_hyper_v(request, db, cluster_id)
-    return success_response(200, "Standalone Hyper-V verified.", result)
+async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
+    result = await service.verify_hyper_v(request, db, cluster_id)
+    return success_response(200, "Hyper-V verified.", result)
+
+
+async def get_node_status_from_cluster(request, db: Session):
+    result = await service.fetch_hyper_v_cluster_nodes(request, db)
+    return success_response(200, "Successfully retrieved cluster nodes", result)
