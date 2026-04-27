@@ -22,7 +22,7 @@ async def create_pool_activity(request: dict) -> dict:
         email = pool_data.pop("email", None)
         ip_pool_names = pool_data.get("pool_ip_pool_names")
 
-        # ── Automated-pool pre-flight checks ────────────────────────────────
+        # Automated-pool pre-flight checks 
         if pool_data.get("pool_type") == "Automated":
             if not ip_pool_names or not isinstance(ip_pool_names, list) or not ip_pool_names:
                 return {
@@ -53,9 +53,7 @@ async def create_pool_activity(request: dict) -> dict:
                 except Exception:
                     pass
 
-        # ── Database operations (shared by ALL pool types) ───────────────────
-        # FIX: this try block was incorrectly nested inside the Automated-only
-        #      block above; moved out to the correct indentation level.
+        #  Database operations (shared by ALL pool types) 
         try:
             existing_pool = db.query(Pool).filter(Pool.pool_name == pool_data["pool_name"]).first()
             if existing_pool:
@@ -98,7 +96,7 @@ async def create_pool_activity(request: dict) -> dict:
 
             machines_json = []
 
-            # ── Automated pool: clone VMs ────────────────────────────────────
+            # Automated pool: clone VMs
             if pool.pool_type == "Automated":
                 cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
                 if not cluster_data:
@@ -827,8 +825,6 @@ async def delete_pool_activity(pool_id: int) -> dict:
                                 vhdpath = pool.pool_template_vm_id.get("vhdPath", "")
                                 vhdpath += machine.name
                                 await delete_hyperv_vm(vmid, db)
-                                # if response:
-                                #     await delete_disk(vhdpath)
                             ip_entries = db.query(IPEntry).filter(IPEntry.vm_id == vmid_str, IPEntry.status == "used").all()
                             for ip_entry in ip_entries:
                                 ip_entry.status = "unused"

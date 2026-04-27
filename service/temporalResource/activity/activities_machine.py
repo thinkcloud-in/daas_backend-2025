@@ -12,7 +12,7 @@ from service.pollingStatus import update_workflow_status, ensure_status_poller_r
 from db_configuration.config import SessionLocal, get_db
 from service import hyper_v_service
 
-logger = logging.getLogger("create_machine_activity")
+logger = logging.getLogger("Machine_activity")
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -92,8 +92,6 @@ async def create_machine_activity(machine_data: dict):
                 except Exception as e:
                     logger.warning(f"Failed to determine cluster type: {e}")
 
-            # Perform the "Machine Already Existed" check primarily for Proxmox or non-automated pools
-            # as per user feedback that for Hyper-V/Automated this might be intentional or handled elsewhere.
             if cluster_type == "proxmox" or not is_automated:
                 response = await get_machine_name(machine_data)
                 if response == 'Machine Already Existed':

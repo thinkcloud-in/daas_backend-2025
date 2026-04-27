@@ -90,14 +90,9 @@ async def shutdown_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: 
     return response_format.success_response(200, "VM shut down successfully.", jsonable_encoder(res))
 
 @proxmox_router.post("/vm_rebuild", response_model=APIResponse[Any])
-async def rebuild_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: Session = Depends(get_db)):
-    res = await proxmox_controller.rebuild_vm_endpoint(data, vmid, pool_id, db)
+async def rebuild_vm(vmid: str, pool_id: str = None, db: Session = Depends(get_db)):
+    res = await proxmox_controller.rebuild_vm_endpoint(vmid, pool_id, db)
     return response_format.success_response(200, "VM rebuilt successfully.", jsonable_encoder(res))
-
-@proxmox_router.get("/proxmox_vm_infos/{vm_id}", response_model=APIResponse[Any])
-async def proxmox_all_vm_details(vm_id: int, db: Session = Depends(get_db)):
-    res = proxmox_controller.proxmox_all_vm_details(vm_id, db)
-    return response_format.success_response(200, "VM details fetched successfully.", jsonable_encoder(res))
 
 @proxmox_router.get("/proxmox_vm_info/{vm_id}", response_model=APIResponse[Any])
 async def proxmox_vm_detail(vm_id: str, db: Session = Depends(get_db)):

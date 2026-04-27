@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from db_configuration.config import SessionLocal, get_db
 import service.proxmoxService as service
 from service.controllers import get_cluster_details
-from service import clusterService
+from service import clusterService,hyper_v_service
 from models.models import Cluster, Machine,Pool
 from models.proxmox_model import MigrateRequest, VMPowerRequest, MetricServer
 from utils.temporal_client import TemporalClientManager
@@ -333,22 +333,7 @@ async def rebuild_vm_endpoint(
             raise HTTPException(status_code=404, detail="Cluster not found")
 
         if cluster_data.type.lower() in ("hyper-v", "hyperv"):
-            import service.hyper_v_service as hyper_v_service
             # Hyper-V rebuild expects a request object or dict with vm_id, pool_id, and email
-            rebuild_request = {
-                "vm_id": vmid,
-                "pool_id": pool_id,
-                "email": data.email
-            }
-            res = await hyper_v_service.vm_rebuild(rebuild_request, db)
-            return res
-        else:
-            cluster_data = get_cluster_by_id(db, vmid)
-            if not cluster_data:
-                raise HTTPException(status_code=404, detail="Cluster not found")
-
-            if cluster_data.type.lower() in ("hyper-v", "hyperv"):
-                import service.hyper_v_service as hyper_v_service
             rebuild_request = {
                 "vm_id": vmid,
                 "pool_id": pool_id,
@@ -383,6 +368,7 @@ def get_cluster_by_id(db: Session, vm_id: str) -> Cluster:
         machine_data = db.query(Machine).filter(
             (Machine.vm_id == vm_id_str) | (Machine.identifier == vm_id_str)
         ).first()
+        print('-----------m/c data', machine_data)
 
         if not machine_data:
             logger.error(f"Machine lookup failed for VM ID: {vm_id_str}. This might be because the machine record hasn't been committed yet or the ID is incorrect.")
@@ -430,7 +416,6 @@ async def proxmox_vm_details(vm_id: str, db):
             raise HTTPException(status_code=404, detail="Cluster not found")
         
         if cluster_data.type.lower() in ("hyper-v", "hyperv"):
-            import service.hyper_v_service as hyper_v_service
             res = await hyper_v_service.get_vm_info(vm_id, db)
             return res
 

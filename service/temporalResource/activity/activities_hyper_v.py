@@ -8,7 +8,7 @@ from models.models import Cluster
 from sqlalchemy.orm import Session
 import logging
 from urllib.parse import quote
-
+from models.models import Machine, Pool
 
 logger = logging.getLogger(__name__)
 
@@ -274,7 +274,7 @@ async def handle_action_activity(request: dict) -> dict:
 
 @activity.defn
 async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
-    from models.models import Machine, Pool
+    
     vm_id = request.get("vm_id")
     db: Session = SessionLocal()
     try:
@@ -446,7 +446,7 @@ def normalize_template_paths(template_data: dict) -> dict:
 
 @activity.defn
 async def rebuild_machine_in_pool_activity(request: dict) -> dict:
-    from models.models import Machine, Pool
+    
 
     m_data = request.get("machine")
     pool_id = request.get("pool_id")

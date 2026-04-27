@@ -10,6 +10,7 @@ import uuid
 from db_configuration.config import get_db, SessionLocal
 from models.models import Machine, Cluster, Pool
 from sqlalchemy.orm import Session
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +49,16 @@ async def get_vms(cluster_id:int, db:Session):
         raise HTTPException(status_code=404, detail="Cluster not found")
     agent_url = get_agent_url(cluster)
     url = f"{agent_url}/v1/hyper-v/get_vms"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        data = response.json()
-        return data['data']
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url)
+            data = response.json()
+            response_data = data.get('data')
+            if isinstance(response_data, dict):
+                return [response_data]
+            return response_data if isinstance(response_data, list) else []
+    except Exception as e:
+        raise e
 
 async def clone_vm_hyper_v_service(request) -> dict:
     req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
@@ -69,7 +76,6 @@ async def clone_vm_hyper_v_service(request) -> dict:
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster and cluster.node_type else ""
     is_cluster = node_type in ("multinode", "cluster")
 
-    url = f"{agent_url}/v1/hyper-v/clone_vm_hyper_v"
     template = req_dict.get("template_vm_id", {}) or {}
 
     vhdPath          = template.get("vhdPath")
@@ -98,15 +104,20 @@ async def clone_vm_hyper_v_service(request) -> dict:
     processor_count = req_dict.get("processor_count") if req_dict.get("processor_count") is not None else (template.get("processor_count") if template.get("processor_count") is not None else template.get("pool_processor_count"))
     priority        = req_dict.get("priority")        if req_dict.get("priority")        is not None else (template.get("priority")        if template.get("priority")        is not None else template.get("pool_priority", 2000))
 
-    # Fetch existing VM names from agent to avoid conflicts
+    # Fetch existing VM names from agent and DB to avoid conflicts
     try:
         db_inner: Session = SessionLocal()
         try:
             hyperv_vms = await get_vms(cluster.id, db_inner)
+            # Collect names from Agent
+            agent_names = [vm.get("VMName") or vm.get("Name") for vm in hyperv_vms if vm.get("VMName") or vm.get("Name")]
+            # Collect names from DB
+            db_machine_names = [m.name for m in db_inner.query(Machine).filter(Machine.name.isnot(None)).all()]
+            hyperv_names = list(set(agent_names + db_machine_names))
         finally:
             db_inner.close()
-        hyperv_names = [vm.get("VMName") or vm.get("Name") for vm in hyperv_vms if vm.get("VMName") or vm.get("Name")]
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to fetch existing VM names: %s", e)
         hyperv_names = []
 
     from service import proxmoxService
@@ -116,6 +127,29 @@ async def clone_vm_hyper_v_service(request) -> dict:
 
     result_vms = []
     for vm_name, ip in zip(new_names, ip_list):
+        # Dispatcher logic for Clusters: Pick the node with the lowest VMCount for EACH VM
+        selected_node_name = None
+        selected_node_ip = None
+        if is_cluster:
+            try:
+                url_for_node_status = f"{agent_url}/v1/hyper-v/get_node_status_from_cluster"
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    node_response = await client.get(url_for_node_status)
+                    if node_response.status_code == 200:
+                        node_data = node_response.json().get('data', [])
+                        min_vms = float('inf')
+                        for node in node_data:
+                            if node.get('Status') == 'Up':
+                                current_count = node.get('VMCount', 0)
+                                if current_count < min_vms:
+                                    min_vms = current_count
+                                    selected_node_name = node.get('Node_name')
+                                    selected_node_ip = node.get('IP')
+                        if selected_node_name:
+                            logger.info("Dispatcher selected node %s (%s) with %s VMs for %s", selected_node_name, selected_node_ip, min_vms, vm_name)
+            except Exception as e:
+                logger.warning("Dispatcher failed to select node for %s: %s", vm_name, e)
+
         payload = {
             "vm_name": vm_name, "memory": memory, "vhdPath": vhdPath,
             "switch": switch, "generation": generation, "PvhdPath": PvhdPath,
@@ -125,32 +159,57 @@ async def clone_vm_hyper_v_service(request) -> dict:
             "dynamic_memory": dynamic_memory, "minimum_memory": minimum_memory,
             "maximum_memory": maximum_memory, "buffer_memory": buffer_memory,
             "processor_count": processor_count, "priority": priority,
-            "is_cluster": is_cluster,
+            "is_cluster": is_cluster
         }
-        logger.debug("Cloning VM %s with payload: %s", vm_name, payload)
+        target_base_url = agent_url
+        if is_cluster and selected_node_ip:
+            port = cluster.agent_port or 8765
+            target_base_url = f"http://{selected_node_ip}:{port}"
+            print('--------------------------clone agent address', target_base_url)
+        
+        clone_url = f"{target_base_url}/v1/hyper-v/clone_vm_hyper_v"
+        print('--------------------clone url',clone_url)
+        
+        logger.debug("Cloning VM %s with payload to %s: %s", vm_name, clone_url, payload)
         async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(url, json=payload)
-            data = response.json()
+            response = await client.post(clone_url, json=payload)
+            response_data = response.json()
+            logger.info("Agent response for %s from %s: %s", vm_name, target_base_url, response_data)
 
-        if data.get("code") != 200:
-            logger.warning("Agent returned non-200 while cloning %s: %s", vm_name, data)
+        if response_data.get("code") is not None and int(response_data.get("code")) != 200:
+            logger.warning("Agent returned non-200 while cloning %s: %s", vm_name, response_data)
             continue
 
-        agent_data = data.get("data")
-        if isinstance(agent_data, dict) and "VM" in agent_data:
-            vm_info = agent_data["VM"]
-            result_vms.append({
-                "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                "vmid": vm_info.get("Id") or vm_info.get("VMId")
-            })
+        agent_data = response_data.get("data")
+        if isinstance(agent_data, dict):
+            if "VM" in agent_data:
+                vm_info = agent_data["VM"]
+                result_vms.append({
+                    "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+                    "vmid": vm_info.get("Id") or vm_info.get("VMId")
+                })
+            elif "Name" in agent_data or "VMId" in agent_data:
+                # Handle cases where Name/VMId are at the root of the data dict
+                result_vms.append({
+                    "name": agent_data.get("Name") or agent_data.get("VMName") or vm_name,
+                    "vmid": agent_data.get("VMId") or agent_data.get("Id")
+                })
+            else:
+                result_vms.append({"name": vm_name})
         elif isinstance(agent_data, list):
             for vm_item in agent_data:
-                if isinstance(vm_item, dict) and "VM" in vm_item:
-                    vm_info = vm_item["VM"]
-                    result_vms.append({
-                        "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                        "vmid": vm_info.get("Id") or vm_info.get("VMId")
-                    })
+                if isinstance(vm_item, dict):
+                    if "VM" in vm_item:
+                        vm_info = vm_item["VM"]
+                        result_vms.append({
+                            "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
+                            "vmid": vm_info.get("Id") or vm_info.get("VMId")
+                        })
+                    else:
+                        result_vms.append({
+                            "name": vm_item.get("Name") or vm_item.get("VMName") or vm_name,
+                            "vmid": vm_item.get("VMId") or vm_item.get("Id")
+                        })
         else:
             result_vms.append({"name": vm_name})
 
@@ -197,12 +256,17 @@ async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
         cluster = await resolve_cluster_from_vm(vm_id, db)
     else:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    node_type = cluster.node_type
+    if node_type in ['Standalone','standalone']:
+        is_cluster = False
+    else:
+        is_cluster = True
     
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
         
     agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/get_vm_info/{vm_id}"
+    url = f"{agent_url}/v1/hyper-v/get_vm_info/{vm_id}?is_cluster={is_cluster}"
     async with httpx.AsyncClient(timeout=20.0) as client:
         response = await client.get(url)
         data = response.json()
@@ -238,13 +302,23 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
         raise HTTPException(status_code=404, detail="Cluster not found")
 
     agent_url = get_agent_url(cluster)
+    parsed = urlparse(agent_url)
+    port = parsed.port or 8765
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster.node_type else ""
     is_cluster = node_type in ("multinode", "cluster")
+    if is_cluster:
+        find_node = f"{agent_url}/v1/hyper-v/get_node_via_vm_id/{vm_id}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(find_node)
+            node_ip = response.json().get('data', {}).get('NodeIP')
+        if not node_ip:
+            raise HTTPException(status_code=404, detail=f"Could not resolve owner node for VM {vm_id}")
+        agent_url = f"http://{node_ip}:{port}"
     url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
+    async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.delete(url)
         data = response.json()
-        return data
+    return data
 
 async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
     if not cluster_id:
