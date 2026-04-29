@@ -48,7 +48,8 @@ async def get_vms(cluster_id:int, db:Session):
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
     agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/get_vms"
+    is_cluster = str(cluster.node_type).lower() in ("multinode", "cluster")
+    url = f"{agent_url}/v1/hyper-v/get_vms?is_cluster={is_cluster}"
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
             response = await client.get(url)
@@ -62,6 +63,7 @@ async def get_vms(cluster_id:int, db:Session):
 
 async def clone_vm_hyper_v_service(request) -> dict:
     req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
+    print('----------------------------------clone request',req_dict)
 
     cluster_id = req_dict.get("cluster_id")
     db: Session = SessionLocal()
@@ -165,10 +167,8 @@ async def clone_vm_hyper_v_service(request) -> dict:
         if is_cluster and selected_node_ip:
             port = cluster.agent_port or 8765
             target_base_url = f"http://{selected_node_ip}:{port}"
-            print('--------------------------clone agent address', target_base_url)
         
         clone_url = f"{target_base_url}/v1/hyper-v/clone_vm_hyper_v"
-        print('--------------------clone url',clone_url)
         
         logger.debug("Cloning VM %s with payload to %s: %s", vm_name, clone_url, payload)
         async with httpx.AsyncClient(timeout=180.0) as client:
@@ -271,14 +271,14 @@ async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
         response = await client.get(url)
         data = response.json()
         
-        agent_data = data.get('data', '')
-        # If not found by ID, we might need a fallback or better error reporting
-        if isinstance(agent_data, str) and ("ObjectNotFound" in agent_data or "unable to find" in agent_data.lower()):
-            # Potentially the ID changed or is misformatted. 
-            # In a real scenario, we might want to search by VM Name here if we had it.
-            return {"error": f"VM with ID {vm_id} not found on Hyper-V host.", "agent_error": agent_data}
-            
-        return agent_data
+    agent_data = data.get('data', '')
+    # If not found by ID, we might need a fallback or better error reporting
+    if isinstance(agent_data, str) and ("ObjectNotFound" in agent_data or "unable to find" in agent_data.lower()):
+        # Potentially the ID changed or is misformatted. 
+        # In a real scenario, we might want to search by VM Name here if we had it.
+        return {"error": f"VM with ID {vm_id} not found on Hyper-V host.", "agent_error": agent_data}
+        
+    return agent_data
     
 async def get_switches(cluster_id:int, db:Session):
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -307,7 +307,7 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster.node_type else ""
     is_cluster = node_type in ("multinode", "cluster")
     if is_cluster:
-        find_node = f"{agent_url}/v1/hyper-v/get_node_via_vm_id/{vm_id}"
+        find_node = f"{agent_url}/v1/hyper-v/get_node_via_vm_id/{vm_id}?is_cluster={str(is_cluster).lower()}"
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(find_node)
             node_ip = response.json().get('data', {}).get('NodeIP')
@@ -380,14 +380,16 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
 async def vm_rebuild(request, db:Session, cluster_id:int=None):
     payload = request.dict() if hasattr(request, "dict") else request
     vm_id = payload.get("vm_id")
+    print('-------- vm_id -------', vm_id)
     
-    if not cluster_id:
-        cluster = await resolve_cluster_from_vm(vm_id, db)
-    else:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    # if not cluster_id:
+    #     print('--------- cluster_id not found ------------')
+    #     cluster = await resolve_cluster_from_vm(vm_id, db)
+    # else:
+    #     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
 
-    if not cluster:
-        raise HTTPException(status_code=404, detail="Cluster not found")
+    # if not cluster:
+    #     raise HTTPException(status_code=404, detail="Cluster not found")
     
     try:
         machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()

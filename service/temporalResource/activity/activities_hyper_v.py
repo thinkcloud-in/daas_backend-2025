@@ -1,4 +1,4 @@
-from service.hyper_v_service import get_agent_url
+from service.hyper_v_service import get_agent_url, delete_hyperv_vm, clone_vm_hyper_v_service
 from typing import Optional, Union
 from temporalio import activity
 import httpx
@@ -213,19 +213,26 @@ async def handle_action_activity(request: dict) -> dict:
     db: Session = SessionLocal()
     try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        is_cluster = str(cluster.node_type).lower() == "cluster"
         if not cluster:
             raise Exception(f"Cluster with ID {cluster_id} not found")
         agent_url = hyper_v_service.get_agent_url(cluster)
     finally:
         db.close()
 
+    if is_cluster:
+        find_node = f"{agent_url}/v1/hyper-v/get_node_via_vm_id/{request.get('vm_id')}?is_cluster={str(is_cluster).lower()}"
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(find_node)
+            node_ip = response.json().get('data', {}).get('NodeIP')
+        current_agent_port = agent_url.split(":")[2]
+        agent_url = f"http://{node_ip}:{current_agent_port}"
+    
     url = f"{agent_url}/v1/hyper-v/handle_action"
-
     logger.info("Hyper-V handle_action called with payload: %s", request)
 
-    # Clean payload for the agent. Agent strictly expects 'vm_id' and 'action'
     agent_payload = {
-        "vm_id": request.get("vm_id") or request.get("vm_name"),
+        "vm_id": request.get("vm_id"),
         "action": request.get("action")
     }
 
@@ -240,7 +247,6 @@ async def handle_action_activity(request: dict) -> dict:
 
     data = response.json()
     if data.get("code") == 200:
-        # Update machine status immediately in the database so the UI enables/disables the correct buttons
         action_requested = request.get("action")
         try:
             db_inner: Session = SessionLocal()
@@ -274,129 +280,129 @@ async def handle_action_activity(request: dict) -> dict:
 
 @activity.defn
 async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
-    
     vm_id = request.get("vm_id")
     db: Session = SessionLocal()
     try:
-        try:
-            cluster = await hyper_v_service.resolve_cluster_from_vm(vm_id, db)
-            agent_url = hyper_v_service.get_agent_url(cluster)
-            machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
-            if not machine:
-                return {"status": "error", "error": f"Machine with vm_id {vm_id} not found in DB."}
-            
-            pool = db.query(Pool).filter(Pool.id == machine.pool_id).first()
-            if not pool:
-                return {"status": "error", "error": f"Pool {machine.pool_id} not found."}
+        cluster = await hyper_v_service.resolve_cluster_from_vm(vm_id, db)
+        is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
+        clone_url_standalone = hyper_v_service.get_agent_url(cluster)
+        machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+        if not machine:
+            return {"code": 500, "status": "error", "msg": f"Machine with vm_id {vm_id} not found in DB."}
+        pool = db.query(Pool).filter(Pool.id == machine.pool_id).first()
+        if not pool:
+            return {"code": 500, "status": "error", "msg": f"Pool {machine.pool_id} not found."}
+        template_data = pool.pool_template_vm_id
+        if not template_data:
+            return {"code": 500, "status": "error", "msg": "No template data found in pool."}
 
-            template_data = pool.pool_template_vm_id
-            if not template_data:
-                return {"status": "error", "error": "No template data found in pool."}
+        vhdPath = template_data.get("vhdPath")
+        PvhdPath = template_data.get("PvhdPath")
+        generation = template_data.get("generation")
+        memory = template_data.get("memory")
+        switch = template_data.get("switch")
+        os_type = template_data.get("os_type")
+        password = template_data.get('password')
+        gateway = template_data.get('gateway')
+        subnet = template_data.get('subnet')
+        dns = template_data.get('dns')
+        ip = machine.hostname # Use existing IP assigned to machine
+        dynamic_memory = template_data.get("dynamic_memory")
+        minimum_memory = template_data.get("minimum_memory")
+        maximum_memory = template_data.get("maximum_memory")
+        buffer_memory = template_data.get("buffer_memory")
+        processor_count = template_data.get("processor_count")
 
-            # 1. Delete existing VM
-            is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
-            delete_url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
+        payload = {
+            "vm_name": machine.name,
+            "memory": memory,
+            "vhdPath": vhdPath,
+            "switch": switch,
+            "generation": generation,
+            "PvhdPath": PvhdPath,
+            "ip": ip,
+            "password": password,
+            "gateway": gateway,
+            "os_type": os_type,
+            "subnet": subnet,
+            "dns": dns,
+            "domain": pool.pool_ad_domain,
+            "ou": pool.pool_ad_path,
+            "username": pool.pool_ad_username,
+            "domain_password": pool.pool_ad_password,
+            "dynamic_memory": dynamic_memory,
+            "minimum_memory": minimum_memory,
+            "maximum_memory": maximum_memory,
+            "buffer_memory": buffer_memory,
+            "processor_count": processor_count,
+            "priority": template_data.get("priority", 2000),
+            "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
+        }
+        if is_cluster:
+            find_node = f"{clone_url_standalone}/v1/hyper-v/get_node_via_vm_id/{vm_id}?is_cluster={str(is_cluster).lower()}"
             async with httpx.AsyncClient(timeout=60.0) as client:
-                del_resp = await client.delete(delete_url)
-                logger.info(f"Delete VM {vm_id} response: {del_resp.status_code}")
+                response = await client.get(find_node)
+                node_ip = response.json().get('data', {}).get('NodeIP')
+            current_agent_port = clone_url_standalone.split(":")[2]
+            clone_url_cluster = f"http://{node_ip}:{current_agent_port}"
 
-            # 2. Clone new VM from template
-            clone_url = f"{agent_url}/v1/hyper-v/clone_vm_hyper_v"
+
+         # 1. Delete existing VM
+        delete_status = await delete_hyperv_vm(vm_id, db)
+        if delete_status.get("code") != 200:
+            return {"code": 500, "status": "error", "msg": f"Delete failed: {delete_status.get('msg')}"}
+        # 2. clone VM using existing data again
+        agent_url = f"{clone_url_cluster if is_cluster else clone_url_standalone}/v1/hyper-v/clone_vm_hyper_v"
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            response = await client.post(agent_url, json=payload)
+            data = response.json()
+        if data.get("code") != 200:
+            print("Clone failed: ", data.get('msg'))
+            return {"code": 500, "status": "error", "msg": f"Cloning failed: {data.get('msg')}"}
+
+        # Update the database with the new VM ID
+        # Post-cloning strategy: Get all VMs and find the one with the correct name to get the definitive ID
+        new_vm_id = None
+        try:
+            all_vms = await hyper_v_service.get_vms(cluster.id, db)
+            for vm in all_vms:
+                # Host reports Name/VMName and Id/VMId
+                curr_name = vm.get("Name") or vm.get("VMName")
+                if curr_name == machine.name:
+                    new_vm_id = vm.get("Id") or vm.get("VMId")
+                    break
+        except Exception as sync_err:
+            logger.warning(f"Failed to sync VM ID by name for {machine.name}: {sync_err}")
+            # Fallback to agent response ID if list failed
+            agent_data = data.get("data")
+            if isinstance(agent_data, dict) and "VM" in agent_data:
+                new_vm_id = agent_data["VM"].get("Id") or agent_data["VM"].get("VMId")
+
+        if new_vm_id:
+            logger.info(f"Updating machine {machine.id} vm_id from {vm_id} to {new_vm_id}")
+            machine.vm_id = str(new_vm_id)
             
-            # Prepare payload for clone (similar to clone_vm_single_node_activity)
-            vhdPath = template_data.get("vhdPath")
-            PvhdPath = template_data.get("PvhdPath")
-            generation = template_data.get("generation")
-            memory = template_data.get("memory")
-            switch = template_data.get("switch")
-            os_type = template_data.get("os_type")
-            password = template_data.get('password')
-            gateway = template_data.get('gateway')
-            subnet = template_data.get('subnet')
-            dns = template_data.get('dns')
-            ip = machine.hostname # Use existing IP assigned to machine
-            dynamic_memory = template_data.get("dynamic_memory")
-            minimum_memory = template_data.get("minimum_memory")
-            maximum_memory = template_data.get("maximum_memory")
-            buffer_memory = template_data.get("buffer_memory")
-            processor_count = template_data.get("processor_count")
-
-            payload = {
-                "vm_name": machine.name,
-                "memory": memory,
-                "vhdPath": vhdPath,
-                "switch": switch,
-                "generation": generation,
-                "PvhdPath": PvhdPath,
-                "ip": ip,
-                "password": password,
-                "gateway": gateway,
-                "os_type": os_type,
-                "subnet": subnet,
-                "dns": dns,
-                "domain": pool.pool_ad_domain,
-                "ou": pool.pool_ad_path,
-                "username": pool.pool_ad_username,
-                "domain_password": pool.pool_ad_password,
-                "dynamic_memory": dynamic_memory,
-                "minimum_memory": minimum_memory,
-                "maximum_memory": maximum_memory,
-                "buffer_memory": buffer_memory,
-                "processor_count": processor_count,
-                "priority": template_data.get("priority", 2000),
-                "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
-            }
-
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                response = await client.post(clone_url, json=payload)
-                data = response.json()
+            # Also update pool_vmids if necessary
+            if pool.pool_vmids:
+                # Ensure we handle list correctly
+                updated_vmids = []
+                for v in pool.pool_vmids:
+                    if str(v) == str(vm_id):
+                        updated_vmids.append(str(new_vm_id))
+                    else:
+                        updated_vmids.append(str(v))
+                pool.pool_vmids = updated_vmids
             
-            if data.get("code") != 200:
-                return {"status": "error", "error": f"Cloning failed: {data.get('msg')}"}
+            db.commit()
+            vm_id = str(new_vm_id)
+        else:
+            logger.error(f"Could not find new VM ID for {machine.name} after cloning")
 
-            # Update the database with the new VM ID
-            # Post-cloning strategy: Get all VMs and find the one with the correct name to get the definitive ID
-            new_vm_id = None
-            try:
-                all_vms = await hyper_v_service.get_vms(cluster.id, db)
-                for vm in all_vms:
-                    # Host reports Name/VMName and Id/VMId
-                    curr_name = vm.get("Name") or vm.get("VMName")
-                    if curr_name == machine.name:
-                        new_vm_id = vm.get("Id") or vm.get("VMId")
-                        break
-            except Exception as sync_err:
-                logger.warning(f"Failed to sync VM ID by name for {machine.name}: {sync_err}")
-                # Fallback to agent response ID if list failed
-                agent_data = data.get("data")
-                if isinstance(agent_data, dict) and "VM" in agent_data:
-                    new_vm_id = agent_data["VM"].get("Id") or agent_data["VM"].get("VMId")
-
-            if new_vm_id:
-                logger.info(f"Updating machine {machine.id} vm_id from {vm_id} to {new_vm_id}")
-                machine.vm_id = str(new_vm_id)
-                
-                # Also update pool_vmids if necessary
-                if pool.pool_vmids:
-                    # Ensure we handle list correctly
-                    updated_vmids = []
-                    for v in pool.pool_vmids:
-                        if str(v) == str(vm_id):
-                            updated_vmids.append(str(new_vm_id))
-                        else:
-                            updated_vmids.append(str(v))
-                    pool.pool_vmids = updated_vmids
-                
-                db.commit()
-                vm_id = str(new_vm_id)
-            else:
-                logger.error(f"Could not find new VM ID for {machine.name} after cloning")
-
-            return {"status": "success", "vm_id": vm_id, "machine_name": machine.name}
-        except Exception as e:
-            db.rollback()
-            logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
-            return {"status": "error", "error": str(e)}
+        return {"code": 200, "status": "success", "vm_id": vm_id, "machine_name": machine.name}
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
+        return {"code": 500, "status": "error", "msg": str(e)}
     finally:
         db.close()
 

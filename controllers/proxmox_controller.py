@@ -308,6 +308,7 @@ async def shutdown_vm_endpoint(
     db: Session = None
 ):
     try:
+        print()
         cluster_data = get_cluster_by_id(db, vmid)
         cluster_type = cluster_data.type.lower()
         result = await service.shutdown_vm_proxmox(vmid, pool_id, data.email, cluster_type)
@@ -321,6 +322,8 @@ async def rebuild_vm_endpoint(
     pool_id: str = None,
     db: Session = None,
 ):
+    print('--------------vmid',vmid)
+    print('--------------pool_id',pool_id)
     close_db = False
     try:
         # Handle optional db argument for reverse compatibility or standalone calls
@@ -339,6 +342,7 @@ async def rebuild_vm_endpoint(
                 "pool_id": pool_id,
                 "email": data.email
             }
+            print("-----rebuild request-----", rebuild_request)
             res = await hyper_v_service.vm_rebuild(rebuild_request, db)
             return res
 
@@ -368,8 +372,6 @@ def get_cluster_by_id(db: Session, vm_id: str) -> Cluster:
         machine_data = db.query(Machine).filter(
             (Machine.vm_id == vm_id_str) | (Machine.identifier == vm_id_str)
         ).first()
-        print('-----------m/c data', machine_data)
-
         if not machine_data:
             logger.error(f"Machine lookup failed for VM ID: {vm_id_str}. This might be because the machine record hasn't been committed yet or the ID is incorrect.")
             raise HTTPException(status_code=404, detail=f"Machine with vm_id {vm_id} not found")
