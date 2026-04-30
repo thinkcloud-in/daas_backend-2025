@@ -322,8 +322,6 @@ async def rebuild_vm_endpoint(
     pool_id: str = None,
     db: Session = None,
 ):
-    print('--------------vmid',vmid)
-    print('--------------pool_id',pool_id)
     close_db = False
     try:
         # Handle optional db argument for reverse compatibility or standalone calls

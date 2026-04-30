@@ -429,59 +429,77 @@ async def add_user_to_machine_activity(machine_identifier: str, username: str):
 async def delete_user_from_machine_activity(machine_identifier: str, user_id: str):
     db: Session = SessionLocal()
     try:
-        try:
-            logger.info(f"Starting to delete user {user_id} from machine {machine_identifier}.")
-            value = await gucamoleService.delete_user(user_id)  # pass username
-            if value == 204:
-                logger.info(f"User {user_id} successfully deleted from Guacamole.")
+        logger.info(f"Starting to delete user {user_id} from machine {machine_identifier}.")
 
-                machine = db.query(model.Machine).filter(model.Machine.identifier == machine_identifier).first()
-                if not machine:
-                    logger.error("Machine not found.")
-                    raise Exception("Machine not found")
+        # Step 1: Fetch the machine first
+        machine = db.query(model.Machine).filter(model.Machine.identifier == machine_identifier).first()
+        if not machine:
+            logger.error("Machine not found.")
+            raise Exception("Machine not found")
 
-                if user_id not in machine.users_assigned:
-                    logger.error("User not assigned to this machine.")
-                    raise Exception("User not assigned to this machine")
+        if user_id not in machine.users_assigned:
+            logger.error("User not assigned to this machine.")
+            raise Exception("User not assigned to this machine")
 
-                users_assigned = machine.users_assigned
-                for i in range(len(users_assigned)):
-                    if users_assigned[i] == user_id:
-                        user_index = i
+        # Step 2: Check in DB if user is assigned to any OTHER machines
+        other_machine_with_user = (
+            db.query(model.Machine)
+            .filter(
+                model.Machine.identifier != machine_identifier,
+                model.Machine.users_assigned.contains([user_id])
+            )
+            .first()
+        )
 
-                users_assigned = users_assigned[:user_index] + users_assigned[user_index + 1:]
-                machine.users_assigned = users_assigned
-                logger.info(f"User {user_id} removed from assigned users list.")
-
-                db.commit()
-                db.refresh(machine)
-
-                # Update entitled field in the Pool table
-                pool = db.query(model.Pool).filter(model.Pool.id == machine.pool_id).first()
-                if pool:
-                    logger.info(f"Updating entitled field for pool {pool.id}.")
-                    if pool.entitled:
-                        pool.entitled = pool.entitled - 1
-                    else:
-                        pool.entitled = 0
-                    db.commit()
-                    db.refresh(pool)
-
-                # Get all pools
-                all_pools = db.query(model.Pool).all()
-                all_pools_data = jsonable_encoder(all_pools)
-                return {
-                    "msg": f"{user_id} removed from machine {machine.name}.",
-                    "users_assigned": users_assigned,
-                    "pools": all_pools_data,
-                }
-            else:
-                logger.warning(f"Unexpected response from Guacamole service: {value}.")
+        # Step 3: Guacamole action based on DB check
+        if other_machine_with_user:
+            # User still has other machines — only revoke this connection in Guacamole
+            logger.info(
+                f"User {user_id} is still assigned to other machines. "
+                f"Revoking connection {machine_identifier} in Guacamole only."
+            )
+            value = await gucamoleService.revoke_user_from_connection(user_id, machine_identifier)
+            if value != 204:
+                logger.warning(f"Unexpected response from Guacamole revoke: {value}.")
                 return {"msg": f"{value}"}
+            logger.info(f"User {user_id} revoked from connection {machine_identifier} in Guacamole.")
+        else:
+            # User only on this machine — fully delete from Guacamole
+            logger.info(f"User {user_id} has no other machines. Deleting from Guacamole entirely.")
+            value = await gucamoleService.delete_user(user_id)  # async
+            if value != 204:
+                logger.warning(f"Unexpected response from Guacamole delete: {value}.")
+                return {"msg": f"{value}"}
+            logger.info(f"User {user_id} fully deleted from Guacamole.")
 
-        except Exception as e:
-            logger.error("An error occurred while deleting the user.", exc_info=True)
-            raise e
+        # Step 4: Unassign user from this machine in DB (runs in both cases)
+        users_assigned = [u for u in machine.users_assigned if u != user_id]
+        machine.users_assigned = users_assigned
+        logger.info(f"User {user_id} removed from assigned users list in DB.")
+
+        db.commit()
+        db.refresh(machine)
+
+        # Step 5: Update entitled field in the Pool table
+        pool = db.query(model.Pool).filter(model.Pool.id == machine.pool_id).first()
+        if pool:
+            logger.info(f"Updating entitled field for pool {pool.id}.")
+            pool.entitled = max((pool.entitled or 1) - 1, 0)
+            db.commit()
+            db.refresh(pool)
+
+        # Step 6: Return all pools
+        all_pools = db.query(model.Pool).all()
+        all_pools_data = jsonable_encoder(all_pools)
+        return {
+            "msg": f"{user_id} removed from machine {machine.name}.",
+            "users_assigned": users_assigned,
+            "pools": all_pools_data,
+        }
+
+    except Exception as e:
+        logger.error("An error occurred while deleting the user.", exc_info=True)
+        raise e
     finally:
         db.close()
 

@@ -411,8 +411,8 @@ async def assign_connection_to_user(username:str, connection:str):
     return response.status_code
 
 # Delete machines/connection from guacamole
-def revoke_user_from_connection(username:str, connection:str):
-    token = login_with_guacamole()
+async def revoke_user_from_connection(username:str, connection:str):
+    token = await login_with_guacamole()
     gucamole_connection_To_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users/"
     url = gucamole_connection_To_user_url + username + "/permissions?token="+ token
     # here to find out the connection of the  databse
@@ -428,14 +428,9 @@ def revoke_user_from_connection(username:str, connection:str):
     headers = {
   'Content-Type': 'application/json'
 }
-   
     response= requests.request("PATCH", url, headers=headers, data=payload)
+    return response.status_code
 
-    return response.json
-       
-   
- 
- 
 # LIST OF MACHINE OR CONNECTION
 async def list_machines():
     uniqueId = unique_id()
@@ -507,12 +502,13 @@ async def get_user_details(username):
     response= requests.request("GET", url, )
     return response.status_code
 # get user paricular user  
-def delete_user_from_guca(username):
-    token = login_with_guacamole()
-    gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
-    url = gucamole_create_user_url+"/"+username+"?token="+ token
-    response= requests.request("DELETE", url, )
-    return response.status_code
+# def delete_user_from_guca(username):
+#     token = login_with_guacamole()
+#     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
+#     url = gucamole_create_user_url+"/"+username+"?token="+ token
+#     response= requests.request("DELETE", url, )
+#     return response.status_code
+
 # Create a user in guacamole
 async def create_user(username):
     try:

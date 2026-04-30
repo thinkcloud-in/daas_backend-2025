@@ -159,9 +159,11 @@ def generate_machine_name(template: str, existing_names: list[str], count: int) 
     used_numbers = set()
     for name in existing_names:
         if name.startswith(prefix) and name.endswith(suffix):
-            middle = name[len(prefix):-len(suffix) if suffix else None]
-            if middle.isdigit():
-                used_numbers.add(int(middle))
+            # middle = name[len(prefix):-len(suffix) if suffix else None]
+            end = len(name) - len(suffix) if suffix else len(name)
+            middle = name[len(prefix):end]
+            if middle.isdigit() and len(middle) == width:
+                used_numbers.add(middle)
 
     new_names = []
     i = 1
