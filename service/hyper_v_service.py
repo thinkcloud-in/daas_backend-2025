@@ -61,10 +61,8 @@ async def get_vms(cluster_id:int, db:Session):
     except Exception as e:
         raise e
 
-async def clone_vm_hyper_v_service(request) -> dict:
+async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> dict:
     req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
-    print('----------------------------------clone request',req_dict)
-
     cluster_id = req_dict.get("cluster_id")
     db: Session = SessionLocal()
     try:
@@ -122,8 +120,13 @@ async def clone_vm_hyper_v_service(request) -> dict:
         logger.warning("Failed to fetch existing VM names: %s", e)
         hyperv_names = []
 
-    from service import proxmoxService
-    new_names = proxmoxService.generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+    if skip_name_check:
+        # Use the exact name provided (ideal for rebuilds where identity is preserved)
+        new_names = [base_vm_name]
+    else:
+        from service import proxmoxService
+        new_names = proxmoxService.generate_machine_name(base_vm_name, hyperv_names, number_of_vms)
+        
     if not new_names:
         return {"error": "No unique VM names available for cloning."}
 
@@ -379,9 +382,7 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
 
 async def vm_rebuild(request, db:Session, cluster_id:int=None):
     payload = request.dict() if hasattr(request, "dict") else request
-    vm_id = payload.get("vm_id")
-    print('-------- vm_id -------', vm_id)
-    
+    vm_id = payload.get("vm_id")    
     # if not cluster_id:
     #     print('--------- cluster_id not found ------------')
     #     cluster = await resolve_cluster_from_vm(vm_id, db)

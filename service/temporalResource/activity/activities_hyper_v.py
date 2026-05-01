@@ -313,52 +313,42 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
         buffer_memory = template_data.get("buffer_memory")
         processor_count = template_data.get("processor_count")
 
-        payload = {
-            "vm_name": machine.name,
-            "memory": memory,
-            "vhdPath": vhdPath,
-            "switch": switch,
-            "generation": generation,
-            "PvhdPath": PvhdPath,
-            "ip": ip,
-            "password": password,
-            "gateway": gateway,
-            "os_type": os_type,
-            "subnet": subnet,
-            "dns": dns,
+        # 1. Delete existing VM
+        logger.info(f"Single VM Rebuild: Deleting {machine.name}")
+        delete_status = await delete_hyperv_vm(vm_id, db)
+        if delete_status.get("code") != 200:
+            return {"code": 500, "status": "error", "msg": f"Delete failed: {delete_status.get('msg')}"}
+
+        # 2. Re-clone using shared service (Maintains identity and Exact Name)
+        clone_request = {
+            "cluster_id": cluster.id,
+            "name_template": machine.name,
+            "count": 1,
+            "ip_list": [ip],
             "domain": pool.pool_ad_domain,
             "ou": pool.pool_ad_path,
             "username": pool.pool_ad_username,
             "domain_password": pool.pool_ad_password,
-            "dynamic_memory": dynamic_memory,
-            "minimum_memory": minimum_memory,
-            "maximum_memory": maximum_memory,
-            "buffer_memory": buffer_memory,
-            "processor_count": processor_count,
-            "priority": template_data.get("priority", 2000),
-            "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
+            "template_vm_id": {
+                **template_data,
+                "PvhdPath": PvhdPath  # Keep existing parent path
+            }
         }
-        if is_cluster:
-            find_node = f"{clone_url_standalone}/v1/hyper-v/get_node_via_vm_id/{vm_id}?is_cluster={str(is_cluster).lower()}"
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.get(find_node)
-                node_ip = response.json().get('data', {}).get('NodeIP')
-            current_agent_port = clone_url_standalone.split(":")[2]
-            clone_url_cluster = f"http://{node_ip}:{current_agent_port}"
 
+        logger.info(f"Single VM Rebuild: Re-cloning {machine.name}")
+        clone_result = await clone_vm_hyper_v_service(clone_request, skip_name_check=True)
+        
+        if "error" in clone_result or clone_result.get("code") == 500:
+            err_msg = clone_result.get("error") or clone_result.get("msg")
+            return {"code": 500, "status": "error", "msg": f"Cloning failed: {err_msg}"}
 
-         # 1. Delete existing VM
-        delete_status = await delete_hyperv_vm(vm_id, db)
-        if delete_status.get("code") != 200:
-            return {"code": 500, "status": "error", "msg": f"Delete failed: {delete_status.get('msg')}"}
-        # 2. clone VM using existing data again
-        agent_url = f"{clone_url_cluster if is_cluster else clone_url_standalone}/v1/hyper-v/clone_vm_hyper_v"
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            response = await client.post(agent_url, json=payload)
-            data = response.json()
-        if data.get("code") != 200:
-            print("Clone failed: ", data.get('msg'))
-            return {"code": 500, "status": "error", "msg": f"Cloning failed: {data.get('msg')}"}
+        # Extract new VM info from result
+        new_vms = clone_result.get("vms", [])
+        if not new_vms:
+            return {"code": 500, "status": "error", "msg": "Clone service returned no VM data"}
+            
+        data = {"data": {"VM": {"Id": new_vms[0].get("vmid"), "Name": new_vms[0].get("name")}}}
+        machine.name = new_vms[0].get("name") # In case it changed, though skip_name_check=True should prevent it
 
         # Update the database with the new VM ID
         # Post-cloning strategy: Get all VMs and find the one with the correct name to get the definitive ID
@@ -452,8 +442,8 @@ def normalize_template_paths(template_data: dict) -> dict:
 
 @activity.defn
 async def rebuild_machine_in_pool_activity(request: dict) -> dict:
+    from service.hyper_v_service import clone_vm_hyper_v_service, delete_hyperv_vm
     
-
     m_data = request.get("machine")
     pool_id = request.get("pool_id")
     m_id = m_data.get("id")
@@ -461,119 +451,90 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
     machine_name = m_data.get("name")
     machine_ip = m_data.get("hostname")
 
+    db: Session = SessionLocal()
     try:
-        db: Session = SessionLocal()
-        try:
-            cluster = await hyper_v_service.resolve_cluster_from_vm(old_vm_id, db)
-            agent_url = hyper_v_service.get_agent_url(cluster)
-            machine = db.query(Machine).filter(Machine.id == m_id).first()
-            pool = db.query(Pool).filter(Pool.id == pool_id).first()
-            template_data = pool.pool_template_vm_id
-        finally:
-            db.close()
+        # 1. Resolve Cluster and Metadata
+        cluster = await hyper_v_service.resolve_cluster_from_vm(old_vm_id, db)
+        machine = db.query(Machine).filter(Machine.id == m_id).first()
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        template_data = pool.pool_template_vm_id
 
-        is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
-        delete_vm_url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{old_vm_id}?is_cluster={str(is_cluster).lower()}"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            await client.delete(delete_vm_url)
-        logger.info("Old VM deleted: %s", old_vm_id)
+        # 2. Safely Delete the VM (Using your node-wise logic)
+        logger.info(f"Rebuild: Deleting VM {machine_name} (ID: {old_vm_id})")
+        delete_response = await delete_hyperv_vm(old_vm_id, db)
+        
+        if delete_response.get("code") != 200:
+            return {
+                "status": "error",
+                "machine": machine_name,
+                "error": f"Delete failed: {delete_response.get('msg')}"
+            }
 
-        vhd_folder = template_data.get("vhdPath", "C:\\test")
-        old_vhd_path = f"{vhd_folder}\\{machine_name}\\{machine_name}.vhdx"
-        delete_disk_url = f"{agent_url}/v1/hyper-v/delete_disk"
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            del_disk_resp = await client.delete(delete_disk_url, params={"path": old_vhd_path})
-            logger.info("Old VHD delete response: %s", del_disk_resp.text)
-
-        clone_url = f"{agent_url}/v1/hyper-v/clone_vm_hyper_v"
-        payload = {
-            "vm_name": machine_name,
-            "memory": template_data.get("memory"),
-            "vhdPath": template_data.get("vhdPath"),
-            "switch": template_data.get("switch"),
-            "generation": template_data.get("generation"),
-            "PvhdPath": request.get("vhdPath"), 
-            "ip": machine_ip,
-            "password": template_data.get("password"),
-            "gateway": template_data.get("gateway"),
-            "os_type": template_data.get("os_type"),
-            "subnet": template_data.get("subnet"),
-            "dns": template_data.get("dns"),
+        # 3. Clone using your Load-Balanced service
+        # We pass the new vhdPath as the PvhdPath for the new clone
+        clone_request = {
+            "cluster_id": cluster.id,
+            "name_template": machine_name,
+            "count": 1,
+            "ip_list": [machine_ip],
             "domain": pool.pool_ad_domain,
             "ou": pool.pool_ad_path,
             "username": pool.pool_ad_username,
             "domain_password": pool.pool_ad_password,
-            "priority": template_data.get("priority", 2000),
-            "is_cluster": str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"],
-        }
-
-        async with httpx.AsyncClient(timeout=180.0) as client:
-            response = await client.post(clone_url, json=payload)
-            data = response.json()
-
-        logger.info("Clone response for %s: %s", machine_name, data)
-
-        if data.get("code") != 200:
-            return {
-                "status": "error",
-                "machine": machine_name,
-                "error": f"Clone failed: {data.get('msg')} | full: {data}"
+            "template_vm_id": {
+                **template_data,
+                "PvhdPath": request.get("vhdPath") 
             }
-
-        agent_vm = data.get("data", {})
-        vm_obj = agent_vm.get("VM") or agent_vm.get("vm") or agent_vm
-        new_vm_id = (
-            vm_obj.get("Id") or vm_obj.get("VMId") or
-            vm_obj.get("id") or vm_obj.get("vmId")
-        )
-
-        if not new_vm_id:
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                vms_response = await client.get(f"{agent_url}/v1/hyper-v/get_vms")
-                all_vms = vms_response.json().get("data", [])
-            for vm in all_vms:
-                vm_name = vm.get("Name") or vm.get("VMName") or vm.get("name")
-                if vm_name == machine_name:
-                    new_vm_id = vm.get("Id") or vm.get("VMId") or vm.get("id")
-                    break
-
-        if not new_vm_id:
-            return {"status": "error", "machine": machine_name, "error": "VM ID not found after clone"}
-
-        db: Session = SessionLocal()
-        try:
-            machine = db.query(Machine).filter(Machine.id == m_id).first()
-            pool = db.query(Pool).filter(Pool.id == pool_id).first()
-            machine.vm_id = str(new_vm_id)
-            if pool.pool_vmids:
-                pool.pool_vmids = [
-                    str(new_vm_id) if str(v) == str(old_vm_id) else str(v)
-                    for v in pool.pool_vmids
-                ]
-                if pool.pool_template_vm_id is None:
-                    pool.pool_template_vm_id = {}
-                updated_template = dict(pool.pool_template_vm_id)
-                updated_template["PvhdPath"] = request.get("vhdPath")
-                pool.pool_template_vm_id = updated_template
+        }
+        
+        logger.info(f"Rebuild: Re-cloning {machine_name} with parent disk {request.get('vhdPath')}")
+        # Use skip_name_check=True to keep the EXACT same name during rebuild
+        clone_result = await clone_vm_hyper_v_service(clone_request, skip_name_check=True)
+        
+        if "error" in clone_result:
+            return {"status": "error", "machine": machine_name, "error": clone_result["error"]}
             
-            machines = db.query(Machine).filter(Machine.pool_id == pool_id).all()
-            for m in machines:
-                m.error_message = "power-off"
-
-            db.commit()
-        finally:
-            db.close()
-
+        # 4. Update Database with the new VM identity
+        new_vms = clone_result.get("vms", [])
+        if not new_vms:
+             return {"status": "error", "machine": machine_name, "error": "Clone service returned no VM data"}
+             
+        new_vm_id = new_vms[0].get("vmid")
+        new_name = new_vms[0].get("name") # Note: This might have a suffix like _1
+        
+        # Update machine record
+        machine.vm_id = str(new_vm_id)
+        machine.name = new_name 
+        machine.error_message = "power-off" # Set to off as clones are usually created off or needs state reset
+        
+        # Update Pool's vmids list to replace the old ID with the new one
+        if pool.pool_vmids:
+            pool.pool_vmids = [
+                str(new_vm_id) if str(v) == str(old_vm_id) else str(v)
+                for v in pool.pool_vmids
+            ]
+        
+        # Optionally update the pool template path for future new machines
+        updated_template = dict(pool.pool_template_vm_id)
+        updated_template["PvhdPath"] = request.get("vhdPath")
+        pool.pool_template_vm_id = updated_template
+        
+        db.commit()
+        
         return {
             "status": "success",
             "machine": machine_name,
             "old_vm_id": str(old_vm_id),
             "new_vm_id": str(new_vm_id),
+            "new_name": new_name
         }
 
     except Exception as e:
-        logger.error("rebuild_machine_in_pool_activity failed: %s", str(e))
-        return {"status": "error", "machine": m_data.get("name"), "error": str(e)}
+        db.rollback()
+        logger.error(f"rebuild_machine_in_pool_activity failed: {e}")
+        return {"status": "error", "machine": machine_name, "error": str(e)}
+    finally:
+        db.close()
 
 
 @activity.defn
