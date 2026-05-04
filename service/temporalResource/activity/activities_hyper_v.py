@@ -613,13 +613,13 @@ async def verify_hyper_v_activity(request, cluster_id: Optional[int] = None) -> 
 
 
 @activity.defn
-async def fetch_cluster_nodes_activity(request: dict) -> list:
+async def fetch_cluster_nodes_activity(cluster_id: int) -> list:
     db: Session = SessionLocal()
     try:
-        ip = request.get("ip")
-        port = request.get("agent_port") or 8765
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        ip = cluster.ip
+        port = cluster.agent_port
         agent_url = f"http://{ip}:{port}"
-        
         url = f"{agent_url}/v1/hyper-v/get_node_status_from_cluster"
         logger.info("Fetching cluster nodes from agent: %s", url)
         
