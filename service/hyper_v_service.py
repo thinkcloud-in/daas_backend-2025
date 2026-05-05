@@ -484,7 +484,7 @@ async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None)
     result =  await handle.result()
     return result
 
-async def fetch_hyper_v_cluster_nodes(cluster_id: Optional[int]):
+async def fetch_hyper_v_cluster_nodes(request:dict):
     workflow_id = f"fetch_cluster_nodes-{uuid.uuid4().hex}"
     client = await TemporalClientManager.get_temporal_client()
     if client is None:
@@ -494,7 +494,7 @@ async def fetch_hyper_v_cluster_nodes(cluster_id: Optional[int]):
         from service.temporalResource.workflows import workflows_hyper_v
         handle = await client.start_workflow(
             workflows_hyper_v.FetchClusterNodesWorkflow.run,
-            args=[cluster_id],
+            args=[request],
             id=workflow_id,
             task_queue="hyperv-task-queue",
         )

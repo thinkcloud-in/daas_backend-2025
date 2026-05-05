@@ -55,6 +55,6 @@ async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None)
     return success_response(200, "Hyper-V verified.", result)
 
 
-async def get_node_status_from_cluster(cluster_id: Optional[int]):
-    result = await service.fetch_hyper_v_cluster_nodes(cluster_id)
+async def get_node_status_from_cluster(request:dict):
+    result = await service.fetch_hyper_v_cluster_nodes(request)
     return success_response(200, "Successfully retrieved cluster nodes", result)

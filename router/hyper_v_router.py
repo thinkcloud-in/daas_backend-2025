@@ -68,5 +68,10 @@ async def verify_hyper_v(request: VerifyHyperVRequest, db: Session = Depends(get
 
 
 @hyper_v_router.get("/get_node_status_from_cluster", response_model=APIResponse[Any])
-async def get_node_status_from_cluster(cluster_id: Optional[int] = None):
-    return await hyper_v_controller.get_node_status_from_cluster(cluster_id)
+async def get_node_status_from_cluster(
+    ip: Optional[str] = None,
+    agent_port: Optional[int] = None,
+    cluster_id: Optional[int] = None
+):
+    request_data = {"ip": ip, "agent_port": agent_port, "cluster_id": cluster_id}
+    return await hyper_v_controller.get_node_status_from_cluster(request_data)

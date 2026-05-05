@@ -613,16 +613,21 @@ async def verify_hyper_v_activity(request, cluster_id: Optional[int] = None) -> 
 
 
 @activity.defn
-async def fetch_cluster_nodes_activity(cluster_id: int) -> list:
+async def fetch_cluster_nodes_activity(request:dict) -> list:
     db: Session = SessionLocal()
     try:
-        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        ip = cluster.ip
-        port = cluster.agent_port
+        if request.get("cluster_id"):
+            cluster = db.query(Cluster).filter(Cluster.id == request.get("cluster_id")).first()
+            if not cluster:
+                raise Exception("Cluster not found")
+            ip = cluster.ip
+            port = cluster.agent_port
+        else:
+            ip = request.get("ip")
+            port = request.get("agent_port")
         agent_url = f"http://{ip}:{port}"
         url = f"{agent_url}/v1/hyper-v/get_node_status_from_cluster"
-        logger.info("Fetching cluster nodes from agent: %s", url)
-        
+        logger.info("Fetching cluster nodes from agent: %s", url)    
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(url)
             if response.status_code != 200:

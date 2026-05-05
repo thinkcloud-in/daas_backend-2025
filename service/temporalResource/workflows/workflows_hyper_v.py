@@ -216,7 +216,7 @@ class PingAgentWorkflow:
 @workflow.defn(sandboxed=False)
 class FetchClusterNodesWorkflow:
     @workflow.run
-    async def run(self, cluster_id: Optional[int]):
+    async def run(self, request:dict):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -225,7 +225,7 @@ class FetchClusterNodesWorkflow:
         )
         result = await workflow.execute_activity(
             activities_hyper_v.fetch_cluster_nodes_activity,
-            args=[cluster_id],
+            args=[request],
             start_to_close_timeout=timedelta(seconds=60),
             retry_policy=retry_policy,
         )
