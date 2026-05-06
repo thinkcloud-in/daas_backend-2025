@@ -6,6 +6,8 @@ from fastapi import  File, UploadFile, Form,Query
 from fastapi.responses import FileResponse
 from fastapi.encoders import jsonable_encoder
 from utils import response_format
+from db_configuration.config import SessionLocal
+from models.Rbac_models import RBAC
 async def get_login():
     data = await service.login_with_guacamole()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)
@@ -17,8 +19,33 @@ async def  list_of_users():
 
 
 async def  list_of_kecloak_users():
-    data = await service.get_userList_from_keycloak()
-    return response_format.success_response(200, "All listed Users", data)
+    db = SessionLocal()
+    try:
+        # Get users from Keycloak
+        keycloak_users = await service.get_userList_from_keycloak()
+        if not isinstance(keycloak_users, list):
+            keycloak_users = []
+            
+        # Get unique users from the local RBAC table
+        db_users_query = db.query(RBAC.users).all()
+        db_usernames = set()
+        for row in db_users_query:
+            if row[0]:
+                for username in row[0]:
+                    db_usernames.add(username)
+        
+        # Merge: Add DB users to the list if they aren't already there
+        existing_keycloak_usernames = {user["username"] for user in keycloak_users if "username" in user}
+        
+        for username in db_usernames:
+            if username not in existing_keycloak_usernames:
+                keycloak_users.append({"username": username})
+                
+        return response_format.success_response(200, "All listed Users", keycloak_users)
+    except Exception as e:
+        return response_format.error_response(500, "Failed to list users", str(e))
+    finally:
+        db.close()
 
 async def list_machines():
     data = await service.list_machines()
@@ -264,9 +291,27 @@ async def  get_client_id():
 
 # @guacarouter.get("/get_client_roles",response_model=APIResponse[List[str]])
 async def get_client_roles():
-        data = await service.get_client_roles()
-        data = [role["name"] for role in data]
-        return response_format.success_response(200, "Client role names retrieved successfully", data)
+    db = SessionLocal()
+    try:
+        # Fetch roles from the database
+        db_roles = db.query(RBAC.role).all()
+        role_list = [role[0] for role in db_roles]
+        
+        # Also fetch roles from Keycloak to ensure parity
+        try:
+            keycloak_data = await service.get_client_roles()
+            keycloak_roles = [role["name"] for role in keycloak_data]
+            # Combine unique roles
+            role_list = list(set(role_list + keycloak_roles))
+        except Exception as e:
+            # If Keycloak is down or fails, we still have DB roles
+            print(f"Warning: Failed to fetch roles from Keycloak: {e}")
+        
+        return response_format.success_response(200, "Role names retrieved successfully", role_list)
+    except Exception as e:
+        return response_format.error_response(500, "Failed to retrieve roles", str(e))
+    finally:
+        db.close()
 
 
 # @guacarouter.post("/post_role/{role_name}")
