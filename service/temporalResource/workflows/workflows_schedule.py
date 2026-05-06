@@ -1,3 +1,4 @@
+from typing import Any
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
@@ -52,7 +53,11 @@ class get_report_data_by_id_workflow:
 @workflow.defn(sandboxed=False)
 class get_report_along_report_workflow:
     @workflow.run
-    async def run(self, report: str, limit: int, offset: int):
+    async def run(self, limit_or_args: Any, offset: int = None):
+        if isinstance(limit_or_args, list):
+            limit, offset = limit_or_args
+        else:
+            limit = limit_or_args
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -62,7 +67,7 @@ class get_report_along_report_workflow:
         try:
             result = await workflow.execute_activity(
                 activities_schedule.get_schedule_along_report_activity, 
-                args=[report, limit, offset],
+                args=[limit, offset],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
@@ -73,7 +78,11 @@ class get_report_along_report_workflow:
 @workflow.defn(sandboxed=False)
 class update_schedule_data_id_workflow:
     @workflow.run
-    async def run(self, item_id: int, item):
+    async def run(self, id_or_args: Any, item: dict = None):
+        if isinstance(id_or_args, list):
+            item_id, item = id_or_args
+        else:
+            item_id = id_or_args
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,

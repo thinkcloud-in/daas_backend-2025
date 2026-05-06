@@ -34,14 +34,13 @@ async def get_item_id(
    return await schedule_controller.get_item_id(item_id, db)
 
 # ---------------------- READ BY REPORT ----------------------
-@schedule_router.get("/get_schedules_report/{report}")
+@schedule_router.get("/get_schedules_report")
 async def get_item_report(
-    report: str,
     limit: int = Query(10, ge=1, description="Number of records to fetch"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     db: Session = Depends(get_db)
 ):
-    return await schedule_controller.get_item_report(report, limit, offset, db)
+    return await schedule_controller.get_item_report(limit, offset, db)
 
 # ---------------------- UPDATE ----------------------
 @schedule_router.put("/update_schedule/{item_id}", response_model=APIResponse[Union[Schedule_report, Any]])

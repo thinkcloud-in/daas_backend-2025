@@ -64,7 +64,6 @@ def post_data(item, db):
         db_item = Schdeule(
         userEmail=item.userEmail,
         receiverEmail=item.receiverEmail,
-        report = item.report,
         reportName=item.reportName,
         time=item.time,
         schedule_date=item.schedule_date,
@@ -72,14 +71,7 @@ def post_data(item, db):
         schedule_id=scheduleId,
         )
         receiver_email = [email.strip() for email in db_item.receiverEmail.split(',')]
-        if (db_item.report == 'Vamanit'):
-
-            PDF_API_URL = f"{GUACAMOLE_REPORT_URL}/v1/guacamole/generate_report"
-
-        elif (db_item.report == 'Horizon'):
-            PDF_API_URL = HORIZON_REPORT_URL
-        else:
-            raise ValueError("Unsupported report type")
+        PDF_API_URL = f"{GUACAMOLE_REPORT_URL}/v1/guacamole/generate_report"
 
         db.add(db_item)
         db.commit()
@@ -133,14 +125,14 @@ async def get_data_id(item_id:int):
     return result
 
 
-async def get_data_report(report:str, limit: int, offset: int,db):
+async def get_data_report(limit: int, offset: int, db):
     uniqueID = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     
     handle = await client.start_workflow(
         workflows_schedule.get_report_along_report_workflow.run,
-        args=[report, limit, offset],
-        id=f"Retrieving-schedule-data-{report}-{uniqueID}",
+        args=[limit, offset],
+        id=f"Retrieving-schedule-data-{uniqueID}",
         task_queue="GetScheduleDataAlongReport-task-queue",
     )
     result = await handle.result()

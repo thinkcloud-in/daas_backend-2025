@@ -91,10 +91,7 @@ async def shutdown_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: 
 
 @proxmox_router.post("/vm_rebuild", response_model=APIResponse[Any])
 async def rebuild_vm(data: VMPowerRequest, vmid: str, pool_id: str = None, db: Session = Depends(get_db)):
-    print('____vm rebuild process start____')
-    print('-------------------vm id',vmid)
     res = await proxmox_controller.rebuild_vm_endpoint(data,vmid, pool_id, db)
-    print('____vm rebuild process end____',res)
     return response_format.success_response(200, "VM rebuilt successfully.", jsonable_encoder(res))
 
 @proxmox_router.get("/proxmox_vm_info/{vm_id}", response_model=APIResponse[Any])

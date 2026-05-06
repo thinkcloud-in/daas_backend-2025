@@ -41,8 +41,8 @@ async def get_items(db: Session = Depends(get_db)):
 async def get_item_id(item_id: int ,db: Session = Depends(get_db)):
     return await service.get_data_id(item_id  ,db)
 
-async def get_item_report(report: str, limit: int , offset: int , db: Session = Depends(get_db)):
-    data = await service.get_data_report(report, limit, offset, db)
+async def get_item_report(limit: int, offset: int, db: Session = Depends(get_db)):
+    data = await service.get_data_report(limit, offset, db)
     return response_format.success_response(200, "Successfully retrieved schedule report", data)
 
 # Update an item

@@ -107,7 +107,7 @@ def smtp_test_mail(data, db):
         msg["From"] = smtp_mail.strip()
         msg["To"] = smtp_receiverMail.strip()
         msg['Subject'] = 'Test Mail'
-        body = 'This is a test email sent from the registration system.'
+        body = 'This is a test email sent from the DevRaQ Server.'
         msg.attach(MIMEText(body, 'plain'))
 
         server = None

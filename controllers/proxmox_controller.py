@@ -340,7 +340,6 @@ async def rebuild_vm_endpoint(
                 "pool_id": pool_id,
                 "email": data.email
             }
-            print("-----rebuild request-----", rebuild_request)
             res = await hyper_v_service.vm_rebuild(rebuild_request, db)
             return res
 

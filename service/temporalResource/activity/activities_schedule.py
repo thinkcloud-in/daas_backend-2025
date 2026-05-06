@@ -2,6 +2,7 @@ from fastapi import HTTPException
 from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db, SessionLocal
+from typing import Any
 from models.schedule_model import Schdeule
 from fastapi.encoders import jsonable_encoder
 
@@ -39,11 +40,17 @@ async def get_schedule_data_by_id_activity(item_id: int):
 
 
 @activity.defn()
-async def get_schedule_along_report_activity(report:str, limit: int , offset: int):
+async def get_schedule_along_report_activity(limit_or_args: Any, offset: int = None):
+    # Handle if passed as a list [limit, offset] or as separate args
+    if isinstance(limit_or_args, list):
+        limit, offset = limit_or_args
+    else:
+        limit = limit_or_args
+    
     db: Session = SessionLocal()
     try:
         try:
-            query = db.query(Schdeule).filter(Schdeule.report == report)
+            query = db.query(Schdeule)
             total_count = query.count()
             items = query.offset(offset).limit(limit).all()
             if items is None:
@@ -90,7 +97,12 @@ async def get_schedule_along_report_activity(report:str, limit: int , offset: in
 
 
 @activity.defn()
-async def update_schedule_data_id_activity(item_id: int, item_data: dict) -> dict:
+async def update_schedule_data_id_activity(id_or_args: Any, item_data: dict = None) -> dict:
+    if isinstance(id_or_args, list):
+        item_id, item_data = id_or_args
+    else:
+        item_id = id_or_args
+
     db: Session = SessionLocal()
     try:
         try:

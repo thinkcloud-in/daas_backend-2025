@@ -167,28 +167,38 @@ async def create_pdf_email_schedule(
     pdf_url: str,
     report_type: str
 ) -> None:
-    input_time = datetime.strptime(send_time, "%H:%M")
-    updated_time = input_time - timedelta(hours=5, minutes=30)  
+    # Convert IST (UTC+5:30) to UTC for Temporal
+    try:
+        # Handle both HH:MM and HH:MM:SS
+        if len(send_time.split(':')) == 3:
+            input_time = datetime.strptime(send_time, "%H:%M:%S")
+        else:
+            input_time = datetime.strptime(send_time, "%H:%M")
+    except Exception as e:
+        # Fallback to current time if parsing fails to avoid total crash
+        print(f"Error parsing time '{send_time}': {e}")
+        input_time = datetime.now()
 
-    today = datetime.today().date()
-    send_datetime = datetime.combine(today + timedelta(days=1), datetime.min.time()) + timedelta(
-        hours=updated_time.hour, minutes=updated_time.minute
-    )
+    total_minutes = input_time.hour * 60 + input_time.minute
+    utc_total_minutes = (total_minutes - 330) % (24 * 60) # 330 mins = 5h 30m
+    
+    utc_hour = utc_total_minutes // 60
+    utc_minute = utc_total_minutes % 60
 
     calendar_specs = {
         'daily': ScheduleCalendarSpec(
-            minute=[ScheduleRange(start=send_datetime.minute)],  
-            hour=[ScheduleRange(start=send_datetime.hour)],
-             day_of_week=[ScheduleRange(start=i) for i in range(1, 6)]  
+            minute=[ScheduleRange(start=utc_minute)],  
+            hour=[ScheduleRange(start=utc_hour)],
+            day_of_week=[ScheduleRange(start=i) for i in range(0, 7)] # All 7 days
          ),
          'weekly': ScheduleCalendarSpec(
-            minute=[ScheduleRange(start=send_datetime.minute)],  
-             hour=[ScheduleRange(start=send_datetime.hour)],
+            minute=[ScheduleRange(start=utc_minute)],  
+             hour=[ScheduleRange(start=utc_hour)],
              day_of_week=[ScheduleRange(start=0)]  
          ),
          'monthly': ScheduleCalendarSpec(
-             minute=[ScheduleRange(start=send_datetime.minute)],  
-             hour=[ScheduleRange(start=send_datetime.hour)],
+             minute=[ScheduleRange(start=utc_minute)],  
+             hour=[ScheduleRange(start=utc_hour)],
              day_of_month=[ScheduleRange(start=1)]  
          )
     }
