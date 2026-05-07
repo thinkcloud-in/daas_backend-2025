@@ -24,12 +24,13 @@ def split_pools_by_cluster_type(db: Session):
 
     for pool in pool_data:
         try:
-            raw_cluster_id = pool.cluster_id
-            if "_" in str(raw_cluster_id):
-                clusterid = str(raw_cluster_id).split("_")[1]
+            raw_cluster_id = str(pool.cluster_id)
+            if "_" in raw_cluster_id:
+                clusterid = raw_cluster_id.split("_")[1]
             else:
                 clusterid = raw_cluster_id
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error parsing cluster_id for pool {pool.id}: {e}")
             continue
 
         cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
@@ -214,6 +215,11 @@ async def _get_proxmox_vm_status_logic(db: Session, pools: list = None):
         for pool, cluster_data in proxmox_pools:
             vm_ids = pool.pool_vmids or []
             if not vm_ids:
+                # Fallback: Query Machines table for this pool
+                machines = db.query(Machine).filter(Machine.pool_id == pool.id).all()
+                vm_ids = [m.vm_id for m in machines if m.vm_id]
+            
+            if not vm_ids:
                 continue
             
             api_token = get_api_token(db, cluster_data.name)
@@ -289,7 +295,11 @@ async def _get_hyperv_vm_status_logic(db: Session, pools: list = None):
         for pool, cluster_data in hyperv_pools:
             vm_ids = pool.pool_vmids or []
             if not vm_ids:
-
+                # Fallback: Query Machines table for this pool
+                machines = db.query(Machine).filter(Machine.pool_id == pool.id).all()
+                vm_ids = [m.vm_id for m in machines if m.vm_id]
+            
+            if not vm_ids:
                 continue
             # For Hyper-V clusters, call the async agent per VM id
             for vmid in vm_ids:

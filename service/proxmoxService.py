@@ -7,7 +7,7 @@ from http.client import HTTPException
 from typing import Dict, List, Optional
 from fastapi.encoders import jsonable_encoder
 import requests
-import urllib3
+import urllib3 # test edit
 from models.proxmox_model import Proxmox
 from sqlalchemy.orm import Session
 from models.models import Cluster, CreateClusterBase,Pool, Machine
@@ -164,15 +164,17 @@ def generate_machine_name(template: str, existing_names: list[str], count: int) 
             middle = name[len(prefix):end]
             if middle.isdigit() and len(middle) == width:
                 used_numbers.add(middle)
+                print('----------used_number',used_numbers)
 
     new_names = []
     i = 1
     while len(new_names) < count:
-        if i not in used_numbers:
-            formatted_number = str(i).zfill(width)
+        formatted_number = str(i).zfill(width)
+        print('----------formatted_number',formatted_number)
+        if formatted_number not in used_numbers:
             new_names.append(f"{prefix}{formatted_number}{suffix}")
         i += 1
-
+    print('----------new_names',new_names)
     return new_names
 
 def unique_id():
@@ -319,7 +321,11 @@ def collect_proxmox_details(vmid, pool_id, db):
     if not pool or not pool.pool_template_vm_id:
         return {"status": "error", "error": f"Pool {machine.pool_id} not found or has no templateid."}
  
-    cluster_id = pool.cluster_id.split("_")[1]
+    cluster_id_raw = str(pool.cluster_id)
+    if "_" in cluster_id_raw:
+        cluster_id = cluster_id_raw.split("_")[1]
+    else:
+        cluster_id = cluster_id_raw
     cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).one_or_none()
     if not cluster_data:
         return {"status": "error", "error": f"Cluster not found for pool {pool.id}."}

@@ -297,46 +297,74 @@ async def list_workflows():
 
 
     workflows = []
-    async for wf in client.list_workflows():
-        # Convert UTC to IST (Indian Standard Time)
-        start_time_ist = wf.start_time.astimezone(IST_TZ).strftime(time_format)[:-3]
-        close_time_ist = wf.close_time.astimezone(IST_TZ).strftime(time_format)[:-3] if wf.close_time else "Ongoing"
+    # Using a Temporal Query to filter workflows on the server side.
+    # This significantly reduces the load on the persistence layer by not fetching 
+    # utility workflows that don't have the 'Entity' attribute.
+    query = "Entity != ''"
+    
+    try:
+        async for wf in client.list_workflows(query=query):
+            # Convert UTC to IST (Indian Standard Time)
+            start_time_ist = wf.start_time.astimezone(IST_TZ).strftime(time_format)[:-3]
+            close_time_ist = wf.close_time.astimezone(IST_TZ).strftime(time_format)[:-3] if wf.close_time else "Ongoing"
 
-        execution_time = None
- 
-        if wf.close_time:
-            delta_ms = (wf.close_time - wf.start_time).total_seconds() * 1000
-            if delta_ms < 1000:
-                execution_time = f"{int(delta_ms)}ms"
-            else:
-                execution_time = f"{delta_ms / 1000:.2f}s"
-        else:
             execution_time = None
- 
+            if wf.close_time:
+                delta_ms = (wf.close_time - wf.start_time).total_seconds() * 1000
+                if delta_ms < 1000:
+                    execution_time = f"{int(delta_ms)}ms"
+                else:
+                    execution_time = f"{delta_ms / 1000:.2f}s"
+            else:
+                execution_time = None
 
-        entity = wf.search_attributes.get("Entity", ["UnknownEntity"])[0]
-        action = wf.search_attributes.get("Action", ["UnknownAction"])[0]
-        UserName = wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
+            entity = wf.search_attributes.get("Entity", ["UnknownEntity"])[0]
+            action = wf.search_attributes.get("Action", ["UnknownAction"])[0]
+            UserName = wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
 
+            if entity == "UnknownEntity":
+                continue
 
-        if entity == "UnknownEntity":
-            continue
-
-
-        workflows.append({
-            "workflow_id": wf.id,
-            "run_id": wf.run_id,
-            "workflow_type": wf.workflow_type,
-            "task_name": entity,  # Add task_name in Backend
-            "action":action,
-            "start_time": start_time_ist,  
-            "close_time": close_time_ist,  
-            "execution_time": execution_time,
-            "status": wf.status.name,
-            "UserName":UserName
-        })
+            workflows.append({
+                "workflow_id": wf.id,
+                "run_id": wf.run_id,
+                "workflow_type": wf.workflow_type,
+                "task_name": entity,
+                "action": action,
+                "start_time": start_time_ist,
+                "close_time": close_time_ist,
+                "execution_time": execution_time,
+                "status": wf.status.name,
+                "UserName": UserName
+            })
+    except Exception as e:
+        print(f"Error listing workflows with query: {e}")
+        # Fallback to listing all but with a strict limit to avoid hitting QPS again
+        async for wf in client.list_workflows():
+            if len(workflows) >= 50:
+                break
+                
+            entity = wf.search_attributes.get("Entity", ["UnknownEntity"])[0]
+            if entity == "UnknownEntity":
+                continue
+                
+            start_time_ist = wf.start_time.astimezone(IST_TZ).strftime(time_format)[:-3]
+            close_time_ist = wf.close_time.astimezone(IST_TZ).strftime(time_format)[:-3] if wf.close_time else "Ongoing"
+            
+            workflows.append({
+                "workflow_id": wf.id,
+                "run_id": wf.run_id,
+                "workflow_type": wf.workflow_type,
+                "task_name": entity,
+                "action": wf.search_attributes.get("Action", ["UnknownAction"])[0],
+                "start_time": start_time_ist,
+                "close_time": close_time_ist,
+                "status": wf.status.name,
+                "UserName": wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
+            })
     
     return response_format.success_response(200, "Workflows retrieved successfully.", workflows)
+
 
 
 

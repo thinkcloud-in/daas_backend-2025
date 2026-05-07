@@ -2,7 +2,7 @@ from datetime import timedelta
 import logging
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-from service.temporalResource.activity import activities_machine
+from service.temporalResource.activity import activities_machine, activities_proxmox
 from sqlalchemy.orm import Session
 
 logging.basicConfig(
@@ -29,6 +29,26 @@ class CreateMachineWorkflow:
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
+
+            if result.get("msg") == "Machine created successfully":
+                print("Machine created, triggering auto-start...")
+                machine_info = result.get("machine", {})
+                vmid = machine_info.get("vm_id")
+                pool_id = machine_data.get("pool_id")
+                
+                print(f"Auto-start debug: vmid={vmid} (type: {type(vmid)}), pool_id={pool_id} (type: {type(pool_id)})")
+
+                if vmid and pool_id:
+                    await workflow.execute_activity(
+                        activities_proxmox.start_vm_proxmox_activity,
+                        args=[str(vmid), str(pool_id)],
+                        task_queue="vmpower-task-queue",
+                        retry_policy=retry_policy,
+                        start_to_close_timeout=timedelta(seconds=150),
+                    )
+                else:
+                    logger.warning(f"Could not auto-start: missing vmid ({vmid}) or pool_id ({pool_id})")
+
             logger.info("Workflow completed successfully.")
             return result
         except Exception as e:

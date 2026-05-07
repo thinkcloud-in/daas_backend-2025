@@ -74,7 +74,7 @@ async def clone_vms_endpoint(payload: CloneRequest, db: Session = Depends(get_db
  
  
  
-def generate_name(request: NameRequest,existing_names):
+def generate_name(request: NameRequest):
     try:
         name = service.generate_machine_name(request.template)
         return {"name": name}

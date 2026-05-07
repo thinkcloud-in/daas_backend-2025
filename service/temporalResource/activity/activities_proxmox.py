@@ -274,9 +274,20 @@ async def wait_for_vm_ready_activity(args: dict):
     db: Session = SessionLocal()
     try:
         try:
-            cluster_id = args["cluster_id"]
+            vmid = args.get("vmid")
             upid = args["upid"]
-            vmid = args.get("vmid")  # optional — passed for status update
+            pool_id = args.get("pool_id")
+            cluster_id = args.get("cluster_id")
+
+            if not cluster_id and pool_id:
+                pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+                if pool:
+                    cluster_id_raw = str(pool.cluster_id)
+                    cluster_id = cluster_id_raw.split("_")[1] if "_" in cluster_id_raw else cluster_id_raw
+
+            if not cluster_id:
+                raise Exception("Either cluster_id or pool_id must be provided")
+
             node = extract_node_from_upid(upid)
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster_data:
@@ -321,10 +332,19 @@ async def assign_ip_to_vm_activity(args: dict):
     try:
         try:
             vmid = args["vmid"]
-            cluster_id = args["cluster_id"]
             ip_address = args["ip_address"]
-     
-            
+            pool_id = args.get("pool_id")
+            cluster_id = args.get("cluster_id")
+
+            if not cluster_id and pool_id:
+                pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
+                if pool:
+                    cluster_id_raw = str(pool.cluster_id)
+                    cluster_id = cluster_id_raw.split("_")[1] if "_" in cluster_id_raw else cluster_id_raw
+
+            if not cluster_id:
+                raise Exception("Either cluster_id or pool_id must be provided")
+
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if not cluster_data:
                 raise Exception(f"Cluster {cluster_id} not found")
@@ -367,7 +387,6 @@ async def assign_ip_to_vm_activity(args: dict):
         raise Exception(f"Error in assign_ip_to_vm_activity: {str(e)}")
     finally:
         db.close()
-
  
  
 RESERVED_TAG_KEYS = {
@@ -457,13 +476,11 @@ async def start_vm_proxmox_activity(vmid: str, pool_id: str):
             if not pool or not pool.pool_template_vm_id:
                 return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-            cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
-            cluster_id_parts = cluster_id_raw.split("_")
-
-            if len(cluster_id_parts) < 2:
-                return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
-
-            cluster_id = cluster_id_parts[1]  # "1829"
+            cluster_id_raw = str(pool.cluster_id)
+            if "_" in cluster_id_raw:
+                cluster_id = cluster_id_raw.split("_")[1]
+            else:
+                cluster_id = cluster_id_raw
 
             cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
             if not cluster:
@@ -523,13 +540,11 @@ async def stop_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
             if not pool or not pool.pool_template_vm_id:
                 return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-            cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
-            cluster_id_parts = cluster_id_raw.split("_")
-
-            if len(cluster_id_parts) < 2:
-                return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
-
-            cluster_id = cluster_id_parts[1]  # "1829"
+            cluster_id_raw = str(pool.cluster_id)
+            if "_" in cluster_id_raw:
+                cluster_id = cluster_id_raw.split("_")[1]
+            else:
+                cluster_id = cluster_id_raw
 
             cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
             if not cluster:
@@ -593,13 +608,11 @@ async def reboot_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
             if not pool or not pool.pool_template_vm_id:
                 return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-            cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
-            cluster_id_parts = cluster_id_raw.split("_")
-
-            if len(cluster_id_parts) < 2:
-                return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
-
-            cluster_id = cluster_id_parts[1]  # "1829"
+            cluster_id_raw = str(pool.cluster_id)
+            if "_" in cluster_id_raw:
+                cluster_id = cluster_id_raw.split("_")[1]
+            else:
+                cluster_id = cluster_id_raw
 
             cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
             if not cluster:
@@ -662,13 +675,11 @@ async def shutdown_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None
             if not pool or not pool.pool_template_vm_id:
                 return {"status": "error", "error": f"Pool {pool_id} not found or has no templateid."}
 
-            cluster_id_raw = pool.cluster_id  # e.g., "1469_1829"
-            cluster_id_parts = cluster_id_raw.split("_")
-
-            if len(cluster_id_parts) < 2:
-                return {"status": "error", "error": f"Invalid cluster_id format: {cluster_id_raw}"}
-
-            cluster_id = cluster_id_parts[1]  # "1829"
+            cluster_id_raw = str(pool.cluster_id)
+            if "_" in cluster_id_raw:
+                cluster_id = cluster_id_raw.split("_")[1]
+            else:
+                cluster_id = cluster_id_raw
 
             cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
             if not cluster:

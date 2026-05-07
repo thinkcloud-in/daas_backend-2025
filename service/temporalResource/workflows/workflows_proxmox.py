@@ -15,7 +15,7 @@ logger = logging.getLogger("create_machine_workflow")
 @workflow.defn(sandboxed=False)
 class WaitAndAssignIPsWorkflow:
     @workflow.run
-    async def run(self, vms, ip_list, cluster_id):
+    async def run(self, vms, ip_list, pool_id):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -27,7 +27,7 @@ class WaitAndAssignIPsWorkflow:
             await workflow.execute_activity(
                 activities_proxmox.wait_for_vm_ready_activity,
                 args=[{
-                    "cluster_id": cluster_id,
+                    "pool_id": pool_id,
                     "node": node,
                     "upid": upid,
                     "vmid": vmid,
@@ -40,11 +40,19 @@ class WaitAndAssignIPsWorkflow:
                 activities_proxmox.assign_ip_to_vm_activity,
                 args=[{
                     "vmid": vmid,
-                    "cluster_id": cluster_id,
+                    "pool_id": pool_id,
                     "ip_address": ip,
                 }],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(minutes=5),
+            )
+            # Auto-start the VM after IP assignment
+            await workflow.execute_activity(
+                activities_proxmox.start_vm_proxmox_activity,
+                args=[str(vmid), str(pool_id)],
+                task_queue="vmpower-task-queue",
+                retry_policy=retry_policy,
+                start_to_close_timeout=timedelta(seconds=150),
             )
  
  
@@ -96,7 +104,7 @@ class CloneVMWorkflow:
         
             child_handle = await workflow.start_child_workflow(
                 WaitAndAssignIPsWorkflow.run,
-                args=[vms, batch_ip_list, clone_payload["cluster_id"]],
+                args=[vms, batch_ip_list, clone_payload["pool_id"]],
                 id=f"wait-assign-{workflow.info().workflow_id}-batch-{batch_start // BATCH_SIZE + 1}",
                 parent_close_policy=ParentClosePolicy.ABANDON
             )
@@ -280,7 +288,7 @@ class VmRebuildWorkflow:
         ip_list = [ip_address]
         child_handle = await workflow.start_child_workflow(
             WaitAndAssignIPsWorkflow.run,
-            args=[vms, ip_list, cluster_id],
+            args=[vms, ip_list, pool_id],
             id=f"wait-assign-{workflow.info().workflow_id}-rebuild-{vmid}",
             parent_close_policy=ParentClosePolicy.ABANDON,
         )

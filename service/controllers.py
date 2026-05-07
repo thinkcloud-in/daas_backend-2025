@@ -123,10 +123,13 @@ async def create_pool(pool_data: dict, db) -> dict:
 
     if isinstance(result, dict) and "pool" in result:
         pool_dict = result["pool"]
-        # Safely get ID (handles cases where result['pool'] might be malformed or missing keys)
         pool_id = pool_dict.get("id") if isinstance(pool_dict, dict) else None
         
-        if pool_id and pool_ad_domain != "UnknownDomain":
+        # Only start DomainJoinWorkflow if join_ad is explicitly true and AD info is provided
+        join_ad = pool_data.get("join_ad", False)
+        ad_domain = pool_data.get("pool_ad_domain")
+        
+        if pool_id and join_ad and ad_domain and ad_domain != "UnknownDomain":
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -170,10 +173,13 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
     if isinstance(result, dict) and "pool" in result:
         pool_dict = result["pool"]
-        # Safely get ID (handles cases where result['pool'] might be malformed or missing keys)
         pool_id_val = pool_dict.get("id") if isinstance(pool_dict, dict) else None
 
-        if pool_id_val and pool_ad_domain != "UnknownDomain":
+        # Only start DomainJoinWorkflow if join_ad is explicitly true and AD info is provided
+        join_ad = pool_data.get("join_ad", False)
+        ad_domain = pool_data.get("pool_ad_domain")
+
+        if pool_id_val and join_ad and ad_domain and ad_domain != "UnknownDomain":
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],

@@ -165,7 +165,6 @@ async def create_machine_activity(machine_data: dict):
     finally:
         db.close()
 
-
 @activity.defn
 async def delete_machine_activity(machine_identifier: str):
     db: Session = SessionLocal()
