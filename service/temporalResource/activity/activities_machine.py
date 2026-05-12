@@ -200,9 +200,18 @@ async def delete_machine_activity(machine_identifier: str):
                         await proxmoxService.delete_proxmox_vm(vmid, cluster_data)
                     elif cluster_type == "hyperv":
                         response = await hyper_v_service.delete_hyperv_vm(vmid, db, cluster_id=cluster_data.id)
+                        if response.get("code") != 200:
+                            msg = str(response.get("msg", "Unknown error"))
+                            # If VM or AD object is already gone, allow DB deletion to proceed
+                            ignore_msgs = ["not found", "objectnotfound", "does not exist", "directory object"]
+                            if any(m in msg.lower() for m in ignore_msgs):
+                                logger.warning(f"VM or AD object {vmid} not found. Proceeding with DB deletion. Error was: {msg}")
+                            else:
+                                raise Exception(f"Hyper-V agent failed to delete VM: {msg}")
                    
                 except Exception as e:
-                    logger.error(f"Failed to delete VM with VMID {vmid} from Proxmox: {str(e)}")
+                    logger.error(f"Failed to delete VM with VMID {vmid} from {cluster_type}: {str(e)}")
+                    raise e
                 ip_entry = db.query(IPEntry).filter(IPEntry.vm_id == vmid, IPEntry.status == "used").first()
                 if ip_entry:
                     ip_entry.status = "unused"

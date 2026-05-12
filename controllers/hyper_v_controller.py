@@ -25,8 +25,8 @@ async def get_switches(cluster_id: int, db: Session):
     result = await service.get_switches(cluster_id, db)
     return success_response(200, "Successfully retrieved Hyper-V switches", result)
 
-async def delete_vm(vm_id, db):
-    result = await service.delete_hyperv_vm(vm_id, db)
+async def delete_vm(request, db):
+    result = await service.delete_hyperv_vm(request, db)
     return success_response(200, "Successfully deleted Hyper-V VM", result)
 
 async def get_status(vm_id, db):

@@ -31,21 +31,25 @@ class CreateMachineWorkflow:
             )
 
             if result.get("msg") == "Machine created successfully":
-                print("Machine created, triggering auto-start...")
                 machine_info = result.get("machine", {})
                 vmid = machine_info.get("vm_id")
                 pool_id = machine_data.get("pool_id")
                 
-                print(f"Auto-start debug: vmid={vmid} (type: {type(vmid)}), pool_id={pool_id} (type: {type(pool_id)})")
+                logger.info(f"Machine {machine_info.get('name')} created. Attempting auto-start. vmid={vmid}, pool_id={pool_id}")
 
                 if vmid and pool_id:
-                    await workflow.execute_activity(
-                        activities_proxmox.start_vm_proxmox_activity,
-                        args=[str(vmid), str(pool_id)],
-                        task_queue="vmpower-task-queue",
-                        retry_policy=retry_policy,
-                        start_to_close_timeout=timedelta(seconds=150),
-                    )
+                    logger.info(f"Triggering PowerOnMachineWorkflow for vmid={vmid}")
+                    try:
+                        await workflow.execute_child_workflow(
+                            PowerOnMachineWorkflow.run,
+                            args=[str(vmid), str(pool_id)],
+                            id=f"power-on-{vmid}-{workflow.info().run_id[:4]}",
+                            retry_policy=retry_policy,
+                        )
+                        logger.info(f"PowerOnMachineWorkflow finished for vmid={vmid}")
+                    except Exception as child_err:
+                        logger.error(f"PowerOnMachineWorkflow failed for vmid={vmid}: {str(child_err)}")
+                        # We don't necessarily want to fail the whole creation if only power-on fails
                 else:
                     logger.warning(f"Could not auto-start: missing vmid ({vmid}) or pool_id ({pool_id})")
 
@@ -324,3 +328,28 @@ class GetMachineDetailsWorkflow:
             
             logger.error(f"Error occurred in workflow: {str(e)}", exc_info=True)
             raise e
+
+@workflow.defn(sandboxed=False)
+class PowerOnMachineWorkflow:
+    @workflow.run
+    async def run(self, vmid: str, pool_id: str):
+        retry_policy = RetryPolicy(
+            initial_interval=timedelta(seconds=5),
+            backoff_coefficient=2.0,
+            maximum_interval=timedelta(seconds=60),
+            maximum_attempts=3,
+        )
+        logger.info(f"PowerOnMachineWorkflow started for vmid={vmid}, pool_id={pool_id}")
+        try:
+            result = await workflow.execute_activity(
+                activities_proxmox.start_vm_proxmox_activity,
+                args=[vmid, pool_id],
+                task_queue="vmpower-task-queue",
+                retry_policy=retry_policy,
+                start_to_close_timeout=timedelta(seconds=180),
+            )
+            logger.info(f"PowerOnMachineWorkflow completed for vmid={vmid}")
+            return result
+        except Exception as e:
+            logger.error(f"PowerOnMachineWorkflow failed for vmid={vmid}: {str(e)}")
+            raise e

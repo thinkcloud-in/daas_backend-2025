@@ -14,7 +14,7 @@ async def create_machine_worker():
     worker = Worker(
         client,
         task_queue="create-machine-task-queue",  
-        workflows=[workflows_machine.CreateMachineWorkflow], 
+        workflows=[workflows_machine.CreateMachineWorkflow, workflows_machine.PowerOnMachineWorkflow], 
         activities=[activities_machine.create_machine_activity],
     )
     

@@ -4,7 +4,7 @@ from models.hyper_v_model import HandleRebuildActionRequest
 from fastapi import APIRouter, Depends
 from controllers import hyper_v_controller
 from models.API_Response_model import APIResponse
-from models.hyper_v_model import VerifyHyperVRequest
+from models.hyper_v_model import VerifyHyperVRequest, DeleteVMRequest
 from typing import Any
 from db_configuration.config import get_db
 from sqlalchemy.orm import Session
@@ -38,9 +38,9 @@ async def get_vm_info(vm_id: str, db: Session = Depends(get_db)):
 async def get_switches(cluster_id:int,db: Session = Depends(get_db)):
         return await hyper_v_controller.get_switches(cluster_id,db)
 
-@hyper_v_router.delete("/delete_vm/{vm_id}", response_model=APIResponse[Any])
-async def delete_vm(vm_id: str, db: Session = Depends(get_db)):
-        return await hyper_v_controller.delete_vm(vm_id, db)
+@hyper_v_router.post("/delete_vm", response_model=APIResponse[Any])
+async def delete_vm(request: DeleteVMRequest, db: Session = Depends(get_db)):
+        return await hyper_v_controller.delete_vm(request, db)
 
 @hyper_v_router.get("/get_status/{vm_id}", response_model=APIResponse[Any])
 async def get_status(vm_id: str, db: Session = Depends(get_db)):

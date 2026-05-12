@@ -213,7 +213,7 @@ async def handle_action_activity(request: dict) -> dict:
     db: Session = SessionLocal()
     try:
         cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
-        is_cluster = str(cluster.node_type).lower() == "cluster"
+        is_cluster = str(cluster.node_type).lower() in ["multi node", "cluster", "multinode"]
         if not cluster:
             raise Exception(f"Cluster with ID {cluster_id} not found")
         agent_url = hyper_v_service.get_agent_url(cluster)
@@ -242,6 +242,8 @@ async def handle_action_activity(request: dict) -> dict:
         write=10.0,
         pool=10.0
     )
+    print('=============vm_action',url)
+    print('=============payload',agent_payload)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=agent_payload)
 
@@ -258,7 +260,7 @@ async def handle_action_activity(request: dict) -> dict:
                     if machine:
                         if action_requested == "start":
                             machine.error_message = "power-on"
-                        elif action_requested in ["stop", "force_off", "shutdown"]:
+                        elif action_requested in ["stop", "force_off", "shutdown", "force-off"]:
                             machine.error_message = "power-off"
                         db_inner.commit()
             finally:
@@ -306,7 +308,7 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
         gateway = template_data.get('gateway')
         subnet = template_data.get('subnet')
         dns = template_data.get('dns')
-        ip = machine.hostname # Use existing IP assigned to machine
+        ip = machine.hostname
         dynamic_memory = template_data.get("dynamic_memory")
         minimum_memory = template_data.get("minimum_memory")
         maximum_memory = template_data.get("maximum_memory")

@@ -14,6 +14,9 @@ from influxdb_client import InfluxDBClient, Point, WriteOptions
 import dotenv
 import os
 dotenv.load_dotenv()
+import logging
+
+logger = logging.getLogger(__name__)
 
 # @activity.defn
 # async def clone_vm_activity(clone_payload: dict):
@@ -468,8 +471,10 @@ async def start_vm_proxmox_activity(vmid: str, pool_id: str):
     db: Session = SessionLocal()
     try:
         try:
+            logger.info(f"start_vm_proxmox_activity started for vmid={vmid}, pool_id={pool_id}")
             machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
             if not machine:
+                logger.error(f"Machine with vmid {vmid} not found in database.")
                 return {"status": "error", "msg": f"Machine with id {vmid} not found."}
 
             pool = db.query(Pool).filter(Pool.id == int(pool_id)).first()
@@ -478,7 +483,7 @@ async def start_vm_proxmox_activity(vmid: str, pool_id: str):
 
             cluster_id_raw = str(pool.cluster_id)
             if "_" in cluster_id_raw:
-                cluster_id = cluster_id_raw.split("_")[1]
+                cluster_id = cluster_id_raw.split("_")[-1]
             else:
                 cluster_id = cluster_id_raw
 
@@ -486,20 +491,24 @@ async def start_vm_proxmox_activity(vmid: str, pool_id: str):
             if not cluster:
                 return {"status": "error", "error": f"Cluster {cluster_id} not found."}
             # Hyper-V check
-            if cluster.type and cluster.type.lower() == "hyper-v":
+            if cluster.type and cluster.type.lower() in ("hyper-v", "hyperv"):
                 hyperv_request = {
                     "vm_id":machine.vm_id,
                     "vm_name":machine.name,
                     "action":"start",
                     "cluster_id":cluster_id
                 }
-                result = await handle_action_activity(hyperv_request)
-                if result.get("status") == "success":
-                    machine.error_message = "power-on"
+                try:
+                    result = await handle_action_activity(hyperv_request)
+                    if result.get("status") == "success":
+                        machine.error_message = "power-on"
+                        db.commit()
+                        return {"vm_status": "power-on", "msg": "VM started successfully."}
+                except Exception as e:
+                    machine.error_message = f"Power-on failed: {str(e)}"
                     db.commit()
-                    return {"vm_status": "power-on", "msg": "VM started successfully."}
-                else:
-                    return {"vm_status": "error", "msg": f"Start failed: {result.get('error', 'Unknown error')}"}
+                    logger.error(f"Hyper-V start failed for {machine.name}: {e}")
+                    raise e
 
             details = proxmoxService.collect_proxmox_details(vmid, pool_id, db)
             if details.get("status") != "success":
@@ -550,7 +559,7 @@ async def stop_vm_proxmox_activity(vmid: str, pool_id: str,email: str = None):
             if not cluster:
                 return {"status": "error", "error": f"Cluster {cluster_id} not found."}
             # Hyper-V check
-            if cluster.type and cluster.type.lower() == "hyper-v":
+            if cluster.type and cluster.type.lower() in ("hyper-v", "hyperv"):
                 hyperv_request = {
                     "vm_id":machine.vm_id,
                     "vm_name":machine.name,

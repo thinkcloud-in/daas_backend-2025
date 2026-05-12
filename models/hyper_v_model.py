@@ -42,3 +42,10 @@ class VerifyHyperVRequest(BaseModel):
     password: str = Field(..., description="Password")
     agent_port: Optional[Union[str, int]] = Field(None, description="Agent Port")
     type: str = Field(..., description="Type of the Hyper-V")
+
+class DeleteVMRequest(BaseModel):
+    vm_id: str = Field(..., description="ID of the VM")
+    is_cluster: Optional[bool] = False
+    domain: Optional[str] = ""
+    username: Optional[str] = ""
+    domain_password: Optional[str] = ""

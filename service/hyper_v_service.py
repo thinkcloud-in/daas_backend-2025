@@ -270,9 +270,16 @@ async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
         
     agent_url = get_agent_url(cluster)
     url = f"{agent_url}/v1/hyper-v/get_vm_info/{vm_id}?is_cluster={is_cluster}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        data = response.json()
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.get(url)
+            data = response.json()
+    except httpx.TimeoutException:
+        logger.error(f"Timeout while fetching VM info from agent: {url}")
+        return {"error": "The Hyper-V agent took too long to respond. Please try again in a moment."}
+    except Exception as e:
+        logger.error(f"Error fetching VM info: {str(e)}")
+        return {"error": f"Failed to fetch VM info: {str(e)}"}
         
     agent_data = data.get('data', '')
     # If not found by ID, we might need a fallback or better error reporting
@@ -295,7 +302,23 @@ async def get_switches(cluster_id:int, db:Session):
         return data['data']
 
 
-async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
+async def delete_hyperv_vm(request, db:Session, cluster_id:int=None):
+    if isinstance(request, str):
+        req_dict = {"vm_id": request}
+    else:
+        req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
+    
+    vm_id = req_dict.get("vm_id")
+    
+    # Fetch machine and pool to get AD credentials if they are missing
+    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+    if machine:
+        pool = db.query(Pool).filter(Pool.id == machine.pool_id).first()
+        if pool and not req_dict.get("domain") and pool.pool_ad_domain:
+            req_dict["domain"] = pool.pool_ad_domain
+            req_dict["username"] = pool.pool_ad_username
+            req_dict["domain_password"] = pool.pool_ad_password
+
     if not cluster_id:
         cluster = await resolve_cluster_from_vm(vm_id, db)
     else:
@@ -309,6 +332,11 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
     port = parsed.port or 8765
     node_type = str(cluster.node_type).lower().replace(" ", "") if cluster.node_type else ""
     is_cluster = node_type in ("multinode", "cluster")
+    
+    # Update is_cluster in request if it matches cluster type
+    if is_cluster:
+        req_dict["is_cluster"] = True
+    
     if is_cluster:
         find_node = f"{agent_url}/v1/hyper-v/get_node_via_vm_id/{vm_id}?is_cluster={str(is_cluster).lower()}"
         async with httpx.AsyncClient(timeout=60.0) as client:
@@ -317,9 +345,12 @@ async def delete_hyperv_vm(vm_id: str, db:Session, cluster_id:int=None):
         if not node_ip:
             raise HTTPException(status_code=404, detail=f"Could not resolve owner node for VM {vm_id}")
         agent_url = f"http://{node_ip}:{port}"
-    url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v/{vm_id}?is_cluster={str(is_cluster).lower()}"
+        
+    url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v"
+    print('-----------------url',url)
+    print('-------------------------req_dict for delete vm', req_dict)
     async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.delete(url)
+        response = await client.post(url, json=req_dict)
         data = response.json()
     return data
 

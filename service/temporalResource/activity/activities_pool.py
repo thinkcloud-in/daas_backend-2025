@@ -12,6 +12,9 @@ from models.IPs_model import IPEntry
 from service.proxmoxService import clone_vm
 from service.hyper_v_service import delete_hyperv_vm,clone_vm_hyper_v_service
 import json
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @activity.defn()
@@ -68,8 +71,6 @@ async def create_pool_activity(request: dict) -> dict:
                         "status": "already_exists"
                     }
                 else:
-                    # If it exists but has no machines, we might want to delete it and retry, 
-                    # but for safety, just report it.
                     return {
                         "status": "error",
                         "error_type": "pool_exists_no_machines",
@@ -164,6 +165,8 @@ async def create_pool_activity(request: dict) -> dict:
                         raise Exception(response.get("error", "Proxmox cloning failed"))
 
                 assigned_vms = response.get("vms", [])
+                logger.info(f"Hyper-V cloning response received. Number of VMs: {len(assigned_vms)}")
+                logger.debug(f"Raw assigned_vms: {assigned_vms}")
 
                 # ── Release any unused IPs (if cloning failed or partially failed) ───
                 used_ip_values = {vm.get("ip") for vm in assigned_vms if vm.get("ip")}
