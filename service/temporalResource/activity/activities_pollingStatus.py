@@ -14,39 +14,57 @@ VERIFY_SSL = False
 
 logger = logging.getLogger(__name__)
 
-
-
 def split_pools_by_cluster_type(db: Session):
-
     pool_data = db.query(Pool).all()
     proxmox_pools = []
     hyperv_pools = []
+    
+    logger.info(f"[split_pools_by_cluster_type] Total pools found in DB: {len(pool_data)}")
 
     for pool in pool_data:
         try:
+            if not pool.cluster_id:
+                logger.warning(f"[split_pools_by_cluster_type] Pool {pool.id} has no cluster_id. Skipping.")
+                continue
+
             raw_cluster_id = str(pool.cluster_id)
             if "_" in raw_cluster_id:
-                clusterid = raw_cluster_id.split("_")[1]
+                parts = raw_cluster_id.split("_")
+                clusterid_str = parts[1] if len(parts) > 1 else parts[0]
             else:
-                clusterid = raw_cluster_id
+                clusterid_str = raw_cluster_id
+            
+            if not clusterid_str or clusterid_str.lower() == "nan":
+                logger.warning(f"[split_pools_by_cluster_type] Pool {pool.id} has invalid clusterid '{clusterid_str}'. Skipping.")
+                continue
+
+            # Ensure we use an integer for the ID lookup
+            try:
+                cluster_id_int = int(float(clusterid_str))
+            except ValueError:
+                logger.error(f"[split_pools_by_cluster_type] Could not convert clusterid '{clusterid_str}' to int for pool {pool.id}")
+                continue
+
+            cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id_int).first()
+            if not cluster_data:
+                logger.warning(f"[split_pools_by_cluster_type] Cluster ID {cluster_id_int} not found in DB for pool {pool.id}. Skipping.")
+                continue
+
+            # Normalize type: "Hyper-V", "hyper_v", "HyperV" -> "hyperv"
+            cluster_type = (getattr(cluster_data, "type", "") or "").lower().replace("-", "").replace("_", "").replace(" ", "")
+            
+            if "hyperv" in cluster_type: 
+                hyperv_pools.append((pool, cluster_data))
+            elif "proxmox" in cluster_type:
+                proxmox_pools.append((pool, cluster_data))
+            else:
+                logger.warning(f"[split_pools_by_cluster_type] Unknown cluster type '{cluster_type}' for cluster '{cluster_data.name}', skipping")
         except Exception as e:
             logger.error(f"Error parsing cluster_id for pool {pool.id}: {e}")
             continue
 
-        cluster_data = db.query(Cluster).filter(Cluster.id == clusterid).first()
-        if not cluster_data:
-            continue
-
-        cluster_type = (getattr(cluster_data, "type", "") or "").lower().replace("-", "")
-        if cluster_type in ("hyperv",): 
-            hyperv_pools.append((pool, cluster_data))
-        elif cluster_type in ("proxmox",):
-            proxmox_pools.append((pool, cluster_data))
-        else:
-            logger.warning(f"Unknown cluster type '{cluster_type}' for cluster '{cluster_data.name}', skipping")
+    logger.info(f"[split_pools_by_cluster_type] Categorized: {len(proxmox_pools)} Proxmox, {len(hyperv_pools)} Hyper-V pools.")
     return proxmox_pools, hyperv_pools
-
-
 
 @activity.defn
 async def poll_and_update_machine_status_activity():
@@ -60,37 +78,40 @@ async def poll_and_update_machine_status_activity():
         try:
             all_machines = db.query(Machine).all()
             if not all_machines:
-                print("[Poller Activity] No machines found to poll.")
-                logger.info("No machines found")
+                logger.info("[Poller Activity] No machines found to poll.")
                 return {
                     "message": "No machines to poll",
                     "statuses": {},
                     "errors": [],
                     "power_states": {}
                 }
+
             proxmox_pools, hyperv_pools = split_pools_by_cluster_type(db)
+            
             # Run Proxmox and Hyper-V power-state collectors
             try:
                 proxmox_vm_status = await get_proxmox_vm_status_activity(db=db, pools=proxmox_pools)
-                print(f"[Poller Activity] Proxmox pools collected: {len(proxmox_vm_status)}")
                 hyperv_vm_status = await get_hyperv_vm_status_activity(db=db, pools=hyperv_pools)
-                print(f"[Poller Activity] Hyper-V pools collected: {len(hyperv_vm_status)}")
             except Exception as e:
-                print(f"[Poller Activity] ERROR collecting pool states: {e}")
-                logger.error(f"Failed to run power-state collectors: {e}")
+                logger.error(f"[Poller Activity] ERROR collecting pool states: {e}")
                 proxmox_vm_status = []
                 hyperv_vm_status = []
 
-            # Build a combined vmid -> status map
+            # Build a combined vmid -> status map (Standardize keys to lowercase strings)
             vmid_status_map = {}
             for pool in proxmox_vm_status:
                 for vm in pool.get("vms", []):
-                    vmid_status_map[vm["vmid"]] = vm["status"]
+                    if "vmid" in vm:
+                        vmid_status_map[str(vm["vmid"]).lower()] = vm.get("status", "UNKNOWN")
 
             for pool in hyperv_vm_status:
                 for vm in pool.get("vms", []):
-                    vmid_status_map[vm["vmid"]] = vm["status"]
+                    if "vmid" in vm:
+                        vmid_status_map[str(vm["vmid"]).lower()] = vm.get("status", "UNKNOWN")
 
+            logger.info(f"[Poller Activity] Agent status map built with {len(vmid_status_map)} entries.")
+
+            power_states = {}
             # Aggregate power states per pool id for the response
             for pool in proxmox_vm_status:
                 power_states[pool["pool_id"]] = pool["vms"]
@@ -98,11 +119,22 @@ async def poll_and_update_machine_status_activity():
                 power_states[pool["pool_id"]] = pool["vms"]
 
             # Now poll each machine's workflow(s)
+            match_count = 0
             for machine in all_machines:
+                m_vmid = str(getattr(machine, "vm_id", "") or "").lower()
+                vm_status = vmid_status_map.get(m_vmid)
+                if vm_status:
+                    match_count += 1
+
+                # Update power status even if no workflows or all finished
+                if vm_status and machine.error_message != vm_status:
+                    machine.error_message = vm_status
+                    db.commit()
+
                 workflow_ids = machine.workflowId or []
                 machine_statuses = []
+                
                 if not workflow_ids:
-                    logger.warning(f"Machine {machine.id} has no workflow IDs")
                     continue
 
                 workflow_statuses = machine.workflow_status or {}
@@ -113,7 +145,6 @@ async def poll_and_update_machine_status_activity():
                         for ws in workflow_statuses.values()
                     )
                 ):
-                    # all workflows finished -> skip polling
                     continue
 
                 try:
@@ -127,24 +158,17 @@ async def poll_and_update_machine_status_activity():
                             else:
                                 status = str(desc.status)
                         except Exception as e:
-                            logger.warning(f"Workflow {wfid} not found or inaccessible: {e}")
+                            logger.warning(f"Workflow {wfid} not found: {e}")
                             status = "UNKNOWN"
                         
                         error = None
-                        vm_status = None
-
                         if status not in ("RUNNING", "COMPLETED"):
                             try:
                                 failure_info = await pollingStatus.get_workflow_failure_message_simple(wfid)
                                 error = failure_info.get("failure_message")
                                 machine.error_message = error
-                                logger.info(f"Updated Machine row {machine.id} with workflow error: {error}")
                             except Exception as e:
                                 logger.warning(f"Failed to extract failure for workflow {wfid}: {str(e)}")
-
-                        # set vm_status from vmid_status_map
-                        if getattr(machine, "vm_id", None) in vmid_status_map:
-                            vm_status = vmid_status_map[machine.vm_id]
 
                         pollingStatus.update_workflow_status(
                             db, machine.id, wfid, status, error, vm_status
@@ -166,14 +190,21 @@ async def poll_and_update_machine_status_activity():
 
             # Update machine rows with vm status messages for COMPLETED machines
             for machine in all_machines:
-                if machine.status == "COMPLETED" and machine.vm_id in vmid_status_map:
-                    machine.error_message = vmid_status_map[machine.vm_id]
-                    logger.info(f"Set Machine.id={machine.id} vm_id={machine.vm_id} error_message={machine.error_message}")
+                m_vmid_str = str(getattr(machine, "vm_id", "") or "").lower()
+                if machine.status == "COMPLETED" and m_vmid_str in vmid_status_map:
+                    machine.error_message = vmid_status_map[m_vmid_str]
 
             db.commit()
 
             return {
                 "message": "Poll complete",
+                "diagnostics": {
+                    "total_pools": len(proxmox_pools) + len(hyperv_pools),
+                    "proxmox_pools_count": len(proxmox_pools),
+                    "hyperv_pools_count": len(hyperv_pools),
+                    "machines_processed": len(all_machines),
+                    "matches_found": match_count
+                },
                 "statuses": statuses,
                 "errors": error_details,
                 "power_states": power_states
@@ -185,9 +216,7 @@ async def poll_and_update_machine_status_activity():
     finally:
         db.close()
 
-
 async def get_proxmox_vm_status_activity(db: Session = None, pools: list = None):
-
     if db is None:
         db = SessionLocal()
         try:
@@ -213,61 +242,43 @@ async def _get_proxmox_vm_status_logic(db: Session, pools: list = None):
         }
 
         for pool, cluster_data in proxmox_pools:
-            vm_ids = pool.pool_vmids or []
-            if not vm_ids:
-                # Fallback: Query Machines table for this pool
-                machines = db.query(Machine).filter(Machine.pool_id == pool.id).all()
-                vm_ids = [m.vm_id for m in machines if m.vm_id]
-            
-            if not vm_ids:
-                continue
-            
-            api_token = get_api_token(db, cluster_data.name)
-            headers = {
-                "Authorization": f"PVEAPIToken={api_token}",
-                "Content-Type": "application/json"
+            pool_map[pool.pool_name] = {
+                "pool_id": pool.id,
+                "pool": pool.pool_name,
+                "cluster": cluster_data.name,
+                "vms": []
             }
-            PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-            if not PROXMOX_HOST:
-                logger.warning(f"No reachable Proxmox host for cluster '{cluster_data.name}', skipping")
+            
+            # For Proxmox, we can get all VM statuses at once for the cluster
+            try:
+                vms_in_cluster = await TemporalClientManager.get_temporal_client() # placeholder for client if needed
+                # Actually use the existing service function
+                from service.proxmoxService import get_all_cluster_vms
+                vms_in_cluster = get_all_cluster_vms(db, cluster_data)
+            except Exception as e:
+                logger.error(f"Error fetching Proxmox cluster VMs: {e}")
                 continue
-            Nodes = get_all_nodes(cluster_data)
-            for node in Nodes:
-                for vmid in vm_ids:
-                    url = f"{PROXMOX_HOST}/api2/json/nodes/{node['name']}/qemu/{vmid}/status/current"
-                    try:
-                        response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=5)
-                        response.raise_for_status()
-                        data = response.json()
-                        qmp_status = data["data"].get("qmpstatus", "unknown")
-                        mapped_status = POWER_STATUS_MAP.get(qmp_status, "UNKNOWN")
-                        if pool.pool_name not in pool_map:
-                            pool_map[pool.pool_name] = {
-                                "pool_id": pool.id,
-                                "pool": pool.pool_name,
-                                "cluster": cluster_data.name,
-                                "vms": []
-                            }
-                        pool_map[pool.pool_name]["vms"].append({
-                            "vmid": vmid,
-                            "node": node['name'],
-                            "power_status": qmp_status,
-                            "status": mapped_status,
-                        })
-                    except requests.RequestException:
-                        continue
-                    except Exception:
-                        continue
+
+            vm_ids_in_db = [m.vm_id for m in db.query(Machine).filter(Machine.pool_id == pool.id).all()]
+            
+            for vm_item in vms_in_cluster:
+                vmid_str = str(vm_item.get("vmid"))
+                if vmid_str in vm_ids_in_db:
+                    status = vm_item.get("status", "unknown")
+                    mapped_status = POWER_STATUS_MAP.get(status, "UNKNOWN")
+                    pool_map[pool.pool_name]["vms"].append({
+                        "vmid": vmid_str,
+                        "node": vm_item.get("node"),
+                        "power_status": status,
+                        "status": mapped_status,
+                    })
 
         return list(pool_map.values())
     except Exception as e:
         logger.error(f"Error in get_proxmox_vm_status_activity logic: {str(e)}")
         raise
 
-
-
 async def get_hyperv_vm_status_activity(db: Session = None, pools: list = None):
-
     if db is None:
         db = SessionLocal()
         try:
@@ -283,48 +294,48 @@ async def _get_hyperv_vm_status_logic(db: Session, pools: list = None):
             _, hyperv_pools = split_pools_by_cluster_type(db)
         else:
             hyperv_pools = pools
+        
         pool_map = {}
-
-        # Adjust mapping according to your Hyper-V agent semantics.
         HYPERV_STATE_MAP = {
-            # example values; please adjust to match your Hyper-V agent's State codes
-            2: "power-on",   # sample: State == 3 => running
-            3: "power-off",  # sample: map of other codes
+            2: "power-on",
+            3: "power-off",
         }
 
         for pool, cluster_data in hyperv_pools:
-            vm_ids = pool.pool_vmids or []
-            if not vm_ids:
-                # Fallback: Query Machines table for this pool
-                machines = db.query(Machine).filter(Machine.pool_id == pool.id).all()
-                vm_ids = [m.vm_id for m in machines if m.vm_id]
+            pool_map[pool.pool_name] = {
+                "pool_id": pool.id,
+                "pool": pool.pool_name,
+                "cluster": cluster_data.name,
+                "vms": []
+            }
+
+            machines = db.query(Machine).filter(Machine.pool_id == pool.id).all()
+            vm_ids = [m.vm_id for m in machines if m.vm_id]
             
             if not vm_ids:
+                logger.info(f"[hyperv_status] No VM IDs found for pool {pool.pool_name}")
                 continue
-            # For Hyper-V clusters, call the async agent per VM id
+
             for vmid in vm_ids:
                 try:
                     data = await get_hyperv_status(vmid, db, cluster_data.id)
-                    state_value = data.get("State")
-                    mapped_status = HYPERV_STATE_MAP.get(state_value, "UNKNOWN")
-                    if pool.pool_name not in pool_map:
-                        pool_map[pool.pool_name] = {
-                            "pool_id": pool.id,
-                            "pool": pool.pool_name,
-                            "cluster": cluster_data.name,
-                            "vms": []
-                        }
+                    mapped_status = HYPERV_STATE_MAP.get(data, "UNKNOWN")                    
                     pool_map[pool.pool_name]["vms"].append({
                         "vmid": vmid,
                         "node": cluster_data.name,
-                        "power_status": state_value,
+                        "power_status": mapped_status,
                         "status": mapped_status,
                     })
                 except Exception as e:
-                    logger.debug(f"Failed to get Hyper-V status for vmid={vmid}: {e}")
-                    continue
+                    logger.warning(f"[hyperv_status] Agent call failed for vmid={vmid}: {e}")
+                    pool_map[pool.pool_name]["vms"].append({
+                        "vmid": vmid,
+                        "node": cluster_data.name,
+                        "power_status": None,
+                        "status": "UNKNOWN",
+                    })
 
         return list(pool_map.values())
     except Exception as e:
         logger.error(f"Error in get_hyperv_vm_status_activity logic: {str(e)}")
-        raise
+        raise

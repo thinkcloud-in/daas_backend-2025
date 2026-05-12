@@ -25,8 +25,10 @@ def get_agent_url(cluster:Cluster)->str:
     return f"http://{ip}:{port}"
 
 async def resolve_cluster_from_vm(vm_id: str, db: Session) -> Cluster:
-    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+    # Machine.vm_id is a string, and GUIDs can be case-variant
+    machine = db.query(Machine).filter(Machine.vm_id.ilike(str(vm_id))).first()
     if not machine:
+        logger.warning(f"Machine {vm_id} not found in DB (tried case-insensitive lookup)")
         raise HTTPException(status_code=404, detail=f"Machine {vm_id} not found")
     pool = db.query(Pool).filter(Pool.id == machine.pool_id).first()
     if not pool:
@@ -347,8 +349,7 @@ async def delete_hyperv_vm(request, db:Session, cluster_id:int=None):
         agent_url = f"http://{node_ip}:{port}"
         
     url = f"{agent_url}/v1/hyper-v/delete_vm_hyper_v"
-    print('-----------------url',url)
-    print('-------------------------req_dict for delete vm', req_dict)
+
     async with httpx.AsyncClient(timeout=60.0) as client:
         response = await client.post(url, json=req_dict)
         data = response.json()
@@ -362,14 +363,19 @@ async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
 
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
-
+    is_cluster_ = str(cluster.node_type).lower() in ("multinode", "cluster")
     agent_url = get_agent_url(cluster)
-    url = f"{agent_url}/v1/hyper-v/get_status/{vm_id}"
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("data", {})
+    url = f"{agent_url}/v1/hyper-v/get_status/{vm_id}/is_cluster/{is_cluster_}"
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("data", {})
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"Agent {agent_url} reported VM {vm_id} not found. In cluster environments, the VM might be on a different node.")
+        raise e
     
 async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
     payload = request.dict() if hasattr(request, "dict") else request
@@ -534,4 +540,3 @@ async def fetch_hyper_v_cluster_nodes(request:dict):
     except Exception as e:
         logger.exception("Failed to start FetchClusterNodesWorkflow: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-
