@@ -17,6 +17,10 @@ async def clone_vm_hyper_v_controller(request, db):
     result = await service.clone_vm_hyper_v_service(request)
     return success_response(200, "Successfully cloned Hyper-V VM for single node", result)
 
+async def full_clone_vm_hyper_v_controller(request, db):
+    result = await service.clone_vm_hyper_v_service(request)
+    return success_response(200, "Successfully initiated full clone for Hyper-V VM", result)
+
 async def get_vm_info(vm_id, db):
     result = await service.get_vm_info(vm_id, db)
     return success_response(200, "Successfully retrieved Hyper-V VM info", result)

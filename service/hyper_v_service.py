@@ -80,23 +80,28 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
 
     template = req_dict.get("template_vm_id", {}) or {}
 
-    vhdPath          = template.get("vhdPath")
-    PvhdPath         = template.get("PvhdPath")
-    generation       = template.get("generation")
-    memory           = template.get("memory")
-    switch           = template.get("switch")
-    os_type          = template.get("os_type")
+    vhdPath          = template.get("vhdPath") or req_dict.get("vhdPath") or ""
+    PvhdPath         = template.get("PvhdPath") or req_dict.get("PvhdPath") or ""
+    generation       = template.get("generation") or req_dict.get("generation")
+    memory           = template.get("memory") or req_dict.get("memory")
+    switch           = template.get("switch") or req_dict.get("switch")
+    os_type          = template.get("os_type") or req_dict.get("os_type")
     ip_list          = req_dict.get("ip_list")
-    password         = template.get("password")
-    gateway          = template.get("gateway")
-    subnet           = template.get("subnet")
-    dns              = template.get("dns")
+    if not ip_list and req_dict.get("ip"):
+        ip_list = [req_dict.get("ip")]
+        
+    password         = template.get("password") or req_dict.get("password") or ""
+    gateway          = template.get("gateway") or req_dict.get("gateway") or ""
+    subnet           = template.get("subnet") or req_dict.get("subnet") or ""
+    dns              = template.get("dns") or req_dict.get("dns") or ""
     number_of_vms    = req_dict.get("count", 1)
-    base_vm_name     = req_dict.get("name_template", "cloned_vm")
-    domain           = req_dict.get("domain")
-    ou               = req_dict.get("ou")
-    username         = req_dict.get("username")
-    domain_password  = req_dict.get("domain_password")
+    base_vm_name     = req_dict.get("name_template") or req_dict.get("vm_name") or "cloned_vm"
+    domain           = req_dict.get("domain") or ""
+    ou               = req_dict.get("ou") or ""
+    username         = req_dict.get("username") or ""
+    domain_password  = req_dict.get("domain_password") or ""
+    destination_path = req_dict.get("destination_path") or template.get("destination_path") or ""
+    is_full_clone    = bool(destination_path) or template.get("clone_type") == "Full Clone"
 
     # Extract resource settings with fallback to template (checking both prefixed and non-prefixed keys)
     dynamic_memory  = req_dict.get("dynamic_memory")  if req_dict.get("dynamic_memory")  is not None else (template.get("dynamic_memory")  if template.get("dynamic_memory")  is not None else template.get("pool_dynamic_memory"))
@@ -104,7 +109,7 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
     maximum_memory  = req_dict.get("maximum_memory")  if req_dict.get("maximum_memory")  is not None else (template.get("maximum_memory")  if template.get("maximum_memory")  is not None else template.get("pool_maximum_memory"))
     buffer_memory   = req_dict.get("buffer_memory")   if req_dict.get("buffer_memory")   is not None else (template.get("buffer_memory")   if template.get("buffer_memory")   is not None else template.get("pool_buffer_memory"))
     processor_count = req_dict.get("processor_count") if req_dict.get("processor_count") is not None else (template.get("processor_count") if template.get("processor_count") is not None else template.get("pool_processor_count"))
-    priority        = req_dict.get("priority")        if req_dict.get("priority")        is not None else (template.get("priority")        if template.get("priority")        is not None else template.get("pool_priority", 2000))
+    priority        = req_dict.get("priority")        if req_dict.get("priority")    is not None else (template.get("priority")        if template.get("priority")        is not None else template.get("pool_priority", 2000))
 
     # Fetch existing VM names from agent and DB to avoid conflicts
     try:
@@ -134,6 +139,7 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
 
     result_vms = []
     for vm_name, ip in zip(new_names, ip_list):
+        ip = ip or ""
         # Dispatcher logic for Clusters: Pick the node with the lowest VMCount for EACH VM
         selected_node_name = None
         selected_node_ip = None
@@ -158,25 +164,47 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
                 logger.warning("Dispatcher failed to select node for %s: %s", vm_name, e)
 
         payload = {
-            "vm_name": vm_name, "memory": memory, "vhdPath": vhdPath,
-            "switch": switch, "generation": generation, "PvhdPath": PvhdPath,
-            "ip": ip, "password": password, "gateway": gateway, "os_type": os_type,
-            "subnet": subnet, "dns": dns, "domain": domain, "ou": ou,
-            "username": username, "domain_password": domain_password,
-            "dynamic_memory": dynamic_memory, "minimum_memory": minimum_memory,
-            "maximum_memory": maximum_memory, "buffer_memory": buffer_memory,
-            "processor_count": processor_count, "priority": priority,
+            "vm_name": vm_name,
+            "memory": memory,
+            "vhdPath": vhdPath,
+            "switch": switch,
+            "generation": generation,
+            "ip": ip,
+            "password": password,
+            "gateway": gateway,
+            "os_type": os_type,
+            "subnet": subnet,
+            "dns": dns,
+            "domain": domain,
+            "ou": ou,
+            "username": username,
+            "domain_password": domain_password,
+            "dynamic_memory": dynamic_memory,
+            "minimum_memory": minimum_memory,
+            "maximum_memory": maximum_memory,
+            "buffer_memory": buffer_memory,
+            "processor_count": processor_count,
+            "priority": priority,
             "is_cluster": is_cluster
         }
+
+        if is_full_clone:
+            payload["destination_path"] = destination_path
+        else:
+            payload["PvhdPath"] = PvhdPath
+        
         target_base_url = agent_url
         if is_cluster and selected_node_ip:
             port = cluster.agent_port or 8765
             target_base_url = f"http://{selected_node_ip}:{port}"
         
-        clone_url = f"{target_base_url}/v1/hyper-v/clone_vm_hyper_v"
+        endpoint = "full_clone_vm_hyper_v" if is_full_clone else "clone_vm_hyper_v"
+        clone_url = f"{target_base_url}/v1/hyper-v/{endpoint}"
         
         logger.debug("Cloning VM %s with payload to %s: %s", vm_name, clone_url, payload)
-        async with httpx.AsyncClient(timeout=180.0) as client:
+        print('----------------------url : ', clone_url)
+        print('----------------------payload : ', payload)
+        async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(clone_url, json=payload)
             response_data = response.json()
             logger.info("Agent response for %s from %s: %s", vm_name, target_base_url, response_data)
@@ -223,7 +251,6 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
         "created_names": new_names,
         "vms": result_vms,
     }
-
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
 

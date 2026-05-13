@@ -48,4 +48,30 @@ class DeleteVMRequest(BaseModel):
     is_cluster: Optional[bool] = False
     domain: Optional[str] = ""
     username: Optional[str] = ""
-    domain_password: Optional[str] = ""
+    domain_password: Optional[str] = ""
+
+class FullCloneVMRequest(BaseModel):
+    cluster_id: int = Field(..., description="ID of the cluster")
+    vm_name: str = Field(..., description="Name of the new cloned VM")
+    memory: int = Field(..., gt=0, description="Memory size in GB")
+    vhdPath: str = Field(..., description="Path of the base VHD file")
+    destination_path: str = Field(..., description="Destination folder for the new VM")
+    switch: str = Field(..., description="Virtual switch name")
+    generation: int = Field(..., ge=1, le=2, description="VM generation (1 or 2)")
+    ip: Optional[str] = ""
+    password: Optional[str] = ""
+    gateway: Optional[str] = ""
+    os_type: Optional[str] = ""
+    subnet: Optional[str] = ""
+    dns: Optional[str] = ""
+    domain: Optional[str] = ""
+    ou: Optional[str] = ""
+    username: Optional[str] = ""
+    domain_password: Optional[str] = ""
+    dynamic_memory: Optional[bool] = False
+    minimum_memory: Optional[int] = 0
+    maximum_memory: Optional[int] = 0
+    buffer_memory: Optional[int] = 0 
+    processor_count: Optional[int] = 0
+    priority: Optional[int] = 2000
+    is_cluster: Optional[bool] = False
