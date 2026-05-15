@@ -67,6 +67,22 @@ async def login_with_guacamole():
         raise HTTPException(status_code=500, detail=f"Failed to complete login workflow: {str(e)}")
 
 
+async def logout_from_guacamole(token: str):
+    """
+    Invalidates a Guacamole authentication token to prevent session leaks.
+    """
+    if not token:
+        return
+    try:
+        url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens/{token}"
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.delete(url)
+            if response.status_code != 204:
+                logger.warning(f"Guacamole logout returned unexpected status: {response.status_code}")
+    except Exception as e:
+        logger.error(f"Failed to logout from Guacamole: {str(e)}")
+
+
 #------------------------------------------------------Connection/machine ----------------------------------------------------
 def return_payload(machine_data:MachineDto):
     protocol = machine_data['protocol'].lower()

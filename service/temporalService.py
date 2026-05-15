@@ -263,3 +263,29 @@ async def temporal_schedules(
         return "Schedule created successfully"
     except Exception as e:
         return f"Failed to schedule: {str(e)}"
+
+async def delete_temporal_schedule(schedule_id: str) -> str:
+    """
+    Terminates any active workflow for the schedule and deletes the schedule from Temporal.
+    """
+    try:
+        client = await TemporalClientManager.get_temporal_client()
+        
+        # 1. Try to terminate the workflow associated with this schedule
+        # The workflow ID is typically {schedule_id}_workflow as defined in create_pdf_email_schedule
+        workflow_id = f"{schedule_id}_workflow"
+        try:
+            workflow_handle = client.get_workflow_handle(workflow_id)
+            await workflow_handle.terminate(reason="Schedule being deleted")
+            print(f"Terminated workflow: {workflow_id}")
+        except Exception as workflow_err:
+            # Workflow might not be running, ignore errors here
+            print(f"Workflow termination skipped (might not be running): {workflow_err}")
+
+        # 2. Delete the actual schedule
+        handle = client.get_schedule_handle(schedule_id)
+        await handle.delete()
+        
+        return f"Schedule {schedule_id} and its associated workflow terminated and deleted successfully from Temporal."
+    except Exception as e:
+        return f"Failed to delete Temporal schedule: {str(e)}"
