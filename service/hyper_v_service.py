@@ -202,8 +202,6 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
         clone_url = f"{target_base_url}/v1/hyper-v/{endpoint}"
         
         logger.debug("Cloning VM %s with payload to %s: %s", vm_name, clone_url, payload)
-        print('----------------------url : ', clone_url)
-        print('----------------------payload : ', payload)
         async with httpx.AsyncClient(timeout=300.0) as client:
             response = await client.post(clone_url, json=payload)
             response_data = response.json()

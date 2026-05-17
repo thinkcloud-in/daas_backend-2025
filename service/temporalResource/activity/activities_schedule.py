@@ -5,7 +5,7 @@ from db_configuration.config import get_db, SessionLocal
 from typing import Any
 from models.schedule_model import Schdeule
 from fastapi.encoders import jsonable_encoder
-
+from service.temporalService import delete_temporal_schedule
 
 @activity.defn()
 async def get_schedule_data_activity():

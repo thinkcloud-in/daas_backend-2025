@@ -308,7 +308,6 @@ async def shutdown_vm_endpoint(
     db: Session = None
 ):
     try:
-        print()
         cluster_data = get_cluster_by_id(db, vmid)
         cluster_type = cluster_data.type.lower()
         result = await service.shutdown_vm_proxmox(vmid, pool_id, data.email, cluster_type)

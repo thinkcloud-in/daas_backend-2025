@@ -704,30 +704,52 @@ async def insert_report(company_name: str, company_logo: bytes, report_type: str
     return result
 # Function to fetch all companies
 async def get_companies():
-    uniqueId = unique_id()
-    client = await TemporalClientManager.get_temporal_client()
-    handle = await client.start_workflow(
-        workflows_guacmole.GetCompaniesWorkflow.run,
-        id=f"get_companies-{uniqueId}",
-        task_queue="get_companies_taskqueue",
-    )
-    result =  await handle.result()
-    return result
-async def get_companies_by_report_type(report_type :str):
-    uniqueId = unique_id()
-    client = await TemporalClientManager.get_temporal_client()
-    logger.info("Successfully established connection with the client.")
-    handle = await client.start_workflow(
-        workflows_guacmole.GetCompaniesByReportNameWorkflow.run,
-        report_type,
-        id=f"get_companies_by_report_name-{uniqueId}",
-        task_queue="get_companies_by_report_name_taskqueue",
-    )
-    result =  await handle.result()
+    db = get_db_connection()
+    try:
+        with db.cursor() as cursor:
+            select_query = "SELECT company_name, company_logo, report_type FROM reporttemplate;"
+            cursor.execute(select_query)
+            companies = cursor.fetchall()
+            
+            companies_data = [
+                {
+                    "company_name": row[0],
+                    "company_logo": base64.b64encode(row[1]).decode("utf-8") if row[1] else None,
+                    "report_type": row[2],
+                }
+                for row in companies
+            ]
+            return companies_data
+    except Exception as error:
+        logger.error(f"Error in get_companies: {error}", exc_info=True)
+        return {"msg": "Error occurred", "error": str(error)}
+    finally:
+        db.close()
 
-    logger.info("Successfully created task for get companies by report type")
-    
-    return result
+async def get_companies_by_report_type(report_type :str):
+    db = get_db_connection()
+    try:
+        with db.cursor() as cursor:
+            select_query = "SELECT company_name, company_logo, report_type FROM reporttemplate WHERE report_type = %s;"
+            cursor.execute(select_query, (report_type,))
+            companies = cursor.fetchall()
+            companies_data = []
+            for company in companies:
+                company_name = company[0]
+                report_type = company[2]
+                company_logo_bytes = company[1]
+                company_logo_base64 = base64.b64encode(company_logo_bytes).decode('utf-8') if company_logo_bytes else None
+                companies_data.append({
+                    "company_name": company_name,
+                    "company_logo": company_logo_base64,
+                    "report_type": report_type
+                })
+            return companies_data
+    except Exception as error:
+        logger.error(f"Error in get_companies_by_report_type: {error}", exc_info=True)
+        return {"msg": "Error occurred", "error": str(error)}
+    finally:
+        db.close()
 
 
 

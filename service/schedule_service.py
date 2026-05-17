@@ -170,12 +170,6 @@ async def delete_data_id(item_id: int, db):
         task_queue="DeleteScheduleDataById-task-queue",
     )
     result = await handle.result()
-    
-    # After deleting from DB, also delete the actual Temporal Schedule
-    if result and isinstance(result, dict) and result.get('schedule_id'):
-        from .temporalService import delete_temporal_schedule
-        await delete_temporal_schedule(result['schedule_id'])
-        
     return result
 
 

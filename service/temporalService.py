@@ -264,10 +264,9 @@ async def temporal_schedules(
     except Exception as e:
         return f"Failed to schedule: {str(e)}"
 
+@activity.defn
 async def delete_temporal_schedule(schedule_id: str) -> str:
-    """
-    Terminates any active workflow for the schedule and deletes the schedule from Temporal.
-    """
+
     try:
         client = await TemporalClientManager.get_temporal_client()
         

@@ -120,6 +120,16 @@ class delete_schedule_data_id_workflow:
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )            
+            
+            # If database deletion was successful and we have a schedule_id, delete from Temporal
+            if result and isinstance(result, dict) and result.get('schedule_id'):
+                await workflow.execute_activity(
+                    activities_schedule.delete_temporal_schedule,
+                    result['schedule_id'],
+                    retry_policy=retry_policy,
+                    start_to_close_timeout=timedelta(seconds=60),
+                )
+                
             return result
         except Exception as e:
             raise Exception(f"Error in workflow: {str(e)}")

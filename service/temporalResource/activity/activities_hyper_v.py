@@ -242,8 +242,6 @@ async def handle_action_activity(request: dict) -> dict:
         write=10.0,
         pool=10.0
     )
-    print('=============vm_action',url)
-    print('=============payload',agent_payload)
     async with httpx.AsyncClient(timeout=timeout) as client:
         response = await client.post(url, json=agent_payload)
 
