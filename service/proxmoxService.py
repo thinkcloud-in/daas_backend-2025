@@ -164,17 +164,14 @@ def generate_machine_name(template: str, existing_names: list[str], count: int) 
             middle = name[len(prefix):end]
             if middle.isdigit() and len(middle) == width:
                 used_numbers.add(middle)
-                print('----------used_number',used_numbers)
 
     new_names = []
     i = 1
     while len(new_names) < count:
         formatted_number = str(i).zfill(width)
-        print('----------formatted_number',formatted_number)
         if formatted_number not in used_numbers:
             new_names.append(f"{prefix}{formatted_number}{suffix}")
         i += 1
-    print('----------new_names',new_names)
     return new_names
 
 def unique_id():

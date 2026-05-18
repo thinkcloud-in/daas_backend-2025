@@ -5,7 +5,7 @@ from db_configuration.config import get_db, SessionLocal
 from typing import Any
 from models.schedule_model import Schdeule
 from fastapi.encoders import jsonable_encoder
-
+from service.temporalService import delete_temporal_schedule
 
 @activity.defn()
 async def get_schedule_data_activity():
@@ -134,9 +134,13 @@ async def delete_schedule_data_id_activity(item_id: int) -> dict:
             db_schedule = db.query(Schdeule).filter(Schdeule.id == item_id).first()
             if db_schedule is None:
                 raise HTTPException(status_code=404, detail="Schedule report not found")
+            
+            # Capture data BEFORE deleting from DB
+            db_schedule_json = jsonable_encoder(db_schedule)
+            
             db.delete(db_schedule)
             db.commit()
-            db_schedule_json = jsonable_encoder(db_schedule)
+            
             return db_schedule_json
         except Exception as e:
             db.rollback()

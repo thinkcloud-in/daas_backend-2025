@@ -76,7 +76,7 @@ async def delete_schedule_data_id_worker():
         client,
         task_queue="DeleteScheduleDataById-task-queue",
         workflows=[workflows_schedule.delete_schedule_data_id_workflow], 
-        activities=[activities_schedule.delete_schedule_data_id_activity],
+        activities=[activities_schedule.delete_schedule_data_id_activity, activities_schedule.delete_temporal_schedule],
     )
     
     try:

@@ -205,9 +205,7 @@ async def poll_and_update_machine_status_activity():
                     "machines_processed": len(all_machines),
                     "matches_found": match_count
                 },
-                "statuses": statuses,
-                "errors": error_details,
-                "power_states": power_states
+                "status": "success"
             }
         except Exception as e:
             logger.error(f"Error in poll_and_update_machine_status_activity: {str(e)}")

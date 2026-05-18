@@ -5,10 +5,11 @@ import psycopg2
 import select
 import json
 import logging
+import httpx
 from dto.machineDto import MachineDto
 from models.models import Machine
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
-import requests
+from service.gucamoleService import logout_from_guacamole
 
 logger = logging.getLogger("machine_listener")
 logging.basicConfig(
@@ -22,17 +23,19 @@ DATABASE_NAME = 'thinkclouddb'
 DATABASE_HOST = os.getenv('HOST_NAME')
 DATABASE_PORT = os.getenv('PORT')
 
-def login_with_guacamole():
+async def login_with_guacamole():
     url =  f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens"
     username  = 'guacadmin'
     password = 'guacadmin' 
-    payload = 'username='+username+'&password='+password
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
-    response = requests.post(url, headers=headers, data=payload)
-    if response.status_code == 200:
-        return response.json().get('authToken')
-    else:
-      raise HTTPException(status_code=response.status_code, detail="Failed to authenticate with Guacamole")
+    payload = {'username': username, 'password': password}
+    
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        response = await client.post(url, data=payload)
+        if response.status_code == 200:
+            return response.json().get('authToken')
+        else:
+            logger.error(f"Failed to authenticate with Guacamole: {response.status_code}")
+            return None
     
 
 def return_payload(machine_data_: MachineDto):
@@ -332,23 +335,28 @@ def return_payload(machine_data_: MachineDto):
             raise ValueError(f"Unsupported protocol: {protocol}")
     return payload
   
-def modify_connection(machine_data:Machine):
+async def modify_connection(machine_data: MachineDto):
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
+    token = await login_with_guacamole()
+    if not token:
+        logger.error("Failed to login to Guacamole for machine update")
+        return
+        
     try:
-        url = gucamole_update_url + machine_data.get('identifier')+"?token="+login_with_guacamole()
-        payload=return_payload(machine_data)
-        headers = {
-        'Content-Type': 'application/json'
-        }
-    except TypeError:
-       return 'null' 
-    try:
-        response = requests.request("PUT", url, headers=headers, data=payload)
-        return response.status_code
-
+        url = gucamole_update_url + str(machine_data.get('identifier')) + "?token=" + token
+        payload = return_payload(machine_data)
+        headers = {'Content-Type': 'application/json'}
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.put(url, headers=headers, data=payload)
+            if response.status_code != 204:
+                logger.warning(f"Guacamole update failed for {machine_data.get('name')}: {response.status_code}")
+            else:
+                logger.info(f"Successfully updated Guacamole connection for {machine_data.get('name')}")
     except Exception as e:
-        return None
-
+        logger.error(f"Error modifying Guacamole connection: {str(e)}")
+    finally:
+        await logout_from_guacamole(token)
 
 async def listen_for_machine_changes():
     conn = psycopg2.connect(user=DATABASE_USER, password=DATABASE_PASSWORD, 
@@ -376,9 +384,12 @@ async def listen_for_machine_changes():
                 try:
                     machine_data = json.loads(notify.payload)
                     logger.info("Machine data: %s", machine_data)
-                    modify_connection(machine_data)
-                except json.JSONDecodeError as e:
-                    logger.error("Failed to decode JSON: %s, payload: %s", str(e), notify.payload)
+                    # Convert dict to MachineDto if needed by return_payload
+                    from dto.machineDto import MachineDto
+                    dto = MachineDto(**machine_data)
+                    await modify_connection(dto)
+                except Exception as e:
+                    logger.error("Failed to process notification: %s, payload: %s", str(e), notify.payload)
 
         await asyncio.sleep(1)
 
