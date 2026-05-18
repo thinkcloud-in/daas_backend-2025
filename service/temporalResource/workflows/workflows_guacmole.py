@@ -333,7 +333,7 @@ class DeleteReportWorkflow:
 @workflow.defn(sandboxed=False)
 class UpdateReportWorkflow:
     @workflow.run
-    async def run(self,company_name: str, company_logo: bytes, report_type: str):
+    async def run(self,company_name: str, company_logo: str, report_type: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2), 
             backoff_coefficient=2.0,
@@ -341,8 +341,6 @@ class UpdateReportWorkflow:
             maximum_attempts=5,
         )
         try:
-            
-            
             result = await workflow.execute_activity(
                 activities_guacmole.update_report_activity,
                 args = [company_name, company_logo, report_type],
@@ -352,7 +350,6 @@ class UpdateReportWorkflow:
             
             return result
         except Exception as e:
-            
             raise
         
 @workflow.defn(sandboxed=False)

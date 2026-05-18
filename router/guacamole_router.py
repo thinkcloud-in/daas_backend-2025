@@ -3,7 +3,10 @@ from typing import Any, List, Union
 from controllers import guacamole_controller
 from models.API_Response_model import APIResponse
 from models.Rbac_models import RoleComponentSubmitRequest,RBACRequest
+from starlette.formparsers import MultiPartParser
 
+# File top pe — import ke baad
+MultiPartParser.max_part_size = 20 * 1024 * 1024
 guacamole_router = APIRouter(prefix="/v1/guacamole", tags=["guacamole"])
 
 # ---------------------- BASIC ROUTES ----------------------

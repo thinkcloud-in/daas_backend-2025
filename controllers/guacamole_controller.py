@@ -150,7 +150,6 @@ async def get_daily_reports_of_each_user(start_date: str, end_date: str, usernam
         return response_format.success_response(200, "User daily reports retrieved successfully", data)
     except ValueError as e:
         return response_format.error_response(400, "Failed to retrieve user daily reports", str(e))
-    return user_daily_reports
 
 async def fetch_companies():
     try:
@@ -173,25 +172,43 @@ async def update_company(
     company_logo,
     report_type,
 ):
+    MAX_LOGO_SIZE = 2 * 1024 * 1024  # 10MB
+    ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/svg+xml"]
     try:
         company_name_str = str(company_name)
         report_type_str = str(report_type)
 
-        company_logo_bytes = None
+        company_logo_base64 = None
         if isinstance(company_logo, UploadFile):
+            # Validate file type
+            if company_logo.content_type not in ALLOWED_CONTENT_TYPES:
+                return response_format.error_response(
+                    400,
+                    "Invalid file type",
+                    f"Only JPEG, JPG, PNG, and SVG files are allowed. Got: {company_logo.content_type}"
+                )
+            # Read and validate file size
             company_logo_bytes = await company_logo.read()
+            if len(company_logo_bytes) > MAX_LOGO_SIZE:
+                return response_format.error_response(
+                    400,
+                    "File too large",
+                    "Company logo must be less than 2MB"
+                )
+            company_logo_base64 = base64.b64encode(company_logo_bytes).decode("utf-8")
         elif isinstance(company_logo, str):
-            company_logo_bytes = base64.b64decode(company_logo)
-
+            company_logo_base64 = company_logo  # already base64
         if report_type_str in ["Session Reports","Daily Reports","Consolidate Reports"]:
-            await service.update_report(company_name_str, company_logo_bytes, report_type_str)
+            await service.update_report(company_name_str, company_logo_base64, report_type_str)
             return response_format.success_response(200, "Company updated successfully", None)
         else:
-            await service.insert_report(company_name_str, company_logo_bytes, report_type_str)
+            await service.insert_report(company_name_str, company_logo_base64, report_type_str)
             return response_format.success_response(200, "Company added successfully", None)
 
-    except ValueError as ve:
-        return response_format.error_response(404, "Failed to update company", str(ve))
+    # except ValueError as ve:
+    #     return response_format.error_response(404, "Failed to update company", str(ve))
+    except Exception as e:
+        return response_format.error_response(500, "Internal server error", str(e))
 
 
 async def delete_company_data(report_name: str ):
@@ -286,7 +303,7 @@ async def  get_client_id():
          
         return response_format.success_response(200, "Client ID retrieved successfully", data)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise response_format.error_response(500, "Failed to retrieve client ID", str(e))
 
 
 # @guacarouter.get("/get_client_roles",response_model=APIResponse[List[str]])
@@ -319,9 +336,7 @@ async def post_role(role_name: str):
     try:
         data = await service.posting_role(role_name)
         # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
-        return response_format.success_response(20, "Role created successfully", data)
-    except HTTPException as e:
-        return response_format.error_response(e.status_code, "Failed to create role", e.detail)
+        return response_format.success_response(201, "Role created successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to create role", str(e))
     

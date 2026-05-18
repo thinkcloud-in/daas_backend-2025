@@ -361,32 +361,32 @@ async def delete_report_activity(report_type:str):
     finally:
         db.close()
 
+
 @activity.defn
-async def update_report_activity(company_name: str, company_logo: bytes, report_type: str):
+async def update_report_activity(company_name: str, company_logo_str: str, report_type: str):
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
             if report_type not in ["Session Reports", "Daily Reports","Consolidate Reports"]:
                 raise ValueError("Invalid report type")
 
+            company_logo = base64.b64decode(company_logo_str)
+            
             update_query = """
                 UPDATE reporttemplate
                 SET company_name = %s, company_logo = %s 
                 WHERE report_type = %s;
             """
+
             cursor.execute(update_query, (company_name, company_logo, report_type))
-            print(f"[update_report_activity] UPDATE rowcount={cursor.rowcount}")
 
             if cursor.rowcount == 0:
                 insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
                 cursor.execute(insert_query, (company_name, company_logo, report_type))
-                print(f"[update_report_activity] INSERT rowcount={cursor.rowcount}")
             db.commit()
-            print(f"[update_report_activity] Committed successfully")
 
     except Exception as error:
         db.rollback()
-        print(f"[update_report_activity] ERROR: {error}")
         raise
     finally:
         db.close()

@@ -686,6 +686,7 @@ async def insert_report(company_name: str, company_logo: bytes, report_type: str
     )
     result =  await handle.result()
     return result
+
 # Function to fetch all companies
 async def get_companies():
     uniqueId = unique_id()
@@ -715,14 +716,15 @@ async def get_companies_by_report_type(report_type :str):
 
 
 
-async def update_report(company_name: str, company_logo: bytes, report_type: str):
+async def update_report(company_name: str, company_logo: str, report_type: str):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
+
     handle = await client.start_workflow(
         workflows_guacmole.UpdateReportWorkflow.run,
         args=[company_name, company_logo, report_type],
-        id=f"update_report-{uniqueId}",
+        id=f"update_reports-{uniqueId}",
         task_queue="update_report_taskqueue",
     )
     result =  await handle.result()

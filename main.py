@@ -30,9 +30,23 @@ from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from middleware.request_logger import RequestLoggerMiddleware
-from dotenv import load_dotenv 
+from dotenv import load_dotenv
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import UploadFile as StarletteUploadFile
+import multipart
+
 load_dotenv()
 app = FastAPI()
+
+# Multipart size limit
+app.add_middleware(
+    BaseHTTPMiddleware,
+)
+
+@app.on_event("startup")
+async def startup():
+    import starlette.formparsers
+    starlette.formparsers.MultiPartParser.max_part_size = 20 * 1024 * 1024  # 20MB
 
 app = FastAPI(on_startup=[startup_event_client])
 
