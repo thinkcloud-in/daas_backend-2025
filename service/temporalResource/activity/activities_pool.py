@@ -437,6 +437,7 @@ def machinedata(email,machine, db_pool):
         "args": db_pool.pool_args,
         "is_custom_machine": False,
         "email": email,
+        "users_assigned": machine.users_assigned,
         }
     return machine_data
 
