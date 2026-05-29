@@ -5,6 +5,7 @@ __pycache__/
 .qodo
 my-venv
 my-env
+venv
 uvicorn.log
 session_reports.pdf
 temporal
