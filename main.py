@@ -1,6 +1,6 @@
 import asyncio
 import threading
-from fastapi import FastAPI
+from fastapi import FastAPI, Depends, Request
 from middleware.Grafana_init import router as grafana_router
 from controllers.routes import router
 from router.guacamole_router import guacamole_router
@@ -33,15 +33,15 @@ from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.datastructures import UploadFile as StarletteUploadFile
-import multipart
+from fastapi import Depends
+from middleware.auth import (
+    get_user_rbac,
+)
 
 load_dotenv()
 app = FastAPI()
 
-# Multipart size limit
-app.add_middleware(
-    BaseHTTPMiddleware,
-)
+app.add_middleware(BaseHTTPMiddleware)
 
 @app.on_event("startup")
 async def startup():
@@ -52,10 +52,8 @@ app = FastAPI(on_startup=[startup_event_client])
 
 @app.get("/test")
 def test_api():
-    return {
-        "status": "ok",
-        "message": "FastAPI working with APISIX 🚀"
-    }
+    return {"status": "ok", "message": "FastAPI working with APISIX 🚀"}
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,12 +64,11 @@ app.add_middleware(
 )
 
 app.add_middleware(RequestLoggerMiddleware)
-
 exception_handlers(app)
 
 DB_init.create_tables()
 app.include_router(router)
-app.include_router(guacamole_router)
+app.include_router(guacamole_router, dependencies=[Depends(get_user_rbac)])
 app.include_router(schedule_router)
 app.include_router(smtp_router)
 app.include_router(temporal_namespace_router)

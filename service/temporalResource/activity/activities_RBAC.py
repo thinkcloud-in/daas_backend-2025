@@ -1,12 +1,16 @@
+import math
 import os
 import aiohttp
+import httpx
 from temporalio import activity
 import logging  
 from models.Rbac_models import RBAC
 import service.gucamoleService as service
 from db_configuration.config import SessionLocal, get_db
 from sqlalchemy.orm import Session
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
+security = HTTPBearer()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -141,12 +145,40 @@ async def deleting_role_activity(role_name: str):
         db.close()
 
 
+
+def _prepare_keycloak_attributes(components_list: list) -> dict:
+    """Components ki list ko safely 3 chunks mein distribute karke comma-separated banata hai."""
+    clean_comps = [c.strip() for c in components_list if c.strip()]
+    n = len(clean_comps)
+
+    if n == 0:
+        return {"components1": [""], "components2": [""], "components3": [""]}
+
+    size = math.ceil(n / 3)
+
+    c1 = clean_comps[0:size]
+    c2 = clean_comps[size:size*2]
+    c3 = clean_comps[size*2:]
+    
+    return {
+        "components1": [",".join(c1)] if c1 else [""],
+        "components2": [",".join(c2)] if c2 else [""],
+        "components3": [",".join(c3)] if c3 else [""]
+    }
+
+
+
 @activity.defn
-async def updating_role_component_activity(request: dict):
+async def updating_role_component_activity(request: dict, authorization: str):
     db: Session = SessionLocal()
+    token = authorization.split(" ")[1] if authorization and " " in authorization else None
+    KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")#"https://devraq.rcvdev.team/devraqauth"#os.getenv("KEYCLOAK_ROOT_URL")
+    KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")
+    role = request.get("role")
     try:
         try:
-            existing_rbac = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
+            # existing_rbac = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
+            existing_rbac = db.query(RBAC).filter(RBAC.role.ilike(role)).first()
             logger.info("getting role  from the database")
      
             if existing_rbac:
@@ -160,7 +192,27 @@ async def updating_role_component_activity(request: dict):
                     components=request.get("components")
                 )
                 db.add(new_rbac)
-     
+            async with httpx.AsyncClient(verify=False) as client:
+                url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role}"
+                auth_header = f"Bearer {token}"
+                get_res = await client.get(url, headers={"Authorization": auth_header})
+                
+                if get_res.status_code == 200:
+                    role_payload = get_res.json()
+                    
+                    if "attributes" not in role_payload or role_payload["attributes"] is None:
+                        role_payload["attributes"] = {}
+                    
+                    updated_attributes = _prepare_keycloak_attributes(request.get("components"))
+                    role_payload["attributes"].update(updated_attributes)
+                    
+                    put_res = await client.put(url, json=role_payload, headers={"Authorization": auth_header})
+                    
+                    if put_res.status_code not in [200, 204]:
+                        raise Exception(f"Keycloak update failed with status {put_res.status_code}: {put_res.text}")
+                else:
+                    raise Exception(f"Role '{role}' not found in Keycloak (Status: {get_res.status_code})")
+                
             db.commit()
             logger.info("Role and components saved successfully")
             return {"status": "Ok", "code": 200, "message": "Role and components saved successfully"}
@@ -235,11 +287,26 @@ async def assign_user_role_activity(request :dict):
 
 
 @activity.defn
-async def get_user_permissions_activity(username: str):
+async def get_user_permissions_activity(workflow_input: dict):
     db: Session = SessionLocal()
     try:
         try:
-            roles = db.query(RBAC).filter(RBAC.users.contains([username])).all()
+            auth_response = workflow_input.get("auth_header")
+            rbac_data = auth_response.get("rbac") or {}
+            components = rbac_data.get("components", {})
+            roles = rbac_data.get("roles") or []
+            if not roles and rbac_data.get("roles"):
+                roles = [rbac_data.get("roles")]
+            if components and roles:
+                return {
+                    "code": 200,
+                    "roles": roles,
+                    "components": components,
+                    "message": "User permissions retrieved successfully"
+                }
+            roles = db.query(RBAC).filter(RBAC.users.contains([workflow_input.get("username")])).all()
+            # components = auth_header
+            # roles = db.query(RBAC).filter(RBAC.users.contains([username])).all()
            
             if not roles:
                 return {

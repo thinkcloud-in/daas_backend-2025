@@ -35,7 +35,7 @@ async def retrive_machihe(pool_name:str,db: Session = Depends(get_db)):
     res = await controller.retrive_pool_data(pool_name ,db)
     return response_format.success_response(200, "Pool retrieved successfully.", res)
 
-@router.put('/update_pool/{pool_id}', response_model=APIResponse)
+@router.put('/vdi_pools/update_pool/{pool_id}', response_model=APIResponse)
 async def update_pool_route(pool_id: str, request: Request, db: Session = Depends(get_db)):
     pool_id_int = int(pool_id)
  
@@ -66,24 +66,24 @@ async def list_pools_names(db: Session = Depends(get_db)):
     return response_format.success_response(200, "Pool names retrieved successfully.", res)
 
 # Route to list all the pools
-@router.get('/pools', response_model=APIResponse)
+@router.get('/vdi_pools/pools', response_model=APIResponse)
 async def list_pools():
     pools = await controller.get_all_pools()
     return response_format.success_response(200, "Pools retrieved successfully.", pools.get("pools", []))
 
 #get pool details based on id
-@router.get("/pool/{pool_id}", response_model=APIResponse)
+@router.get("/vdi_pools/pool/{pool_id}", response_model=APIResponse)
 async def get_pool_details_route(pool_id: int):
     data = await controller.get_pool_details(pool_id)
     return response_format.success_response(200, "Pool details retrieved successfully.", data)
 
 
-@router.post('/create_machine',response_model=APIResponse)
+@router.post('/vdi_pools/create_machine',response_model=APIResponse)
 async def create_machine_endpoint(machine_data: models.CreateMachineBase):
     data = await controller.create_machine( machine_data)
     return response_format.success_response(200, "Machine created successfully.", data)
 
-@router.delete("/delete_machine/{machine_id}", response_model=APIResponse)
+@router.delete("/vdi_pools/delete_machine/{machine_id}", response_model=APIResponse)
 async def delete_machine_by_id(machine_id: str, email: str, db: Session = Depends(get_db)):
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -92,7 +92,7 @@ async def delete_machine_by_id(machine_id: str, email: str, db: Session = Depend
     return response_format.success_response(200, "Machine deleted successfully.", data)
 
 #Route to update a machine/connection
-@router.put('/update_machine/{machine_identifier}', response_model=APIResponse)
+@router.put('/vdi_pools/update_machine/{machine_identifier}', response_model=APIResponse)
 async def update_machine_endpoint(machine_identifier: str, machine_data: models.UpdateMachineBase): 
     data = await controller.update_machine( machine_identifier,machine_data)
     return response_format.success_response(200, "Machine updated successfully.", data)
@@ -157,7 +157,7 @@ async def create_cluster_endpoint(cluster_data: models.CreateClusterBase):
     return response_format.success_response(200, "Cluster created successfully.", res)
 
 #Route to list all the clusters
-@router.get('/clusters', response_model=APIResponse[Any])
+@router.get('/cluster/clusters', response_model=APIResponse[Any])
 async def list_clusters(db: Session = Depends(get_db)):
     clusters = db.query(models.Cluster).all()
     clusters_json = jsonable_encoder(clusters)
@@ -170,7 +170,7 @@ async def get_cluster_details_endpoint(cluster_id: str, db: Session = Depends(ge
     return response_format.success_response(200, "Cluster details retrieved successfully.", jsonable_encoder(res))
 
 
-@router.delete('/delete_cluster/{cluster_id}', response_model=APIResponse)
+@router.delete('/cluster/delete_cluster/{cluster_id}', response_model=APIResponse)
 async def delete_cluster_route(cluster_id: str, request: Request, db: Session = Depends(get_db)):
     # cluster_id_int = int(cluster_id)
     raw_body = await request.body()
@@ -182,13 +182,13 @@ async def delete_cluster_route(cluster_id: str, request: Request, db: Session = 
     return response_format.success_response(200, "Cluster deleted successfully.", res)
 
 #Route to update a cluster
-@router.put('/update_cluster/{cluster_id}', response_model=APIResponse)
+@router.put('/cluster/update_cluster/{cluster_id}', response_model=APIResponse)
 async def update_cluster_endpoint(cluster_id: str, cluster_data: models.UpdateClusterBase, db: Session = Depends(get_db)):
     res = await controller.update_cluster(db, cluster_id, cluster_data)
     return response_format.success_response(200, "Cluster updated successfully.", res)
 
 # Ldap connection in keycloak
-@router.post('/ad_ldap_connection' ,response_model=APIResponse)
+@router.post('/domain/ad_ldap_connection' ,response_model=APIResponse)
 async def ldap_Configuration(ldap_data:models.LDAPCredential):
     res =  await key_config.configuration_ad(ldap_data)
     if isinstance(res, dict) and res.get("msg") == "Error occurred":
@@ -204,19 +204,19 @@ async def get_LDAPs_from_keycloak_endpoint():
     return response_format.success_response(200, "LDAP configurations retrieved successfully.", res)
 
 #Route to test LDAP connection
-@router.post('/test_ldap_connection', response_model=APIResponse)
+@router.post('/domain/test_ldap_connection', response_model=APIResponse)
 async def test_ldap_connection_endpoint(ldap_data:models.LDAP_test_connection_model):
     res = await key_config.test_ldap_connection(ldap_data)
     return res #--------------don't change this format it may break the workflow and response format
 
 #Route to test LDAP authentication
-@router.post('/test_ldap_authentication', response_model=APIResponse)
+@router.post('/domain/test_ldap_authentication', response_model=APIResponse)
 async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connection_model):
     res = await key_config.test_ldap_authentication(ldap_data)
     return res #--------------don't change this format it may break the workflow and response format
 
 # Route to delete LDAP configuration
-@router.delete('/delete_ldap_configuration/{ldap_id}', response_model=APIResponse)
+@router.delete('/domain/delete_ldap_configuration/{ldap_id}', response_model=APIResponse)
 async def delete_ldap_config_endpoint(ldap_id: str):
     res = await key_config.delete_ldap_config(ldap_id)
     if isinstance(res, dict) and res.get("msg") == "Error occurred":
@@ -224,7 +224,7 @@ async def delete_ldap_config_endpoint(ldap_id: str):
     return response_format.success_response(200, "LDAP configuration deleted successfully.", res)
 
 # get LDAP details by id
-@router.get('/get_ldap_by_id/{ldap_id}', response_model=APIResponse)
+@router.get('/domain/get_ldap_by_id/{ldap_id}', response_model=APIResponse)
 async def get_LDAP_by_id_endpoint(ldap_id: str):
     data = await key_config.get_LDAP_by_id(ldap_id)
     if isinstance(data, dict) and data.get("msg") == "Error occurred":
@@ -232,7 +232,7 @@ async def get_LDAP_by_id_endpoint(ldap_id: str):
     return response_format.success_response(200, "LDAP configuration retrieved successfully.", data)
 
 # update_ldap_config
-@router.put('/update_ldap_config/{ldap_id}')
+@router.put('/domain/update_ldap_config/{ldap_id}')
 async def update_ldap_config_endpoint(ldap_data: models.LDAPCredential,ldap_id: str):
     ldap_data_dict = ldap_data.dict()
     data = await key_config.update_ldap_config(ldap_data_dict,ldap_id)
@@ -240,27 +240,27 @@ async def update_ldap_config_endpoint(ldap_data: models.LDAPCredential,ldap_id: 
          return response_format.error_response(500, data.get("error", "Failed to update LDAP configuration"), data)
     return response_format.success_response(200, "LDAP configuration updated successfully.", data)
 
-@router.get('/sync_users/{ldap_id}', response_model=APIResponse)
+@router.get('/domain/sync_users/{ldap_id}', response_model=APIResponse)
 async def sync_ad_user_from_keycloak(ldap_id: str):
     res = await key_config.sync_user_from_keycloak(ldap_id)
     return response_format.success_response(200, "User synced successfully.", res)
 
-@router.get('/sync_changed_users/{ldap_id}', response_model=APIResponse)
+@router.get('/domain/sync_changed_users/{ldap_id}', response_model=APIResponse)
 async def sync_changed_users_from_keycloak_endpoint(ldap_id: str):
     res = await key_config.sync_changed_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Changed users synced successfully.", res)
 
-@router.get('/unlink_users/{ldap_id}', response_model=APIResponse)
+@router.get('/domain/unlink_users/{ldap_id}', response_model=APIResponse)
 async def unlink_users_from_keycloak_endpoint(ldap_id: str):
     res = await key_config.unlink_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Users unlinked successfully.", res)
 
-@router.get('/remove_imported_users/{ldap_id}', response_model=APIResponse)
+@router.get('/domain/remove_imported_users/{ldap_id}', response_model=APIResponse)
 async def remove_imported_users_from_keycloak_endpoint(ldap_id: str):
     res = await key_config.remove_imported_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Imported users removed successfully.", res)
 
-@router.put('/enable-disable-totp-browser/{value}')
+@router.put('/totp/enable-disable-totp-browser/{value}')
 def enable_browser_authflow(value):
     if value == 'true':
         value=True
@@ -268,7 +268,7 @@ def enable_browser_authflow(value):
         value=False
     return key_config.set_otp_for_browser_auth(value)
 
-@router.put('/enable-disable-guac/{value}')
+@router.put('/totp/enable-disable-guac/{value}')
 def enable_browser_guacamole_authflow(value):
     if value == 'true':
         value=True
@@ -276,11 +276,11 @@ def enable_browser_guacamole_authflow(value):
         value=False
     return  key_config.set_otp_for_guacamole_browser(value)
 
-@router.get('/get-enable-disable-totp-browser')
+@router.get('/totp/get-enable-disable-totp-browser')
 def  get_enable_browser_authflow():
     return  key_config.get_Auth_flow_Value_browser()
 
-@router.get('/get-enable-disable-guac')
+@router.get('/totp/get-enable-disable-guac')
 def get_enable_browser_guacamole_authflow():
     return  key_config.get_Auth_flow_Value_guacamole_browser()
 

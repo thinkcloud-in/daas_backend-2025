@@ -307,9 +307,16 @@ async def  get_client_id():
 
 
 # @guacarouter.get("/get_client_roles",response_model=APIResponse[List[str]])
-async def get_client_roles():
+async def get_client_roles(request):
     db = SessionLocal()
     try:
+        auth_response = request.get("state")
+        rbac_data = auth_response.get("rbac") or {}
+        roles = rbac_data.get("roles") or []
+        if not roles and rbac_data.get("roles"):
+            roles = [rbac_data.get("roles")]
+        if roles:
+            return response_format.success_response(200, "Role names retrieved successfully", roles)
         # Fetch roles from the database
         db_roles = db.query(RBAC.role).all()
         role_list = [role[0] for role in db_roles]
@@ -353,9 +360,9 @@ async def delete_role(role_name: str):
 
 
 # @guacarouter.post("/submit_role_components")
-async def submit_role_components(request):
+async def submit_role_components(request, authorization):
     try:
-        data = await service.updating_role_component(request)
+        data = await service.updating_role_component(request, authorization)
         return response_format.success_response(200, "Role components submitted successfully", data)
 
     except Exception as e:
@@ -383,9 +390,9 @@ async def assign_user_role(request):
 
 
 # @guacarouter.get("/get_user_permissions/{username}")
-async def get_user_permissions(username: str):
+async def get_user_permissions(request, username: str):
     try:
-        data = await service.get_user_permissions(username)
+        data = await service.get_user_permissions(request, username)
         filtered_data = {
             "components": data.get("components", []),
             "roles": data.get("roles", [])

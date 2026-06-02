@@ -96,7 +96,7 @@ class DeletingRoleWorkflow:
 @workflow.defn(sandboxed=False)
 class UpdateRoleComponentWorkflow:
     @workflow.run
-    async def run(self,request: dict):
+    async def run(self,request: dict, authorization: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2), 
             backoff_coefficient=2.0,
@@ -106,7 +106,7 @@ class UpdateRoleComponentWorkflow:
         try:
             result = await workflow.execute_activity(
                 activities_RBAC.updating_role_component_activity,
-                request,
+                args=[request, authorization],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
@@ -162,7 +162,7 @@ class AssignUserRoleworkflow:
 @workflow.defn(sandboxed=False)
 class GetUserPermissionsWorkflow:
     @workflow.run
-    async def run(self,username: str):
+    async def run(self,workflow_input: dict):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2), 
             backoff_coefficient=2.0,
@@ -172,7 +172,7 @@ class GetUserPermissionsWorkflow:
         try:
             result = await workflow.execute_activity(
                 activities_RBAC.get_user_permissions_activity,
-                username,
+                workflow_input,
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )

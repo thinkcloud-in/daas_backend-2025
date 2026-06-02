@@ -3,7 +3,7 @@ import base64
 from datetime import datetime
 import logging
 from typing import Dict, List
-from fastapi import HTTPException
+from fastapi import HTTPException, status
 import  requests
 import json
 import os
@@ -946,13 +946,13 @@ async def deleting_role(role_name: str):
         return {"msg": result["message"]}                                                                                         
     return result
 
-async def updating_role_component(request: RoleComponentSubmitRequest):
+async def updating_role_component(request: RoleComponentSubmitRequest, authorization):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
     handle = await client.start_workflow(
         workflows_RBAC.UpdateRoleComponentWorkflow.run,
-        request.dict(),
+        args=[request.dict(), authorization],
         id=f"update_role_component-{uniqueId}",
         task_queue="updating_role_component_taskqueue",
     )
@@ -995,13 +995,23 @@ async def assignning_user_role(request: RBACRequest):
     return { "workflow_id": handle.id }
 
 
-async def get_user_permissions(username: str):
+async def get_user_permissions(request, username: str):
     uniqueId = unique_id()
+    auth_header = request.state._state
+    # if not auth_header:
+    #     raise HTTPException(
+    #         status_code=status.HTTP_401_UNAUTHORIZED, 
+    #         detail="Authorization header missing"
+    #     )
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
+    workflow_input = {
+        "username": username,
+        "auth_header": auth_header
+    }
     handle = await client.start_workflow(
         workflows_RBAC.GetUserPermissionsWorkflow.run,
-        username,
+        workflow_input,
         id=f"get_user_permissions-{uniqueId}",
         task_queue="get_user_permissions_taskqueue",
     )
