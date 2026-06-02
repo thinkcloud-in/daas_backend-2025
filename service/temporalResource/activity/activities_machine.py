@@ -278,6 +278,8 @@ async def update_machine_activity(machine_identifier: str, machine_data: dict):
                     return {"msg": "Machine does not exist"}
 
                 for field, value in machine_data.items():
+                    if field == "users_assigned" and value is None:
+                        continue
                     setattr(machine, field, value)
                     logger.debug(f"Updated field '{field}' to value '{value}'")
 
