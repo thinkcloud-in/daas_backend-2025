@@ -927,13 +927,13 @@ async def posting_role(role_name: str):
     return result
 
 
-async def deleting_role(role_name: str):
+async def deleting_role(role_name: str, authorization: str):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
     handle = await client.start_workflow(
         workflows_RBAC.DeletingRoleWorkflow.run,
-        role_name,
+        args=[role_name, authorization],
         id=f"delete_role-{uniqueId}",
         task_queue="deleting_role_taskqueue",
     )

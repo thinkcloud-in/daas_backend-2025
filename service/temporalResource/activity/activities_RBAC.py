@@ -116,8 +116,11 @@ async def creating_role_activity(role_name: str):
 
 
 @activity.defn
-async def deleting_role_activity(role_name: str):
+async def deleting_role_activity(role_name: str, authorization: str):
     db: Session = SessionLocal()
+    token = authorization.split(" ")[1] if authorization and " " in authorization else None
+    KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")#"https://devraq.rcvdev.team/devraqauth"#os.getenv("KEYCLOAK_ROOT_URL")
+    KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")
     try:
         try:
             client_id_ = await service.get_client()
@@ -132,6 +135,27 @@ async def deleting_role_activity(role_name: str):
             if not role_entry:
                 return {"status": "Ok", "code": 500, "message":f"Role '{role_name}' not found in the database."}
            
+            async with httpx.AsyncClient(verify=False) as client:
+                url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role_name}"
+                auth_header = f"Bearer {token}"
+                get_res = await client.delete(url, headers={"Authorization": auth_header})
+                print("Keycloak DELETE response status:", url, get_res.status_code, auth_header)
+                if get_res.status_code == 200:
+                    role_payload = get_res.json()
+                    
+                    if "attributes" not in role_payload or role_payload["attributes"] is None:
+                        role_payload["attributes"] = {}
+                    
+                    updated_attributes = _prepare_keycloak_attributes(request.get("components"))
+                    role_payload["attributes"].update(updated_attributes)
+                    
+                    put_res = await client.put(url, json=role_payload, headers={"Authorization": auth_header})
+                    
+                    if put_res.status_code not in [200, 204]:
+                        raise Exception(f"Keycloak update failed with status {put_res.status_code}: {put_res.text}")
+                else:
+                    raise Exception(f"Role '{role_name}' not found in Keycloak (Status: {get_res.status_code})")
+            
             db.delete(role_entry)
             db.commit()
             logger.info(f"Deleted role '{role_name}' from the database")
@@ -171,6 +195,7 @@ def _prepare_keycloak_attributes(components_list: list) -> dict:
 @activity.defn
 async def updating_role_component_activity(request: dict, authorization: str):
     db: Session = SessionLocal()
+    token = authorization.split(" ")[1] if authorization and " " in authorization else None
     KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")#"https://devraq.rcvdev.team/devraqauth"#os.getenv("KEYCLOAK_ROOT_URL")
     KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")
     role = request.get("role")
@@ -193,7 +218,7 @@ async def updating_role_component_activity(request: dict, authorization: str):
                 db.add(new_rbac)
             async with httpx.AsyncClient(verify=False) as client:
                 url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role}"
-                auth_header =  await service.get_auth_headers()
+                auth_header = f"Bearer {token}"
                 get_res = await client.get(url, headers={"Authorization": auth_header})
                 print("Keycloak GET response status:", url, get_res.status_code, auth_header)
                 if get_res.status_code == 200:

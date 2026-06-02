@@ -73,7 +73,7 @@ class CreatingRoleWorkflow:
 @workflow.defn(sandboxed=False)
 class DeletingRoleWorkflow:
     @workflow.run
-    async def run(self,role_name: str):
+    async def run(self,role_name: str, authorization: str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2), 
             backoff_coefficient=2.0,
@@ -83,7 +83,7 @@ class DeletingRoleWorkflow:
         try:
             result = await workflow.execute_activity(
                 activities_RBAC.deleting_role_activity,
-                role_name,
+                args=[role_name, authorization],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )

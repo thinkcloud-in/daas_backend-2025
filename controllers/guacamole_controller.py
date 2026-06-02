@@ -349,9 +349,9 @@ async def post_role(role_name: str):
     
 
 # @guacarouter.delete('/delete_role/{role_name}')
-async def delete_role(role_name: str):
+async def delete_role(role_name: str, authorization: str):
     try:
-        data = await service.deleting_role(role_name)
+        data = await service.deleting_role(role_name, authorization)
         # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(200, "Role deleted successfully", data)
 
