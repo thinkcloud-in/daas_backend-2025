@@ -106,7 +106,7 @@ async def get_user_rbac(request: Request, user: dict = Depends(verify_token_loca
             all_components.update(component_list)
 
     if not all_components:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Access Denied: No UI capabilities mapped. {all_components}")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"Access Denied: No UI capabilities mapped. {all_components} JWKS_URL:{JWKS_URL} roles_to_fetch:{roles_to_fetch} user:{user} user_roles:{user_roles}")
 
     rbac_result = {
         "user": user,
