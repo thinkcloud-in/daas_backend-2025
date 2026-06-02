@@ -122,6 +122,7 @@ async def get_userlist_from_keycloak_activity():
             "error": str(e),
             "type": e.__class__.__name__
         }]
+
 @activity.defn
 async def list_of_machine_activity():
     try:

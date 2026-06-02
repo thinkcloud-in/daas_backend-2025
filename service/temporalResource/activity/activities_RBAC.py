@@ -171,7 +171,6 @@ def _prepare_keycloak_attributes(components_list: list) -> dict:
 @activity.defn
 async def updating_role_component_activity(request: dict, authorization: str):
     db: Session = SessionLocal()
-    token = authorization.split(" ")[1] if authorization and " " in authorization else None
     KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")#"https://devraq.rcvdev.team/devraqauth"#os.getenv("KEYCLOAK_ROOT_URL")
     KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")
     role = request.get("role")
@@ -194,9 +193,9 @@ async def updating_role_component_activity(request: dict, authorization: str):
                 db.add(new_rbac)
             async with httpx.AsyncClient(verify=False) as client:
                 url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role}"
-                auth_header = f"Bearer {token}"
+                auth_header =  await service.get_auth_headers()
                 get_res = await client.get(url, headers={"Authorization": auth_header})
-                
+                print("Keycloak GET response status:", url, get_res.status_code, auth_header)
                 if get_res.status_code == 200:
                     role_payload = get_res.json()
                     
