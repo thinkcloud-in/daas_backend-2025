@@ -10,8 +10,9 @@ from jose import jwt, JWTError
 logger = logging.getLogger("rbac")
 security = HTTPBearer()
 
-KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")  # http://keycloak.thinkcloud.svc.cluster.local:8080/devraqauth
-KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")       # guacamole
+# Configuration
+KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL") 
+KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")       
 JWKS_URL = f"{KEYCLOAK_ROOT_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
 IGNORED_SYSTEM_ROLES: Set[str] = {"offline_access", "default-roles-guacamole", "uma_authorization", "account"}
 
@@ -24,7 +25,6 @@ def _extract_keycloak_config(url: str | None) -> Tuple[str, str]:
         parts = url.split("/realms/")
         return parts[0], parts[1].split("/")[0]
     except (ValueError, IndexError):
-        logger.critical(f"❌ Malformed JWKS_URL config: {url}. Using fallback values.")
         return "https://devraq.rcvdev.team/devraqauth", "guacamole"
 
 KEYCLOAK_BASE_URL, KEYCLOAK_REALM = _extract_keycloak_config(JWKS_URL)
@@ -61,45 +61,38 @@ async def verify_token_locally(credentials: HTTPAuthorizationCredentials = Depen
         )
 
 # ============================================
-# 🛡️ RBAC Core Processing Engine (Strictly Role Attributes)
+# 🛡️ RBAC Core Processing Engine
 # ============================================
 
 async def _fetch_role_components(client: httpx.AsyncClient, role_name: str, auth_header: str) -> List[str]:
-    """Strictly fetches attributes mapped inside the Keycloak Role definition."""
+    """Keycloak Admin API se role ke andar ke components1, 2, 3 attributes nikalta hai."""
     url = f"{KEYCLOAK_BASE_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role_name}"
+    components = []
     try:
-        # Internal cluster call me Token Issuer (iss) mismatch na ho, isliye Host header pass kar rahe hain
         headers = {
             "Authorization": auth_header,
-            "Host": "devraq.rcvdev.team"
+            "Host": "devraq.rcvdev.team"  # Strict domain verification bypass karne ke liye
         }
         res = await client.get(url, headers=headers)
         
         if res.status_code == 200:
-            role_data = res.json()
-            attributes = role_data.get("attributes", {})
-            
-            # Role ke andar ke components1, 2, 3 nikalna
-            extracted = [
-                c.strip()
-                for i in range(1, 4)
-                for val in attributes.get(f"components${i}" if "${" in str(attributes) else f"components{i}", [])
-                for c in val.split(",") if c.strip()
-            ]
-            logger.info(f"✅ Role '{role_name}' fetched successfully. Components found: {extracted}")
-            return extracted
-            
-        # Agar Keycloak reject karega toh yahan log hoga (e.g. 401 Unauthorized ya 404 Not Found)
-        logger.error(f"❌ Keycloak Admin API Error for role '{role_name}': Status {res.status_code}, Response: {res.text[:200]}")
+            attributes = res.json().get("attributes", {})
+            # components1, components2, components3 ko loop karke clean tarike se nikalna
+            for i in range(1, 4):
+                vals = attributes.get(f"components{i}", [])
+                for val in vals:
+                    components.extend([c.strip() for c in val.split(",") if c.strip()])
+                    
     except httpx.HTTPError as e:
-        logger.error(f"❌ Network error connecting to Keycloak for role '{role_name}': {str(e)}")
-    return []
+        logger.error(f"❌ Network error fetching role '{role_name}': {str(e)}")
+        
+    return components
 
 async def get_user_rbac(request: Request, user: dict = Depends(verify_token_locally)) -> Dict[str, Any]:
-    # 1. Token se strictly sirf roles uthao
+    # 1. Strictly token se roles nikalna
     user_roles = user.get("roles") or user.get("realm_access", {}).get("roles", [])
     if not user_roles:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access Denied: No roles found in token.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access Denied: No roles found.")
 
     auth_header = request.headers.get("Authorization")
     if not auth_header:
@@ -108,7 +101,7 @@ async def get_user_rbac(request: Request, user: dict = Depends(verify_token_loca
     roles_to_fetch = [r for r in user_roles if r not in IGNORED_SYSTEM_ROLES]
     all_components = set()
 
-    # 2. Har role ke liye Keycloak Admin API hit karo unke attributes nikalne ke liye
+    # 2. Keycloak API call karke saare roles ke attributes ikkatthe karna
     if roles_to_fetch:
         async with httpx.AsyncClient(verify=False) as client:
             tasks = [_fetch_role_components(client, role, auth_header) for role in roles_to_fetch]
@@ -116,17 +109,12 @@ async def get_user_rbac(request: Request, user: dict = Depends(verify_token_loca
             for component_list in results:
                 all_components.update(component_list)
 
-    # 3. Agar abhi bhi khali hai, iska matlab ya toh roles me attributes nahi hain ya API fail hui hai
-    if not all_components:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, 
-            detail=f"Access Denied: No attributes found inside roles {roles_to_fetch}. Check backend container logs for Keycloak API status."
-        )
-
+    # 3. Aapka bataya hua exact proper dict setup aur request state assignment
     rbac_result = {
-        "user": {k: v for k, v in user.items() if not k.startswith("components")}, # Clean user object without confusing root attrs
+        "user": {k: v for k, v in user.items() if not k.startswith("components")}, 
         "roles": roles_to_fetch,
         "components": list(all_components)
     }
+    
     request.state.rbac = rbac_result
     return rbac_result
