@@ -59,15 +59,40 @@ async def get_jwks() -> Dict[str, Any]:
 async def verify_token_locally(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     token = credentials.credentials
     try:
+        # 1. Token ko bina verify kiye uske header se 'kid' (Key ID) nikaalna
+        unverified_header = jwt.get_unverified_header(token)
+        token_kid = unverified_header.get("kid")
+        if not token_kid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: Missing 'kid' in token header."
+            )
+
+        # 2. Keycloak se saari public keys (JWKS) lekar aana
         jwks = await get_jwks()
-        return jwt.decode(token, jwks, algorithms=["RS256"], options={"verify_aud": False})
+        
+        # 3. JWKS ke andar se wahi ek key dhoondna jo token ke 'kid' se match kare
+        target_rsa_key = None
+        for key in jwks.get("keys", []):
+            if key.get("kid") == token_kid:
+                target_rsa_key = key
+                break
+                
+        if not target_rsa_key:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: Key ID not found in Keycloak JWKS."
+            )
+            
+        # 4. Ab poore dict ki jagah sirf us SPECIFIC single key ko paas karna
+        return jwt.decode(token, target_rsa_key, algorithms=["RS256"], options={"verify_aud": False})
+        
     except JWTError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid token signature: {str(e)}",
             headers={"WWW-Authenticate": "Bearer"},
         )
-
 # ============================================
 # 🛡️ RBAC Core Processing Engine
 # ============================================
