@@ -865,7 +865,17 @@ async def role_exists(client_id, role_name):
         response = requests.get(keycloak_url, headers=headers)
         response.raise_for_status()
         roles = response.json()
-        return any(role["name"] == role_name for role in roles)
+        # return any(role["name"] == role_name for role in roles)
+        create_response = requests.post(
+            keycloak_url,
+            headers=headers,
+            json={
+                "name": role_name,
+                "description": role_name
+            }
+        )
+        create_response.raise_for_status()
+        return True
     except requests.RequestException as e:
         
         return False

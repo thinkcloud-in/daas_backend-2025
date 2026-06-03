@@ -229,7 +229,6 @@ async def updating_role_component_activity(request: dict, authorization: str):
                 auth_header = await service.get_auth_headers()
                 # f"Bearer {token}"
                 get_res = await client.get(url, headers=auth_header)
-                print("Keycloak GET response status:", url, get_res.status_code, auth_header)
                 if get_res.status_code == 200:
                     role_payload = get_res.json()
                     
