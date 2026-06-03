@@ -99,7 +99,7 @@ async def get_userlist_from_keycloak_activity(first:int, limit:int, search:str):
             }
             
             # Reverting back to your original endpoint
-            users_url = f"{root_url}/admin/realms/{realm}/ui-ext/brute-force-user?briefRepresentation=true&first={first}&max={limit}&q=&search={search}"
+            users_url = f"{root_url}/admin/realms/{realm}/users?first={first}&max={limit}&search={search}"
             
             async with session.get(users_url, headers=auth_headers) as resp:
                 resp.raise_for_status()

@@ -18,34 +18,25 @@ async def  list_of_users():
     return response_format.success_response(200, "All listed  Guacamole Users", data)
 
 
-async def  list_of_kecloak_users(first: int = Query(0, ge=0), limit: int = Query(10, ge=1), search: str = Query("", max_length=100)):
+
+async def list_of_kecloak_users(
+    first: int = Query(0, ge=0), 
+    limit: int = Query(10, ge=1), 
+    search: str = Query("", max_length=100)
+):
     db = SessionLocal()
     try:
-        # Get users from Keycloak
-        keycloak_users = await service.get_userList_from_keycloak(first=first, limit=limit, search=search)
-        # if not isinstance(keycloak_users, list):
-        #     keycloak_users = []
-            
-        # # Get unique users from the local RBAC table
-        # db_users_query = db.query(RBAC.users).all()
-        # db_usernames = set()
-        # for row in db_users_query:
-        #     if row[0]:
-        #         for username in row[0]:
-        #             db_usernames.add(username)
+        keycloak_users = await service.get_userList_from_keycloak(first, limit, search=search)
+        if not isinstance(keycloak_users, list):
+            keycloak_users = []
         
-        # # Merge: Add DB users to the list if they aren't already there
-        # existing_keycloak_usernames = {user["username"] for user in keycloak_users if "username" in user}
-        
-        # for username in db_usernames:
-        #     if username not in existing_keycloak_usernames:
-        #         keycloak_users.append({"username": username})
-                
         return response_format.success_response(200, "All listed Users", keycloak_users)
+        
     except Exception as e:
         return response_format.error_response(500, "Failed to list users", str(e))
     finally:
         db.close()
+
 
 async def list_machines():
     data = await service.list_machines()
