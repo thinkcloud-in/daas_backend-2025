@@ -54,7 +54,7 @@ class ListOfGuacoUsersWorkflow:
 @workflow.defn(sandboxed=False)
 class GetUserlistFromKeycloakWorkflow:
     @workflow.run
-    async def run(self):
+    async def run(self, first:int, limit:int, search:str):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2), 
             backoff_coefficient=2.0,
@@ -65,6 +65,7 @@ class GetUserlistFromKeycloakWorkflow:
             
             result = await workflow.execute_activity(
                 activities_guacmole.get_userlist_from_keycloak_activity,
+                args=[first, limit, search],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )

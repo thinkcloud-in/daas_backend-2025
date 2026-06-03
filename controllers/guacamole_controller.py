@@ -18,11 +18,11 @@ async def  list_of_users():
     return response_format.success_response(200, "All listed  Guacamole Users", data)
 
 
-async def  list_of_kecloak_users():
+async def  list_of_kecloak_users(first: int = Query(0, ge=0), limit: int = Query(100, ge=1), search: str = Query("", max_length=100)):
     db = SessionLocal()
     try:
         # Get users from Keycloak
-        keycloak_users = await service.get_userList_from_keycloak()
+        keycloak_users = await service.get_userList_from_keycloak(first=first, limit=limit, search=search)
         if not isinstance(keycloak_users, list):
             keycloak_users = []
             

@@ -566,13 +566,14 @@ async def delete_user(username):
     except Exception as e:
         return e 
 #   Get List of from Keyclaok --------------------------------
-async def get_userList_from_keycloak():
+async def get_userList_from_keycloak(first: int, limit: int, search: str):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
     
     handle = await client.start_workflow(
         workflows_guacmole.GetUserlistFromKeycloakWorkflow.run,
+        args=[first, limit, search],
         id=f"list_of_user_guaco_keyclock-{uniqueId}",
         task_queue="list-guaco-users-with-keycloak-task",
     )

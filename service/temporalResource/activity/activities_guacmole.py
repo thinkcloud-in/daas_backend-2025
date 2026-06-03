@@ -66,7 +66,7 @@ async def list_of_guaco_users_activity():
                 raise Exception(f"Failed to load Users: {response.status}")
 
 @activity.defn
-async def get_userlist_from_keycloak_activity():
+async def get_userlist_from_keycloak_activity(first:int, limit:int, search:str):
     import os
     import re
     import aiohttp
@@ -99,7 +99,7 @@ async def get_userlist_from_keycloak_activity():
             }
             
             # Reverting back to your original endpoint
-            users_url = f"{root_url}/admin/realms/{realm}/ui-ext/brute-force-user?briefRepresentation=true&first=0&max=11&q=&search=*"
+            users_url = f"{root_url}/admin/realms/{realm}/ui-ext/brute-force-user?briefRepresentation=true&first={first}&max={limit}&q=&search={search}"
             
             async with session.get(users_url, headers=auth_headers) as resp:
                 resp.raise_for_status()

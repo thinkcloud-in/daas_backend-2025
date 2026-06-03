@@ -19,8 +19,12 @@ async def list_guaca_users():
     return await guacamole_controller.list_of_users()
 
 @guacamole_router.get("/list_users", response_model=APIResponse[Any])
-async def list_users():
-    return await guacamole_controller.list_of_kecloak_users()
+async def list_users(
+    first: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1),
+    search: str = Query("", max_length=100)
+):
+    return await guacamole_controller.list_of_kecloak_users(first=first, limit=limit, search=search)
 
 @guacamole_router.get("/list_connections", response_model=APIResponse[Any])
 async def list_connections():
