@@ -142,8 +142,7 @@ async def deleting_role_activity(role_name: str, authorization: str):
     KEYCLOAK_REALM = raw_realm.strip() if raw_realm else "guacamole"
 
     try:
-        token = authorization.split(" ")[1] if authorization and " " in authorization else None
-        auth_header = f"Bearer {token}"
+        auth_header =  await service.get_auth_headers()
         try:
             client_id_ = await service.get_client()
             client_id = dict(client_id_).get("id")
@@ -156,7 +155,7 @@ async def deleting_role_activity(role_name: str, authorization: str):
             url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role_name}"
             logger.info(f"Sending DELETE request to Keycloak Realm: {url}")
             
-            get_res = await client.delete(url, headers={"Authorization": auth_header})
+            get_res = await client.delete(url, headers=auth_header)
             print("Keycloak DELETE response status:", url, get_res.status_code)
             
             # Keycloak delete karne par 204 (No Content) ya 200 deta hai
