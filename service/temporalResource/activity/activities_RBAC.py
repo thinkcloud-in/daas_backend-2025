@@ -78,42 +78,52 @@ async def creating_role_activity(role_name: str, authorization: str):
     db: Session = SessionLocal()
     
     try:
-        try:
-            client_id_ = await service.get_client()
-            client_id = dict(client_id_).get("id")
+        client_id_ = await service.get_client()
+        client_id = dict(client_id_).get("id")
 
+        role_in_keycloak = await service.role_exists(client_id, role_name)
+        existing_role_db = db.query(RBAC).filter(RBAC.role == role_name).first()
+
+        if role_in_keycloak and existing_role_db:
+            return {
+                "status": "Error", 
+                "code": 400, 
+                "message": "Role already exists in both Keycloak and Database"
+            }
             
-            if await service.role_exists(client_id, role_name):
-                return {"status": "Error", "code": 400, "message": "Role already exists in the external service"}
-                
-     
-            
-            logger.info("Checking if role exists in the database...")
-            existing_role = db.query(RBAC).filter(RBAC.role == role_name).first()
-            if existing_role:
-                logger.info("Role already exists in the database...")
-                return {"status": "Error", "code": 400, "message": "Role already exists in the database"}
-                
-            
-           
-            
+        if not role_in_keycloak:
+            logger.info(f"Creating role '{role_name}' in Keycloak...")
             await service.create_client_role(client_id, role_name)
+        else:
+            logger.info(f"Role '{role_name}' already exists in Keycloak. Skipping Keycloak creation.")
 
-            
-            logger.info("Adding role to the database")
+        if not existing_role_db:
+            logger.info(f"Syncing role '{role_name}' to the database...")
             new_role = RBAC(users=[], role=role_name, components=[])
             db.add(new_role)
             db.commit()
-            logger.info("Added role to the database")
             db.refresh(new_role)
+            logger.info("Successfully synced role to the database.")
+        else:
+            logger.info(f"Role '{role_name}' already exists in Database. Skipping DB insertion.")
 
-            return {"status": "Ok", "code": 200, "message": "Role created successfully in both places"}
-        except Exception as e:
-            db.rollback()
-            logger.error(f"An error occurred: {e}", exc_info=True)
-            return {"status": "Error", "code": 500, "message": str(e)}
+        return {
+            "status": "Ok", 
+            "code": 200, 
+            "message": "Role processed and synchronized successfully"
+        }
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"An error occurred in creating_role_activity: {e}", exc_info=True)
+        return {
+            "status": "Error", 
+            "code": 500, 
+            "message": "Internal server error while synchronizing role data"
+        }
     finally:
         db.close()
+
 
 
 @activity.defn
