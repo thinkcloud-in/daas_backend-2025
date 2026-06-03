@@ -226,7 +226,8 @@ async def updating_role_component_activity(request: dict, authorization: str):
                 db.add(new_rbac)
             async with httpx.AsyncClient(verify=False) as client:
                 url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role}"
-                auth_header = f"Bearer {token}"
+                auth_header = await service.get_auth_headers()
+                # f"Bearer {token}"
                 get_res = await client.get(url, headers={"Authorization": auth_header})
                 print("Keycloak GET response status:", url, get_res.status_code, auth_header)
                 if get_res.status_code == 200:
