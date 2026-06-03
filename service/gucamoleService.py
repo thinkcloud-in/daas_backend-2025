@@ -871,6 +871,35 @@ async def role_exists(client_id, role_name):
         
         return False
 #delecte role in keyclock
+
+
+async def role_exists_keycloak(client_id, role_name):
+    try:
+        headers = await get_auth_headers()
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles"
+        
+        response = requests.get(keycloak_url, headers=headers, verify=False)
+        response.raise_for_status()
+        roles = response.json()
+        return any(role["name"] == role_name for role in roles)
+    except requests.RequestException as e:
+        return False
+
+async def create__keycloak_client_role(client_id, role_name):
+    try:
+        headers = await get_auth_headers()
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles"
+        payload = {"name": role_name}
+        
+        realm_response = requests.post(keycloak_url, headers=headers, json=payload, verify=False)
+        realm_response.raise_for_status()
+        return realm_response.json()
+    except requests.RequestException as e:
+        return None
+
+
 async def delete_client_role(client_id, role_name):
     try:
         headers = await get_auth_headers()

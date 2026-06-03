@@ -81,7 +81,7 @@ async def creating_role_activity(role_name: str, authorization: str):
         client_id_ = await service.get_client()
         client_id = dict(client_id_).get("id")
 
-        role_in_keycloak = await service.role_exists(client_id, role_name)
+        role_in_keycloak = await service.role_exists_keycloak(client_id, role_name)
         existing_role_db = db.query(RBAC).filter(RBAC.role == role_name).first()
 
         if role_in_keycloak and existing_role_db:
@@ -93,7 +93,7 @@ async def creating_role_activity(role_name: str, authorization: str):
             
         if not role_in_keycloak:
             logger.info(f"Creating role '{role_name}' in Keycloak...")
-            await service.create_client_role(client_id, role_name)
+            await service.create__keycloak_client_role(client_id, role_name)
         else:
             logger.info(f"Role '{role_name}' already exists in Keycloak. Skipping Keycloak creation.")
 
