@@ -228,7 +228,7 @@ async def updating_role_component_activity(request: dict, authorization: str):
                 url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role}"
                 auth_header = await service.get_auth_headers()
                 # f"Bearer {token}"
-                get_res = await client.get(url, headers={"Authorization": auth_header})
+                get_res = await client.get(url, headers=auth_header)
                 print("Keycloak GET response status:", url, get_res.status_code, auth_header)
                 if get_res.status_code == 200:
                     role_payload = get_res.json()
@@ -239,7 +239,7 @@ async def updating_role_component_activity(request: dict, authorization: str):
                     updated_attributes = _prepare_keycloak_attributes(request.get("components"))
                     role_payload["attributes"].update(updated_attributes)
                     
-                    put_res = await client.put(url, json=role_payload, headers={"Authorization": auth_header})
+                    put_res = await client.put(url, json=role_payload, headers=auth_header)
                     
                     if put_res.status_code not in [200, 204]:
                         raise Exception(f"Keycloak update failed with status {put_res.status_code}: {put_res.text}")
