@@ -344,7 +344,7 @@ async def get_user_permissions_activity(workflow_input: dict):
                     "code": 200,
                     "roles": roles,
                     "components": components,
-                    "message": "User permissions retrieved successfully"
+                    "message": f"User permissions retrieved successfully {rbac_data}"
                 }
             roles = db.query(RBAC).filter(RBAC.users.contains([workflow_input.get("username")])).all()
             # components = auth_header
