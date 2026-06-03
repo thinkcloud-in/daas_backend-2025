@@ -99,8 +99,8 @@ async def get_client_roles(request: Request):
     return await guacamole_controller.get_client_roles(request)
 
 @guacamole_router.post("/post_role/{role_name}")
-async def post_role(role_name: str):
-    return await guacamole_controller.post_role(role_name)
+async def post_role(role_name: str, authorization: Optional[str] = Header(None)):
+    return await guacamole_controller.post_role(role_name, authorization)
 
 @guacamole_router.delete("/delete_role/{role_name}")
 async def delete_role(role_name: str, authorization: Optional[str] = Header(None)):

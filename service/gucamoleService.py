@@ -907,13 +907,13 @@ def assign_role(user_id, role_id):
 
         return None
     
-async def posting_role(role_name: str):
+async def posting_role(role_name: str, authorization: str):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
     handle = await client.start_workflow(
         workflows_RBAC.CreatingRoleWorkflow.run,
-        role_name,
+        args=[role_name, authorization],
         id=f"create_role-{uniqueId}",
         task_queue="creating_role_taskqueue",
     )

@@ -74,8 +74,9 @@ async def get_client_roles_activity():
 
 
 @activity.defn 
-async def creating_role_activity(role_name: str):
+async def creating_role_activity(role_name: str, authorization: str):
     db: Session = SessionLocal()
+    
     try:
         try:
             client_id_ = await service.get_client()
@@ -118,53 +119,60 @@ async def creating_role_activity(role_name: str):
 @activity.defn
 async def deleting_role_activity(role_name: str, authorization: str):
     db: Session = SessionLocal()
-    token = authorization.split(" ")[1] if authorization and " " in authorization else None
-    KEYCLOAK_ROOT_URL = os.getenv("KEYCLOAK_ROOT_URL")#"https://devraq.rcvdev.team/devraqauth"#os.getenv("KEYCLOAK_ROOT_URL")
-    KEYCLOAK_REALM = os.getenv("KEYCLOAK_RELAM")
+
+    raw_root_url = os.getenv("KEYCLOAK_ROOT_URL", "")
+    if "#" in raw_root_url:
+        raw_root_url = raw_root_url.split("#")[0]
+
+    raw_realm = os.getenv("KEYCLOAK_REALM") or os.getenv("KEYCLOAK_RELAM", "")
+    if "#" in raw_realm:
+        raw_realm = raw_realm.split("#")[0]
+
+    KEYCLOAK_ROOT_URL = raw_root_url.strip().rstrip('/') if raw_root_url else "https://devraq.rcvdev.team/devraqauth"
+    KEYCLOAK_REALM = raw_realm.strip() if raw_realm else "guacamole"
+
     try:
+        token = authorization.split(" ")[1] if authorization and " " in authorization else None
+        auth_header = f"Bearer {token}"
         try:
             client_id_ = await service.get_client()
-
             client_id = dict(client_id_).get("id")
-            logger.info(f"Deleting role '{role_name}' from the backend system...")
+            logger.info(f"Deleting client role '{role_name}' from backend system...")
             await service.delete_client_role(client_id, role_name)
-            logger.info(f"Deleted role '{role_name}' from the backend system")
-           
+        except Exception as client_err:
+            logger.warning(f"Client role deletion skipped/failed (Might not exist): {client_err}")
+
+        async with httpx.AsyncClient(verify=False) as client:
+            url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role_name}"
+            logger.info(f"Sending DELETE request to Keycloak Realm: {url}")
             
-            role_entry = db.query(RBAC).filter(RBAC.role == role_name).first()
-            if not role_entry:
-                return {"status": "Ok", "code": 500, "message":f"Role '{role_name}' not found in the database."}
-           
-            async with httpx.AsyncClient(verify=False) as client:
-                url = f"{KEYCLOAK_ROOT_URL}/admin/realms/{KEYCLOAK_REALM}/roles/{role_name}"
-                auth_header = f"Bearer {token}"
-                get_res = await client.delete(url, headers={"Authorization": auth_header})
-                print("Keycloak DELETE response status:", url, get_res.status_code, auth_header)
-                if get_res.status_code == 200:
-                    role_payload = get_res.json()
-                    
-                    if "attributes" not in role_payload or role_payload["attributes"] is None:
-                        role_payload["attributes"] = {}
-                    
-                    updated_attributes = _prepare_keycloak_attributes(request.get("components"))
-                    role_payload["attributes"].update(updated_attributes)
-                    
-                    put_res = await client.put(url, json=role_payload, headers={"Authorization": auth_header})
-                    
-                    if put_res.status_code not in [200, 204]:
-                        raise Exception(f"Keycloak update failed with status {put_res.status_code}: {put_res.text}")
-                else:
-                    raise Exception(f"Role '{role_name}' not found in Keycloak (Status: {get_res.status_code})")
+            get_res = await client.delete(url, headers={"Authorization": auth_header})
+            print("Keycloak DELETE response status:", url, get_res.status_code)
             
+            # Keycloak delete karne par 204 (No Content) ya 200 deta hai
+            if get_res.status_code in [200, 204]:
+                logger.info(f"Successfully deleted realm role '{role_name}' from Keycloak.")
+            elif get_res.status_code == 404:
+                # Agar Keycloak par wo role pehle se hi nahi hai, toh use error nahi balki success maanenge
+                logger.warning(f"Role '{role_name}' not found in Keycloak (Already deleted).")
+            else:
+                raise Exception(f"Keycloak deletion failed with status {get_res.status_code}: {get_res.text}")
+
+        role_entry = db.query(RBAC).filter(RBAC.role.ilike(role_name)).first()
+        
+        if role_entry:
             db.delete(role_entry)
             db.commit()
-            logger.info(f"Deleted role '{role_name}' from the database")
-     
-            return {"status": "Ok", "code": 200, "message": "Role deleted successfully"}
-        except Exception as e:
-            db.rollback()
-            logger.error(f"An error occurred: {e}", exc_info=True)
-            return {"status": "Error", "code": 500, "message": str(e)}
+            logger.info(f"Deleted role '{role_name}' from the database.")
+        else:
+            logger.info(f"Role '{role_name}' was not present in the database. Skipping DB deletion.")
+ 
+        return {"status": "Ok", "code": 200, "message": "Role deleted successfully from everywhere"}
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"❌ An error occurred in deleting_role_activity: {e}", exc_info=True)
+        return {"status": "Error", "code": 500, "message": str(e)}
     finally:
         db.close()
 
@@ -235,7 +243,7 @@ async def updating_role_component_activity(request: dict, authorization: str):
                     if put_res.status_code not in [200, 204]:
                         raise Exception(f"Keycloak update failed with status {put_res.status_code}: {put_res.text}")
                 else:
-                    raise Exception(f"Role '{role}' not found in Keycloak (Status: {get_res.status_code})")
+                    raise Exception(f"Role '{role}' not found in Keycloak (Status: {get_res.status_code}) (Message: {get_res.text})")
                 
             db.commit()
             logger.info("Role and components saved successfully")

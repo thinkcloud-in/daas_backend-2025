@@ -339,9 +339,9 @@ async def get_client_roles(request):
 
 
 # @guacarouter.post("/post_role/{role_name}")
-async def post_role(role_name: str):
+async def post_role(role_name: str, authorization: str):
     try:
-        data = await service.posting_role(role_name)
+        data = await service.posting_role(role_name, authorization)
         # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(201, "Role created successfully", data)
     except Exception as e:
