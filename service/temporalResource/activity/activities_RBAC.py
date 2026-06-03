@@ -110,7 +110,7 @@ async def creating_role_activity(role_name: str, authorization: str):
         return {
             "status": "Ok", 
             "code": 200, 
-            "message": "Role processed and synchronized successfully"
+            "message": f"Role processed and synchronized successfully {role_in_keycloak} {client_id}"
         }
 
     except Exception as e:
