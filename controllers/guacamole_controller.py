@@ -310,13 +310,16 @@ async def  get_client_id():
 async def get_client_roles(request):
     db = SessionLocal()
     try:
-        auth_response = request.get("state")
-        rbac_data = auth_response.get("rbac") or {}
-        roles = rbac_data.get("roles") or []
-        if not roles and rbac_data.get("roles"):
-            roles = [rbac_data.get("roles")]
+        keycloak_data = await service.get_keycloak_roles()  # (Note: Agar apne function ka naam get_realm_roles rakha hai, toh wo likhein)
+        roles = []
+
+        if keycloak_data:
+            roles = [role.get("name") for role in keycloak_data if isinstance(role, dict) and role.get("name")]
+
         if roles:
             return response_format.success_response(200, "Role names retrieved successfully", roles)
+        else:
+            return response_format.success_response(200, "No roles found", [])
         # Fetch roles from the database
         db_roles = db.query(RBAC.role).all()
         role_list = [role[0] for role in db_roles]

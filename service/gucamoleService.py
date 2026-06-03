@@ -886,6 +886,22 @@ async def role_exists_keycloak(client_id, role_name):
     except requests.RequestException as e:
         return False
 
+async def get_keycloak_roles():
+    try:
+        headers = await get_auth_headers()
+        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+        # Wahi Realm roles wala endpoint jahan se poori list milegi
+        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles"
+        
+        # GET request maari list nikalne ke liye
+        response = requests.get(keycloak_url, headers=headers, verify=False)
+        response.raise_for_status()
+        
+        return response.json()  # Yeh Keycloak ke saare realm roles ki list array/list me dega
+    except requests.RequestException as e:
+        logger.error(f"Failed to fetch realm roles from Keycloak: {e}")
+        return None
+    
 async def create__keycloak_client_role(client_id, role_name):
     try:
         headers = await get_auth_headers()
