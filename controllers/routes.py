@@ -284,6 +284,10 @@ def  get_enable_browser_authflow():
 def get_enable_browser_guacamole_authflow():
     return  key_config.get_Auth_flow_Value_guacamole_browser()
 
+@router.post('/totp/reset-guac-totp/{user_id}')
+def reset_guac_totp(user_id: str):
+    return  key_config.reset_guac_totp(user_id)
+
 
 @router.get("/workflows")
 async def list_workflows():
