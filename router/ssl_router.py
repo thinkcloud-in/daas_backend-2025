@@ -13,6 +13,7 @@ import os
 import base64
 from pydantic import BaseModel
 from typing import Optional
+import base64
 
 ssl_router = APIRouter(prefix="/v1/ssl", tags=["ssl"])
 
@@ -286,7 +287,7 @@ async def renew_ssl_certificate_on_server(payload: Optional[RenewPayload] = None
   
 
 
-import base64
+
 @ssl_router.get("/ssl_status")
 async def get_ssl_certificate_status():
     try:
