@@ -11,14 +11,26 @@ from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
 
-try:
-    config.load_incluster_config()
-except config.config_exception.ConfigException:
-    config.load_kube_config()
+# try:
+#     config.load_incluster_config()
+# except config.config_exception.ConfigException:
+#     config.load_kube_config()
 
-v1 = client.CoreV1Api()
+v1 = None # client.CoreV1Api()
 NAMESPACE = "thinkcloud"
 SECRET_NAME = "daas-tls-secret"
+
+try:
+    try:
+        config.load_incluster_config()
+    except config.config_exception.ConfigException:
+        config.load_kube_config()
+    
+    v1 = client.CoreV1Api()
+
+except Exception as kube_err:
+    print(f"⚠️ Warning: Kubernetes config not found. Running in Local Mode: {kube_err}")
+    v1 = None
 
 @activity.defn
 async def upload_certificate_activity(payload: dict) -> dict:
