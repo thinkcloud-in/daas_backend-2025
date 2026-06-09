@@ -6,9 +6,21 @@ from cryptography import x509
 from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
-from datetime import datetime, timezone
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives import hashes, serialization
+from datetime import datetime, timezone, timedelta
+import os
+import base64
+from pydantic import BaseModel
+from typing import Optional
 
 ssl_router = APIRouter(prefix="/v1/ssl", tags=["ssl"])
+
+class RenewPayload(BaseModel):
+    common_name: Optional[str] = None  # Frontend chahe toh custom domain bhej sakta hai
+
+NAMESPACE = "thinkcloud"
+SECRET_NAME = "daas-tls-secret"
 
 # LINUX_SERVER_IP = "172.16.0.101"  
 
@@ -179,48 +191,99 @@ async def delete_ssl_certificate():
 
 
 
-@ssl_router.post("/ssl_renew")
-async def renew_ssl_certificate_on_server():
-    try:
-        openssl_cmd = (
-            'openssl req -x509 -nodes -days 365 -newkey rsa:2048 '
-            '-keyout /tmp/tls.key -out /tmp/tls.crt '
-            '-subj "/CN=devraq.rcvdev.team" '
-            '-addext "subjectAltName=DNS:devraq.rcvdev.team"'
-        )
-        
-        delete_secret_cmd = "kubectl delete secret daas-tls-secret -n thinkcloud --ignore-not-found"
-        
-        create_secret_cmd = "kubectl create secret tls daas-tls-secret --key=/tmp/tls.key --cert=/tmp/tls.crt -n thinkcloud"
-        
-        cleanup_cmd = "rm -f /tmp/tls.key /tmp/tls.crt"
 
-        cmd1 = subprocess.run(openssl_cmd, shell=True, capture_output=True, text=True)
-        if cmd1.returncode != 0:
-            raise Exception(f"OpenSSL Generation Failed: {cmd1.stderr}")
-            
-        cmd2 = subprocess.run(delete_secret_cmd, shell=True, capture_output=True, text=True)
-        if cmd2.returncode != 0:
-            raise Exception(f"Kubectl Delete Failed: {cmd2.stderr}")
-            
-        cmd3 = subprocess.run(create_secret_cmd, shell=True, capture_output=True, text=True)
-        if cmd3.returncode != 0:
-            raise Exception(f"Kubectl Create Failed: {cmd3.stderr}")
-            
-        subprocess.run(cleanup_cmd, shell=True, capture_output=True, text=True)
+@ssl_router.post("/ssl_renew")
+async def renew_ssl_certificate_on_server(payload: Optional[RenewPayload] = None):
+    try:
+        domain_name = payload.common_name if payload else None
+
+        if not domain_name:
+            try:
+                secret = v1.read_namespaced_secret(name=SECRET_NAME, namespace=NAMESPACE)
+                if secret.data and "tls.crt" in secret.data:
+                    cert_bytes = base64.b64decode(secret.data["tls.crt"])
+                    existing_cert = x509.load_pem_x509_certificate(cert_bytes, default_backend())
+                    cn_attributes = existing_cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)
+                    if cn_attributes:
+                        domain_name = cn_attributes[0].value
+                        print(f"--> Auto-detected domain from active secret: {domain_name}")
+            except ApiException as e:
+                if e.status != 404:
+                    print(f"Warning while reading existing secret: {e.reason}")
+
+        if not domain_name:
+            domain_name = os.getenv("APP_DOMAIN", "devraq.rcvdev.team") 
+            print(f"--> Using domain from Environment Variable / Fallback: {domain_name}")
+
+        private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+
+        subject = issuer = x509.Name([
+            x509.NameAttribute(NameOID.COMMON_NAME, domain_name)
+        ])
+
+        now = datetime.now(timezone.utc)
+        cert = x509.CertificateBuilder().subject_name(
+            subject
+        ).issuer_name(
+            issuer
+        ).public_key(
+            private_key.public_key()
+        ).serial_number(
+            x509.random_serial_number()
+        ).not_valid_before(
+            now
+        ).not_valid_after(
+            now + timedelta(days=365)
+        ).add_extension(
+            x509.SubjectAlternativeName([x509.DNSName(domain_name)]),
+            critical=False
+        ).sign(private_key, hashes.SHA256(), default_backend())
+
+        cert_content = cert.public_bytes(serialization.Encoding.PEM).decode("utf-8")
+        key_content = private_key.private_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PrivateFormat.TraditionalOpenSSL,
+            encryption_algorithm=serialization.NoEncryption()
+        ).decode("utf-8")
+
+        secret_body = client.V1Secret(
+            api_version="v1",
+            kind="Secret",
+            metadata=client.V1ObjectMeta(name=SECRET_NAME),
+            type="kubernetes.io/tls",
+            string_data={
+                "tls.crt": cert_content,
+                "tls.key": key_content
+            }
+        )
+
+        try:
+            v1.replace_namespaced_secret(name=SECRET_NAME, namespace=NAMESPACE, body=secret_body)
+            msg = f"SSL Certificate successfully renewed for domain: {domain_name}"
+        except ApiException as kube_ex:
+            if kube_ex.status == 404:
+                v1.create_namespaced_secret(namespace=NAMESPACE, body=secret_body)
+                msg = f"SSL Certificate successfully created for domain: {domain_name}"
+            else:
+                raise kube_ex
 
         return {
             "status": "success",
-            "message": "SSL Certificate generated and applied directly on the server terminal successfully! Nginx Ingress will auto-reload."
+            "message": msg,
+            "domain": domain_name
         }
 
+    except ApiException as kube_err:
+        raise HTTPException(status_code=500, detail=f"Kubernetes API Error: {kube_err.reason}")
     except Exception as e:
-        raise HTTPException(
-            status_code=500, 
-            detail=f"Server Shell Execution Error: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Internal Server Error during renewal: {str(e)}")
 
 
+  
 
 
 import base64
