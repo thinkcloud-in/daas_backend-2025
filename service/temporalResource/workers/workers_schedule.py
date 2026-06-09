@@ -12,7 +12,7 @@ async def get_report_data_worker():
     worker = Worker(
         client,
         task_queue="GetReportData-task-queue",
-        workflows=[workflows_schedule.get_report_data_workflow], 
+        workflows=[wschorkflows_edule.get_report_data_workflow], 
         activities=[activities_schedule.get_schedule_data_activity],
     )
     

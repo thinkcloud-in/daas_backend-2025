@@ -5,7 +5,7 @@ from utils.temporal_client import TemporalClientManager
 from service.temporalResource.activity import activities_ssl
 from service.temporalResource.workflows import workflows_ssl
 
-async def main():
+async def ssl_workers():
     client = await TemporalClientManager.get_temporal_client()
     
     worker = Worker(

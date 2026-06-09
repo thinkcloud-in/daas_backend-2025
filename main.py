@@ -15,6 +15,7 @@ from router.ipmi_router import ipmi_router
 from service.gucamoleService import startup_event_client
 from service.temporalService import run_email_worker
 from service.temporalResource.workers import workers_cluster
+from service.temporalResource.workers import workers_ssl
 from service.temporalResource.workers import worker_pollingStatus
 from service.temporalResource.workers import worker_proxmox
 from service.temporalResource.workers import worker_hyper_v
@@ -154,6 +155,8 @@ def start_workers():
         listen_for_machine_changes,
         run_email_worker
     )
+
+    start_thread_manager("SSL", workers_ssl.ssl_workers)
     
     print("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 
