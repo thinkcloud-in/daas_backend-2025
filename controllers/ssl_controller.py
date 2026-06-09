@@ -61,10 +61,7 @@ class SSLController:
     async def get_ssl_certificate_status(self):
         try:
             details = await self.service.get_certificate_status()
-            return {
-                "status": "success",
-                "ssl_details": details
-            }
+            return details
         except KeyError as key_err:
             raise HTTPException(status_code=404, detail=str(key_err))
         except ValueError as val_err:
