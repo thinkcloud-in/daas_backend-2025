@@ -194,7 +194,7 @@ async def delete_ssl_certificate():
 
 
 @ssl_router.post("/ssl_renew")
-async def renew_ssl_certificate_on_server(payload: Optional[RenewPayload] = None):
+async def renew_ssl_certificate_on_server(request: Request, payload: Optional[RenewPayload] = None):
     try:
         domain_name = payload.common_name if payload else None
 
