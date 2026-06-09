@@ -4,7 +4,7 @@ from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_ssl
 
 
-@workflow.defn
+@workflow.defn(sandboxed=False)
 class SSLUploadWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
@@ -25,7 +25,7 @@ class SSLUploadWorkflow:
         except Exception as e:
             raise Exception(f"Error in SSLUploadWorkflow: {str(e)}")
 
-@workflow.defn
+@workflow.defn(sandboxed=False)
 class SSLRenewWorkflow:
     @workflow.run
     async def run(self, payload: dict) -> dict:
@@ -46,7 +46,7 @@ class SSLRenewWorkflow:
         except Exception as e:
             raise Exception(f"Error in SSLRenewWorkflow: {str(e)}")
 
-@workflow.defn
+@workflow.defn(sandboxed=False)
 class SSLDeleteWorkflow:
     @workflow.run
     async def run(self) -> dict:
@@ -65,7 +65,7 @@ class SSLDeleteWorkflow:
         except Exception as e:
             raise Exception(f"Error in SSLDeleteWorkflow: {str(e)}")
 
-@workflow.defn
+@workflow.defn(sandboxed=False)
 class SSLGetStatusWorkflow:
     @workflow.run
     async def run(self) -> dict:
