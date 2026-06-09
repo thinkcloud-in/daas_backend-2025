@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends
+from fastapi import APIRouter, UploadFile, File, HTTPException, Request
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 import subprocess
@@ -213,7 +213,7 @@ async def renew_ssl_certificate_on_server(payload: Optional[RenewPayload] = None
                     print(f"Warning while reading existing secret: {e.reason}")
 
         if not domain_name:
-            domain_name = os.getenv("APP_DOMAIN", "devraq.rcvdev.team") 
+            domain_name = request.url.hostname
             print(f"--> Using domain from Environment Variable / Fallback: {domain_name}")
 
         private_key = rsa.generate_private_key(
