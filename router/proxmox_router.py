@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from controllers import proxmox_controller
 from models.API_Response_model import APIResponse
 from models.proxmox_model import VMPowerRequest, MigrateRequest
-from controllers.proxmox_controller import CloneRequest
+from controllers.proxmox_controller import CloneRequest, NodeGpusRequest
 from db_configuration.config import get_db
 from utils import response_format
 
@@ -36,6 +36,10 @@ async def update_nodes(db: Session = Depends(get_db)):
 @proxmox_router.get("/get-cluster-nodes")
 async def get_cluster_nodes(cluster_id: str, db: Session = Depends(get_db)):
     return await proxmox_controller.get_cluster_nodes_endpoint(cluster_id, db)
+
+@proxmox_router.post("/get_node_gpus", response_model=APIResponse[Any])
+async def get_node_gpus(payload: NodeGpusRequest, db: Session = Depends(get_db)):
+    return await proxmox_controller.get_node_gpus_endpoint(payload, db)
 
 @proxmox_router.get("/get_influxdb_metric_server", response_model=APIResponse[Any])
 async def get_influxdb_metric_server(cluster_id: str, monitoring: bool = Query(False), db: Session = Depends(get_db)):

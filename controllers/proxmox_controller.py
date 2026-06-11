@@ -1,7 +1,7 @@
 from typing import List
 from fastapi import  Depends, APIRouter, HTTPException, Request, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from db_configuration.config import SessionLocal, get_db
 import service.proxmoxService as service
@@ -26,6 +26,15 @@ logger = logging.getLogger(__name__)
 proxmox_router = APIRouter(prefix = "/v1/proxmox")
 class NodesRequest(BaseModel):
     nodes: List[str]
+
+class NodeGpusRequest(BaseModel):
+    cluster_id: str
+    nodes: List[str]
+
+    @field_validator("cluster_id", mode="before")
+    @classmethod
+    def coerce_cluster_id(cls, v):
+        return str(v)
  
 class NameRequest(BaseModel):
     template: str
@@ -98,6 +107,16 @@ async def get_cluster_nodes_endpoint(cluster_id: str, db):
         return response_format.success_response(200, "Cluster nodes retrieved successfully", data)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve cluster nodes: {str(e)}")
+
+async def get_node_gpus_endpoint(payload: NodeGpusRequest, db: Session):
+    try:
+        cluster_data = await get_cluster_details(db, payload.cluster_id)
+        if not cluster_data:
+            raise HTTPException(status_code=404, detail="Cluster not found")
+        data = service.get_node_gpus(cluster_data, payload.nodes, db)
+        return response_format.success_response(200, "Node GPUs retrieved successfully", data)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to retrieve node GPUs: {str(e)}")
 
 async def get_influxdb_metric_server_endpoint(
     cluster_id: str,

@@ -88,6 +88,40 @@ def _get_cluster_nodes_impl(cluster_data, db: Session):
                 continue
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
 
+def _resolve_gpu_name(device: Dict) -> str:
+    if device.get("device_name"):
+        return device["device_name"]
+    if device.get("subsystem_device_name"):
+        return device["subsystem_device_name"]
+    vendor = device.get("vendor_name") or device.get("subsystem_vendor_name") or "Unknown Vendor"
+    device_id = device.get("device", "")
+    return f"{vendor} (Device ID: {device_id})"
+
+def get_node_gpus(cluster_data, nodes: List[str], db: Session) -> Dict:
+    api_token = get_api_token(db, cluster_data.name)
+    headers = {
+        "Authorization": f"PVEAPIToken={api_token}",
+        "Content-Type": "application/json"
+    }
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    result = {}
+    for node in nodes:
+        url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/hardware/pci"
+        try:
+            response = requests.get(url, headers=headers, verify=VERIFY_SSL, timeout=10)
+            response.raise_for_status()
+            pci_devices = response.json().get("data", [])
+            # Display controllers: 0x0300 (VGA), 0x0302 (3D), 0x0380 (generic display)
+            gpus = [
+                {**d, "gpu_name": _resolve_gpu_name(d)}
+                for d in pci_devices
+                if str(d.get("class", "")).lower().startswith("0x03")
+            ]
+            result[node] = gpus
+        except Exception as e:
+            result[node] = {"error": str(e)}
+    return result
+
 def update_cluster_nodes(db: Session) -> Dict[str, List[str]]:
     clusters = db.query(Cluster).all()
     updated_clusters = {}
