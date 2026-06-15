@@ -27,10 +27,14 @@ from service.temporalResource.workers import workers_schedule
 from service.temporalResource.workers import workers_retentionPeriod
 from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workers import workers_ldap
+from service.temporalResource.workers import workers_llm_inference
+from service.temporalResource.workers import workers_llm_inference_v2
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from router.ssl_router import ssl_router
+from router.llm_inference_router import llm_inference_router
+from router.llm_inference_v2_router import llm_inference_v2_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -80,6 +84,8 @@ app.include_router(ipmi_router)
 app.include_router(grafana_router)
 app.include_router(hyper_v_router)
 app.include_router(ssl_router)
+app.include_router(llm_inference_router)
+app.include_router(llm_inference_v2_router)
 
 
 def start_async_worker(target):
@@ -157,6 +163,8 @@ def start_workers():
     )
 
     start_thread_manager("SSL", workers_ssl.ssl_workers)
+    #start_thread_manager("LLMInference", workers_llm_inference.run_all_llm_inference_workers)
+    start_thread_manager("LLMInferenceV2", workers_llm_inference_v2.run_all_llm_inference_v2_workers)
     
     print("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

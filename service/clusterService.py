@@ -188,24 +188,42 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
             raise
 
 async def create_cluster_proxmox(cluster_data):
-    # db = next(get_db())
     db = SessionLocal()
     try:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
-        # PROXMOX_HOST = f"https://{cluster_data.ip[0]}:{cluster_data.port}"
-        ROOT_USERNAME = cluster_data.username
+        ROOT_USERNAME = cluster_data.username   # e.g. "root@pam"
         ROOT_PASSWORD = cluster_data.password
-        cluster_data_dict = cluster_data.dict()
-        await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD)
-        role = "Administrator"
-        path = "/"
-        await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD)
-        api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST)
-        store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name)
+
+        # Login as root to get session ticket
+        headers, cookies = root_proxmox_login(PROXMOX_HOST, ROOT_USERNAME, ROOT_PASSWORD)
+
+        # Create API token directly for root@pam (no separate user needed)
+        token_id = "devraq-token"
+        token_url = f"{PROXMOX_HOST}/api2/json/access/users/{ROOT_USERNAME}/token/{token_id}"
+
+        # Check if token already exists
+        check = requests.get(token_url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
+        if check.status_code == 200:
+            # Token exists — delete and recreate to get the secret
+            requests.delete(token_url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
+
+        resp = requests.post(
+            token_url,
+            headers=headers,
+            cookies=cookies,
+            data={"privsep": 0, "comment": "devraq automation token"},
+            verify=VERIFY_SSL
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"]
+        full_token = data["full-tokenid"]          # e.g. "root@pam!devraq-token"
+        secret     = data["value"]
+        api_token  = f"{full_token}={secret}"      # e.g. "root@pam!devraq-token=xxxx"
+
+        store_proxmox_user(db, "Administrator", "/", api_token, full_token, secret, cluster_data.name)
     except Exception as e:
         db.rollback()
         raise Exception(str(e))
-        # return({"msg": f"Error getting Proxmox host: {str(e)}"})
     finally:
         db.close()
     
