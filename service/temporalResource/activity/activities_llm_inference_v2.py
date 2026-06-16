@@ -151,49 +151,26 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         upid = resp.json()["data"]
         _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=4800)
 
-        # ── Fetch Proxmox PCI hardware mappings (pci_id → mapping name) ──
-        pci_to_mapping: dict = {}
-        try:
-            map_resp = requests.get(
-                f"{PROXMOX_HOST}/api2/json/cluster/mapping/pci",
-                headers=headers, verify=False, timeout=10
-            )
-            if map_resp.ok:
-                for m in map_resp.json().get("data", []):
-                    for map_str in m.get("map", []):
-                        # format: "node=pve;path=0000:01:00.0;id=10de:1e04;iommugroup=1"
-                        parts = dict(
-                            p.split("=", 1) for p in map_str.split(";") if "=" in p
-                        )
-                        path = parts.get("path", "")
-                        if path:
-                            pci_to_mapping[path] = m["id"]
-        except Exception:
-            pass  # fall back to raw PCI format if mapping fetch fails
-
         def _resolve_hostpci(g: str) -> str:
+            """
+            Mapping name (no colon)  → mapping=<name>,pcie=1
+            Raw PCI address (colon)  → <addr>,pcie=1
+            Both require machine=q35 (set below).
+            """
             if ":" not in g:
-                # Already a mapping name (e.g. "gpu-41")
                 return f"mapping={g},pcie=1"
-            # Look up hardware mapping fetched from Proxmox
-            mapping_name = pci_to_mapping.get(g)
-            if mapping_name:
-                return f"mapping={mapping_name},pcie=1"
-            # Derive mapping name from PCI address: "0000:41:00.0" → "gpu-41"
-            m = re.match(r'^[0-9a-fA-F]{4}:([0-9a-fA-F]+):', g)
-            if m:
-                return f"mapping=gpu-{m.group(1)},pcie=1"
-            # Raw PCI address fallback (requires root/Sys.Modify on Proxmox)
-            return f"{g},pcie=1,x-vga=0"
+            return f"{g},pcie=1"
 
         hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
 
         # ── Attach GPU + set CPU/RAM + cloud-init in one PUT ──────────────
+        # machine=q35 is required for pcie=1 PCI passthrough
         config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config"
         resp = requests.put(
             config_url, headers=headers,
             data={
                 **hostpci_data,
+                "machine":      "q35",
                 "ipconfig0":    f"ip={ip_with_cidr},gw={gateway}",
                 "nameserver":   dns,
                 "searchdomain": vm_name,
