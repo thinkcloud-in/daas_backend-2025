@@ -151,13 +151,44 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         upid = resp.json()["data"]
         _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=4800)
 
+        # ── Fetch Proxmox PCI hardware mappings (pci_id → mapping name) ──
+        pci_to_mapping: dict = {}
+        try:
+            map_resp = requests.get(
+                f"{PROXMOX_HOST}/api2/json/cluster/mapping/pci",
+                headers=headers, verify=False, timeout=10
+            )
+            if map_resp.ok:
+                for m in map_resp.json().get("data", []):
+                    for map_str in m.get("map", []):
+                        # format: "node=pve;path=0000:01:00.0;id=10de:1e04;iommugroup=1"
+                        parts = dict(
+                            p.split("=", 1) for p in map_str.split(";") if "=" in p
+                        )
+                        path = parts.get("path", "")
+                        if path:
+                            pci_to_mapping[path] = m["id"]
+        except Exception:
+            pass  # fall back to raw PCI format if mapping fetch fails
+
+        def _resolve_hostpci(g: str) -> str:
+            if ":" not in g:
+                # Already a mapping name
+                return f"mapping={g},pcie=1"
+            mapping_name = pci_to_mapping.get(g)
+            if mapping_name:
+                return f"mapping={mapping_name},pcie=1"
+            # Raw PCI address — requires root/Sys.Modify on Proxmox
+            return f"{g},pcie=1,x-vga=0"
+
+        hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
+
         # ── Attach GPU + set CPU/RAM + cloud-init in one PUT ──────────────
         config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config"
         resp = requests.put(
             config_url, headers=headers,
             data={
-                **{f"hostpci{i}": f"mapping={g}" if ":" not in g else f"{g},pcie=1,x-vga=0"
-                   for i, g in enumerate(gpus)},
+                **hostpci_data,
                 "ipconfig0":    f"ip={ip_with_cidr},gw={gateway}",
                 "nameserver":   dns,
                 "searchdomain": vm_name,
