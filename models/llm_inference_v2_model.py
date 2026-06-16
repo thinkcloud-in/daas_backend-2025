@@ -2,7 +2,7 @@ from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Literal
 import datetime
 
 Base = declarative_base()
@@ -54,6 +54,10 @@ class LLMInferenceJobCreate(BaseModel):
 class LLMInferenceJobUpdate(BaseModel):
     model: Optional[str] = None
     status: Optional[str] = None
+
+
+class PoolActionRequest(BaseModel):
+    action: Literal["start", "stop", "shutdown", "restart"]
 
 
 class LLMInferenceJobOut(BaseModel):

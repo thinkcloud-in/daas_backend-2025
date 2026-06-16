@@ -3,9 +3,9 @@ import os
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from models.llm_inference_v2_model import LLMInferenceJob, LLMInferenceJobCreate, LLMInferenceJobUpdate
+from models.llm_inference_v2_model import LLMInferenceJob, LLMInferenceJobCreate, LLMInferenceJobUpdate, PoolActionRequest
 from models.IPs_model import IPEntry, IPSModel
-from models.models import Cluster
+from models.models import Cluster, Machine
 from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference_v2 import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow
@@ -123,31 +123,55 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
         return response_format.error_response(500, "Failed to create LLM inference job", str(e))
 
 
-def list_llm_inference_jobs(db: Session):
+def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
     try:
-        records = db.query(LLMInferenceJob).order_by(LLMInferenceJob.created_at.desc()).all()
+        page      = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        offset    = (page - 1) * page_size
+
+        total   = db.query(LLMInferenceJob).count()
+        records = (
+            db.query(LLMInferenceJob)
+            .order_by(LLMInferenceJob.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+            .all()
+        )
+
         data = [
             {
-                "id": r.id,
-                "name": r.name,
-                "cluster_id": r.cluster_id,
-                "ip_pool_ids": r.ip_pool_ids,
-                "template": r.template,
-                "nodes": r.nodes,
+                "id":           r.id,
+                "name":         r.name,
+                "cluster_id":   r.cluster_id,
+                "ip_pool_ids":  r.ip_pool_ids,
+                "template":     r.template,
+                "nodes":        r.nodes,
                 "machine_name": r.machine_name,
                 "pool_os_type": r.pool_os_type,
-                "storage": r.storage,
-                "vmids": r.vmids,
+                "storage":      r.storage,
+                "vmids":        r.vmids,
                 "ip_addresses": r.ip_addresses,
-                "head_ip": r.head_ip,
+                "head_ip":      r.head_ip,
                 "endpoint_url": r.endpoint_url,
-                "status": r.status,
-                "workflow_id": r.workflow_id,
-                "created_at": str(r.created_at),
+                "status":       r.status,
+                "workflow_id":  r.workflow_id,
+                "created_at":   str(r.created_at),
             }
             for r in records
         ]
-        return response_format.success_response(200, "LLM inference jobs fetched", data)
+
+        total_pages = (total + page_size - 1) // page_size
+        return response_format.success_response(200, "LLM inference jobs fetched", {
+            "items":       data,
+            "pagination": {
+                "page":        page,
+                "page_size":   page_size,
+                "total":       total,
+                "total_pages": total_pages,
+                "has_next":    page < total_pages,
+                "has_prev":    page > 1,
+            },
+        })
     except Exception as e:
         return response_format.error_response(500, "Failed to list LLM inference jobs", str(e))
 
@@ -157,6 +181,35 @@ def get_llm_inference_job(job_id: int, db: Session):
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="LLM inference job not found")
+
+        # Build machines list — enrich from Machine table where available
+        vmids        = record.vmids        or []
+        ip_addresses = record.ip_addresses or []
+        nodes        = record.nodes        or []
+
+        machine_map = {}
+        if vmids:
+            rows = db.query(Machine).filter(Machine.vm_id.in_([str(v) for v in vmids])).all()
+            machine_map = {m.vm_id: m for m in rows}
+
+        machines = []
+        for i, vmid in enumerate(vmids):
+            m          = machine_map.get(str(vmid))
+            ip_address = ip_addresses[i] if i < len(ip_addresses) else None
+            machines.append({
+                "vm_id":      vmid,
+                "name":       m.name     if m else None,
+                "ip_address": ip_address,
+                "hostname":   m.hostname if m else ip_address,
+                "protocol":   m.protocol if m else "ssh",
+                "port":       m.port     if m else 22,
+                "username":   m.username if m else None,
+                "status":     m.status   if m else None,
+                "node":       nodes[i]["node"] if i < len(nodes) else None,
+                "gpu":        nodes[i]["gpu"]  if i < len(nodes) else [],
+                "role":       "head" if ip_address == record.head_ip else "worker",
+            })
+
         return response_format.success_response(200, "Fetched", {
             "id": record.id,
             "name": record.name,
@@ -175,6 +228,7 @@ def get_llm_inference_job(job_id: int, db: Session):
             "workflow_id": record.workflow_id,
             "created_at": str(record.created_at),
             "updated_at": str(record.updated_at),
+            "machines": machines,
         })
     except HTTPException:
         raise
@@ -281,3 +335,68 @@ def delete_llm_inference_job(job_id: int, db: Session):
         raise
     except Exception as e:
         return response_format.error_response(500, "Failed to delete LLM inference job", str(e))
+
+
+_POOL_ACTION_PENDING_STATUS = {
+    "start":    "starting",
+    "restart":  "restarting",
+    "stop":     "stopping",
+    "shutdown": "stopping",
+}
+
+
+async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
+    try:
+        record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
+        if not record:
+            raise HTTPException(status_code=404, detail="LLM inference job not found")
+
+        vmids = record.vmids or []
+        nodes = record.nodes or []
+        if not vmids:
+            raise HTTPException(status_code=400, detail="No VMs found in this pool")
+
+        # Mark pool as in-progress immediately
+        record.status = _POOL_ACTION_PENDING_STATUS[data.action]
+        db.commit()
+
+        n_nodes         = len(nodes)
+        n_gpus_per_node = len(nodes[0]["gpu"]) if nodes and nodes[0].get("gpu") else 1
+
+        workflow_payload = {
+            "job_id":                 job_id,
+            "action":                 data.action,
+            "vmids":                  vmids,
+            "nodes":                  nodes,
+            "cluster_id":             record.cluster_id,
+            "head_ip":                record.head_ip,
+            "ip_addresses":           record.ip_addresses or [],
+            "ssh_user":               _SSH_USER,
+            "ssh_pass":               _SSH_PASS,
+            "tensor_parallel_size":   n_nodes,
+            "pipeline_parallel_size": n_gpus_per_node,
+        }
+
+        client = await TemporalClientManager.get_temporal_client()
+        handle = await client.start_workflow(
+            "PoolVMActionWorkflow",
+            workflow_payload,
+            id=f"pool-action-{job_id}-{data.action}-{__import__('uuid').uuid4().hex[:8]}",
+            task_queue=TASK_QUEUE,
+        )
+
+        # Store latest workflow_id for tracking
+        record.workflow_id = handle.id
+        db.commit()
+
+        return response_format.success_response(200, f"Pool {data.action} started", {
+            "job_id":      job_id,
+            "action":      data.action,
+            "workflow_id": handle.id,
+            "status":      record.status,
+        })
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        return response_format.error_response(500, f"Failed to start pool {data.action}", str(e))

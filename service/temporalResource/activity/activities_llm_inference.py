@@ -1,4 +1,5 @@
 import os
+import base64
 import time
 import logging
 import requests
@@ -290,11 +291,11 @@ async def install_devraq_agent_activity(payload: dict) -> dict:
 @activity.defn
 async def install_ray_vllm_activity(payload: dict) -> dict:
     """
-    Full GPU driver + CUDA + Ray + vLLM setup on Rocky Linux 9.
-    Matches the exact install sequence:
-      Phase 1 (before reboot): system update, kernel headers, NVIDIA driver
-      Reboot: required for NVIDIA kernel module to load
-      Phase 2 (after reboot): CUDA toolkit, Python 3.11 venv, ray, vllm
+    Idempotent setup: NVIDIA driver + CUDA + Ray + vLLM on Rocky Linux 9.
+    Each phase is skipped if already installed — safe to re-run on existing VMs.
+      Phase 1 (skipped if nvidia-smi works): NVIDIA driver install + reboot
+      Phase 2 (skipped if venv/ray/vllm exist): CUDA, Python venv, ray, vllm
+      Phase 3 (always runs): firewall rules + dirs (idempotent)
     """
     ip = payload["ip_address"]
     ssh_user = payload.get("ssh_user", _SSH_USER)
@@ -303,78 +304,84 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
     subnet = payload.get("subnet", "192.168.100.0/24")
     net_iface = payload.get("net_iface", "ens18")
 
-    # ── Phase 1: System setup + GPU driver (requires reboot) ─────────────────
-    phase1 = [
-        f"sudo hostnamectl set-hostname {hostname}",
-        "sudo dnf update -y",
-        "sudo dnf config-manager --set-enabled crb",
-        "sudo dnf install -y epel-release",
-        "sudo dnf install -y kernel-devel-$(uname -r) kernel-headers-$(uname -r) make gcc dkms",
-        "sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo",
-        "sudo dnf clean expire-cache",
-        "sudo dnf module install -y nvidia-driver:latest-dkms",
-    ]
-    run_commands(ip, ssh_user, ssh_pass, phase1, timeout=900)
+    # Always set hostname
+    run_commands(ip, ssh_user, ssh_pass, [f"sudo hostnamectl set-hostname {hostname}"], timeout=30)
 
-    # Reboot so NVIDIA kernel module loads, then wait for VM to come back
-    reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=60)
+    # ── Check: NVIDIA driver already installed? ───────────────────────────────
+    try:
+        run_commands(ip, ssh_user, ssh_pass, ["nvidia-smi"], timeout=30)
+        nvidia_installed = True
+        logger.info(f"[{ip}] NVIDIA driver already installed — skipping Phase 1 + reboot")
+    except RuntimeError:
+        nvidia_installed = False
 
-    # ── Phase 2: CUDA toolkit + Python venv + Ray + vLLM ─────────────────────
-    phase2 = [
-        # Verify GPU is visible after reboot
-        "nvidia-smi",
+    # ── Phase 1: NVIDIA driver (only if not already installed) ───────────────
+    if not nvidia_installed:
+        phase1 = [
+            "sudo dnf update -y",
+            "sudo dnf config-manager --set-enabled crb",
+            "sudo dnf install -y epel-release",
+            "sudo dnf install -y kernel-devel-$(uname -r) kernel-headers-$(uname -r) make gcc dkms",
+            "sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo",
+            "sudo dnf clean expire-cache",
+            "sudo dnf module install -y nvidia-driver:latest-dkms",
+        ]
+        run_commands(ip, ssh_user, ssh_pass, phase1, timeout=900)
+        reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=60)
+        logger.info(f"[{ip}] NVIDIA driver installed and VM rebooted")
 
-        # CUDA toolkit
-        "sudo dnf install -y cuda-toolkit",
-        "echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc",
-        "echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc",
-        "source ~/.bashrc && nvcc --version",
+    # ── Check: Ray + vLLM venv already installed? ────────────────────────────
+    try:
+        run_commands(ip, ssh_user, ssh_pass, [
+            "test -f ~/vllm-ray-env/bin/ray && test -f ~/vllm-ray-env/bin/vllm"
+        ], timeout=15)
+        venv_installed = True
+        logger.info(f"[{ip}] Ray + vLLM venv already exists — skipping Phase 2 installs")
+    except RuntimeError:
+        venv_installed = False
 
-        # Python 3.11
-        "sudo dnf install -y python3.11 python3.11-devel",
+    # ── Phase 2: CUDA + Python venv + Ray + vLLM (only if not installed) ─────
+    if not venv_installed:
+        phase2 = [
+            "nvidia-smi",
+            "sudo dnf install -y cuda-toolkit",
+            "sudo dnf install -y python3.11 python3.11-devel",
+            "python3.11 -m venv ~/vllm-ray-env",
+            "~/vllm-ray-env/bin/pip install --upgrade pip",
+            '~/vllm-ray-env/bin/pip install "ray[default]"',
+            "~/vllm-ray-env/bin/pip install vllm --upgrade",
+        ]
+        run_commands(ip, ssh_user, ssh_pass, phase2, timeout=1800)
+        logger.info(f"[{ip}] CUDA + Ray + vLLM installed")
 
-        # Virtual environment
-        "python3.11 -m venv ~/vllm-ray-env",
+    # ── Phase 3: Env vars + firewall + dirs (always — all idempotent) ────────
+    phase3 = [
+        # Env vars — only append if not already present
+        "grep -qF 'PATH=/usr/local/cuda/bin' ~/.bashrc || echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc",
+        "grep -qF 'LD_LIBRARY_PATH=/usr/local/cuda/lib64' ~/.bashrc || echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc",
+        "grep -qF 'VLLM_USE_V1' ~/.bashrc || echo 'export VLLM_USE_V1=1' >> ~/.bashrc",
+        f"grep -qF 'NCCL_SOCKET_IFNAME' ~/.bashrc || echo 'export NCCL_SOCKET_IFNAME={net_iface}' >> ~/.bashrc",
+        "grep -qF 'vllm-ray-env/bin' ~/.bashrc || echo 'export PATH=\"$HOME/vllm-ray-env/bin:$PATH\"' >> ~/.bashrc",
 
-        # Upgrade pip inside venv
-        "~/vllm-ray-env/bin/pip install --upgrade pip",
-
-        # Ray
-        '~/vllm-ray-env/bin/pip install "ray[default]"',
-
-        # vLLM (latest stable)
-        "~/vllm-ray-env/bin/pip install vllm --upgrade",
-
-        # vLLM V1 architecture flag
-        "export VLLM_USE_V1=1",
-        "echo 'export VLLM_USE_V1=1' >> ~/.bashrc",
-
-        # NCCL network interface for multi-node comms
-        f"echo 'export NCCL_SOCKET_IFNAME={net_iface}' >> ~/.bashrc",
-
-        # venv always on PATH
-        "echo 'export PATH=\"$HOME/vllm-ray-env/bin:$PATH\"' >> ~/.bashrc",
-        "source ~/.bashrc",
-
-        # Firewall: allow intra-cluster subnet + required ports
-        f"sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"{subnet}\" accept'",
-        "sudo firewall-cmd --permanent --add-port=8000/tcp",   # vLLM API
-        "sudo firewall-cmd --permanent --add-port=6379/tcp",   # Ray head
-        "sudo firewall-cmd --permanent --add-port=8265/tcp",   # Ray dashboard
-        "sudo firewall-cmd --permanent --add-port=10001/tcp",  # Ray object store
+        # Firewall (--permanent rules are idempotent — duplicate adds are silently skipped)
+        f"sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"{subnet}\" accept' 2>/dev/null || true",
+        "sudo firewall-cmd --permanent --add-port=8000/tcp",
+        "sudo firewall-cmd --permanent --add-port=6379/tcp",
+        "sudo firewall-cmd --permanent --add-port=8265/tcp",
+        "sudo firewall-cmd --permanent --add-port=10001/tcp",
         "sudo firewall-cmd --permanent --add-port=10002-19999/tcp",
         "sudo firewall-cmd --reload",
 
-        # Model cache directory
+        # Model cache dir
         "sudo mkdir -p /vllm_data/hf_cache",
         "sudo chmod 777 /vllm_data/hf_cache",
 
         # Confirm versions
-        "source ~/.bashrc && ~/vllm-ray-env/bin/ray --version",
-        "source ~/.bashrc && ~/vllm-ray-env/bin/vllm --version",
+        "~/vllm-ray-env/bin/ray --version",
+        "~/vllm-ray-env/bin/vllm --version",
     ]
-    run_commands(ip, ssh_user, ssh_pass, phase2, timeout=1800)
-    logger.info(f"CUDA + ray + vllm installed on {ip}")
+    run_commands(ip, ssh_user, ssh_pass, phase3, timeout=120)
+    logger.info(f"[{ip}] Ray + vLLM ready")
     return {"ip_address": ip, "step": "ray_vllm_installed"}
 
 
@@ -392,8 +399,10 @@ async def configure_ray_activity(payload: dict) -> dict:
     ip = payload["ip_address"]
     ssh_user = payload.get("ssh_user", _SSH_USER)
     ssh_pass = payload.get("ssh_pass", _SSH_PASS)
-    role = payload.get("role", "head")          # "head" or "worker"
-    head_ip = payload.get("head_ip", ip)        # for workers: head node IP
+    role = payload.get("role", "head")
+    head_ip = payload.get("head_ip", ip)
+    num_gpus = payload.get("num_gpus", 1)
+    net_iface = payload.get("net_iface", "ens18")
 
     venv_bin = "/root/vllm-ray-env/bin"
     cuda_path = "/usr/local/cuda/bin"
@@ -402,53 +411,62 @@ async def configure_ray_activity(payload: dict) -> dict:
         service_name = "ray-head"
         exec_start = (
             f"{venv_bin}/ray start --head --port=6379 "
-            "--dashboard-host=0.0.0.0 --dashboard-port=8265 "
-            "--num-cpus=$(nproc) "
-            "--num-gpus=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
+            f"--num-gpus={num_gpus} "
+            "--dashboard-host=0.0.0.0 --include-dashboard=true "
+            "--block"
         )
     else:
         service_name = "ray-worker"
         exec_start = (
             f"{venv_bin}/ray start --address={head_ip}:6379 "
-            "--num-cpus=$(nproc) "
-            "--num-gpus=$(nvidia-smi --query-gpu=name --format=csv,noheader | wc -l)"
+            f"--num-gpus={num_gpus} "
+            "--block"
         )
 
-    # Write systemd unit file via heredoc over SSH
-    service_content = (
-        "[Unit]\\n"
-        f"Description=Ray {role.capitalize()} Node\\n"
-        "After=network.target\\n"
-        "\\n"
-        "[Service]\\n"
-        "Type=forking\\n"
-        "User=root\\n"
-        f"Environment=PATH={venv_bin}:{cuda_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin\\n"
-        "Environment=LD_LIBRARY_PATH=/usr/local/cuda/lib64\\n"
-        "Environment=VLLM_USE_V1=1\\n"
-        f"ExecStart=/bin/bash -c '{exec_start}'\\n"
-        f"ExecStop={venv_bin}/ray stop --force\\n"
-        "Restart=on-failure\\n"
-        "RemainAfterExit=yes\\n"
-        "\\n"
-        "[Install]\\n"
-        "WantedBy=multi-user.target\\n"
-    )
+    # Build service file with real newlines
+    # Type=simple + --block: ray runs in foreground, systemd tracks the process directly
+    service_content = "\n".join([
+        "[Unit]",
+        f"Description=Ray {role.capitalize()} Node Daemon",
+        "After=network.target",
+        "Wants=network-online.target",
+        "",
+        "[Service]",
+        "Type=simple",
+        "User=root",
+        f'Environment="PATH={venv_bin}:{cuda_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"',
+        f'Environment="NCCL_SOCKET_IFNAME={net_iface}"',
+        'Environment="VLLM_USE_V1=1"',
+        'Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64"',
+        f"ExecStart={exec_start}",
+        f"ExecStop={venv_bin}/ray stop --force",
+        "Restart=always",
+        "RestartSec=10",
+        "",
+        "[Install]",
+        "WantedBy=multi-user.target",
+        "",
+    ])
+    encoded = base64.b64encode(service_content.encode()).decode()
 
     cmds = [
-        # Stop any running ray instance first
+        # Fail fast if ray binary missing
+        f"test -f {venv_bin}/ray || {{ echo 'ERROR: Ray binary not found at {venv_bin}/ray. Run install step first.'; exit 1; }}",
+
+        # Stop existing ray + service cleanly
+        f"sudo systemctl stop {service_name}.service 2>/dev/null || true",
         f"{venv_bin}/ray stop --force 2>/dev/null || true",
         "sleep 3",
 
-        # Write the systemd service file
-        f"printf '{service_content}' | sudo tee /etc/systemd/system/{service_name}.service > /dev/null",
+        # Write service file via base64 — no quoting issues
+        f"echo '{encoded}' | base64 -d | sudo tee /etc/systemd/system/{service_name}.service > /dev/null",
         "sudo systemctl daemon-reload",
 
-        # Start and enable
-        f"sudo systemctl start {service_name}.service",
+        # Enable + start
         f"sudo systemctl enable {service_name}.service",
+        f"sudo systemctl start {service_name}.service",
 
-        # Verify ray is up
+        # Give ray a moment then verify
         "sleep 5",
         f"{venv_bin}/ray status",
     ]

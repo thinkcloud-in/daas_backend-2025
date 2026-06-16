@@ -71,11 +71,41 @@ class CreateMultiNodeLLMWorkflow:
         ip_addrs = [r["ip_address"] for r in vm_results]
         head_ip  = ip_addrs[0]
 
+        # Compute parallelism sizes from topology
+        n_nodes          = len(nodes)                        # one stage per node
+        n_gpus_per_node  = len(nodes[0]["gpu"]) if nodes else 1  # GPUs within each node
+        net_iface        = payload.get("net_iface", "ens18")
+
         # ── Phase 2: Update DB with VM info ───────────────────────────────────
         await workflow.execute_activity(
             activities_llm_inference_v2.update_llm_inference_job_activity,
             args=[{"job_id": job_id, "vmids": vmids, "ip_addresses": ip_addrs,
                    "head_ip": head_ip, "status": "vms_ready"}],
+            retry_policy=_RETRY,
+            start_to_close_timeout=timedelta(minutes=2),
+        )
+
+        # ── Phase 2.5: Install NVIDIA + CUDA + Ray + vLLM on all VMs (parallel) ─
+        install_tasks = [
+            workflow.execute_activity(
+                activities_llm_inference.install_ray_vllm_activity,
+                args=[{
+                    "ip_address": ip,
+                    "name":       f"{payload['name']}-{i}",
+                    "subnet":     payload.get("subnet", "192.168.100.0/24"),
+                    "net_iface":  payload.get("net_iface", "ens18"),
+                    **ssh_creds,
+                }],
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                start_to_close_timeout=timedelta(minutes=90),
+            )
+            for i, ip in enumerate(ip_addrs)
+        ]
+        await asyncio.gather(*install_tasks)
+
+        await workflow.execute_activity(
+            activities_llm_inference_v2.update_llm_inference_job_activity,
+            args=[{"job_id": job_id, "status": "ray_vllm_installed"}],
             retry_policy=_RETRY,
             start_to_close_timeout=timedelta(minutes=2),
         )
@@ -92,7 +122,13 @@ class CreateMultiNodeLLMWorkflow:
         # ── Phase 4: Ray head on first VM ─────────────────────────────────────
         await workflow.execute_activity(
             activities_llm_inference.configure_ray_activity,
-            args=[{"ip_address": head_ip, "role": "head", **ssh_creds}],
+            args=[{
+                "ip_address": head_ip,
+                "role":       "head",
+                "num_gpus":   n_gpus_per_node,
+                "net_iface":  net_iface,
+                **ssh_creds,
+            }],
             retry_policy=_RETRY,
             start_to_close_timeout=timedelta(minutes=10),
         )
@@ -108,7 +144,14 @@ class CreateMultiNodeLLMWorkflow:
         worker_tasks = [
             workflow.execute_activity(
                 activities_llm_inference.configure_ray_activity,
-                args=[{"ip_address": ip, "role": "worker", "head_ip": head_ip, **ssh_creds}],
+                args=[{
+                    "ip_address": ip,
+                    "role":       "worker",
+                    "head_ip":    head_ip,
+                    "num_gpus":   n_gpus_per_node,
+                    "net_iface":  net_iface,
+                    **ssh_creds,
+                }],
                 retry_policy=_RETRY,
                 start_to_close_timeout=timedelta(minutes=10),
             )
@@ -118,12 +161,14 @@ class CreateMultiNodeLLMWorkflow:
             await asyncio.gather(*worker_tasks)
 
         # ── Phase 6: Launch vLLM on head node ────────────────────────────────
+        # tensor_parallel_size = number of nodes (pipeline stages)
+        # pipeline_parallel_size = GPUs per node (within-node parallelism)
         launch_result = await workflow.execute_activity(
             activities_llm_inference_v2.launch_vllm_from_template_activity,
             args=[{
                 "ip_address":             head_ip,
-                "tensor_parallel_size":   payload.get("tensor_parallel_size", 1),
-                "pipeline_parallel_size": payload.get("pipeline_parallel_size", 1),
+                "tensor_parallel_size":   n_nodes,
+                "pipeline_parallel_size": n_gpus_per_node,
                 **ssh_creds,
             }],
             retry_policy=RetryPolicy(maximum_attempts=1),
@@ -141,3 +186,97 @@ class CreateMultiNodeLLMWorkflow:
 
         logger.info(f"LLMInferenceJob {job_id} fully provisioned. Endpoint: {endpoint_url}")
         return {"job_id": job_id, "vmids": vmids, "endpoint_url": endpoint_url, "status": "running"}
+
+
+# ── DB status per action ──────────────────────────────────────────────────────
+_POOL_ACTION_STATUS = {
+    "start":    "vms_ready",
+    "restart":  "vms_ready",
+    "stop":     "stopped",
+    "shutdown": "stopped",
+}
+
+
+@workflow.defn(sandboxed=False)
+class PoolVMActionWorkflow:
+    """
+    Performs start / stop / shutdown / restart on every VM in an LLM pool
+    in parallel, waits for each to reach the target state, then:
+      - For start/restart: waits for Ray services, relaunches vLLM on head node.
+      - For stop/shutdown: updates DB status only.
+    """
+
+    @workflow.run
+    async def run(self, payload: dict) -> dict:
+        job_id     = payload["job_id"]
+        action     = payload["action"]
+        vmids      = payload["vmids"]
+        nodes      = payload["nodes"]
+        cluster_id = payload["cluster_id"]
+        head_ip    = payload["head_ip"]
+        ssh_creds  = {"ssh_user": payload.get("ssh_user"), "ssh_pass": payload.get("ssh_pass")}
+        tp_size    = payload.get("tensor_parallel_size", 1)
+        pp_size    = payload.get("pipeline_parallel_size", 1)
+        ip_addrs   = payload.get("ip_addresses", [])
+
+        # ── Phase 1: VM power action on all nodes in parallel ─────────────────
+        action_tasks = [
+            workflow.execute_activity(
+                activities_llm_inference_v2.vm_power_action_activity,
+                args=[{
+                    "cluster_id": cluster_id,
+                    "vmid":       vmid,
+                    "node":       nodes[i]["node"] if i < len(nodes) else nodes[0]["node"],
+                    "action":     action,
+                }],
+                retry_policy=RetryPolicy(maximum_attempts=2),
+                start_to_close_timeout=timedelta(minutes=10),
+            )
+            for i, vmid in enumerate(vmids)
+        ]
+        results = list(await asyncio.gather(*action_tasks))
+
+        # ── Phase 2: Restore services (only for start / restart) ──────────────
+        if action in ("start", "restart"):
+            # Workers first (parallel) — Ray workers connect to head
+            worker_restore = [
+                workflow.execute_activity(
+                    activities_llm_inference_v2.restore_llm_services_activity,
+                    args=[{
+                        "ip_address": ip_addrs[i],
+                        "role":       "worker",
+                        **ssh_creds,
+                    }],
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                    start_to_close_timeout=timedelta(minutes=10),
+                )
+                for i in range(1, len(ip_addrs))   # nodes[1..] are workers
+            ]
+            if worker_restore:
+                await asyncio.gather(*worker_restore)
+
+            # Head node last — waits for full Ray cluster, then relaunches vLLM
+            await workflow.execute_activity(
+                activities_llm_inference_v2.restore_llm_services_activity,
+                args=[{
+                    "ip_address":           head_ip,
+                    "role":                 "head",
+                    "tensor_parallel_size": tp_size,
+                    "pipeline_parallel_size": pp_size,
+                    **ssh_creds,
+                }],
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                start_to_close_timeout=timedelta(minutes=30),
+            )
+
+        # ── Phase 3: Update DB ────────────────────────────────────────────────
+        final_status = _POOL_ACTION_STATUS[action]
+        await workflow.execute_activity(
+            activities_llm_inference_v2.update_llm_inference_job_activity,
+            args=[{"job_id": job_id, "status": final_status}],
+            retry_policy=_RETRY,
+            start_to_close_timeout=timedelta(minutes=2),
+        )
+
+        logger.info(f"PoolVMActionWorkflow: job {job_id} action='{action}' → '{final_status}'")
+        return {"job_id": job_id, "action": action, "results": results, "status": final_status}

@@ -1,4 +1,5 @@
 import os
+import time
 import ipaddress
 import logging
 import requests
@@ -229,6 +230,141 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
 
     except Exception as e:
         raise RuntimeError(str(e))
+
+
+@activity.defn
+async def restore_llm_services_activity(payload: dict) -> dict:
+    """
+    Called after VM start/restart.
+    1. Waits for ray-head/ray-worker systemd service to become active (Restart=always handles it).
+    2. Waits for Ray cluster to be healthy (ray status).
+    3. Kills any stale vLLM process, then relaunches vLLM from /etc/environment config.
+    """
+    ip       = payload["ip_address"]
+    ssh_user = payload.get("ssh_user", _SSH_USER)
+    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    role     = payload.get("role", "head")   # "head" | "worker"
+    tp_size  = payload.get("tensor_parallel_size", 1)
+    pp_size  = payload.get("pipeline_parallel_size", 1)
+    venv_bin = "/root/vllm-ray-env/bin"
+    service  = "ray-head" if role == "head" else "ray-worker"
+
+    # ── Step 1: Wait for systemd Ray service to be active (max 3 min) ─────────
+    wait_ray_service = (
+        f"for i in $(seq 1 36); do "
+        f"  systemctl is-active {service}.service && echo '{service} active' && break; "
+        f"  echo \"Waiting for {service}... $i/36\"; sleep 5; "
+        f"done; "
+        f"systemctl is-active {service}.service"
+    )
+    run_commands(ip, ssh_user, ssh_pass, [wait_ray_service], timeout=200)
+    logger.info(f"[{ip}] {service}.service is active")
+
+    # ── Step 2: Wait for Ray cluster to be healthy (head node only) ───────────
+    if role == "head":
+        wait_ray_cluster = (
+            f"for i in $(seq 1 30); do "
+            f"  {venv_bin}/ray status 2>/dev/null && echo 'ray cluster ready' && break; "
+            f"  echo \"Waiting for ray cluster... $i/30\"; sleep 5; "
+            f"done; "
+            f"{venv_bin}/ray status"
+        )
+        run_commands(ip, ssh_user, ssh_pass, [wait_ray_cluster], timeout=180)
+        logger.info(f"[{ip}] Ray cluster is healthy")
+
+        # ── Step 3: Kill stale vLLM + relaunch ───────────────────────────────
+        vllm_cmd = (
+            "source /etc/environment; "
+            "export VLLM_USE_V1=1; "
+            # Kill any existing vLLM process first
+            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
+            "sleep 3; "
+            f"nohup {venv_bin}/python3 -m vllm.entrypoints.openai.api_server "
+            f"  --model $LLM_MODEL_NAME "
+            "  --served-model-name $LLM_MODEL_NAME "
+            "  --download-dir $LLM_MODEL_PATH "
+            "  --distributed-executor-backend ray "
+            f"  --tensor-parallel-size {tp_size} "
+            f"  --pipeline-parallel-size {pp_size} "
+            "  --max-model-len 32768 "
+            "  --gpu-memory-utilization 0.90 "
+            "  --enable-chunked-prefill "
+            "  --trust-remote-code "
+            "  --host 0.0.0.0 --port 8000 "
+            "  --enable-auto-tool-choice "
+            "  --tool-call-parser openai "
+            "  > /root/vllm_server.log 2>&1 &"
+        )
+        health_poll = (
+            "for i in $(seq 1 90); do "
+            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && break; "
+            "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
+            "done; "
+            "curl -sf http://localhost:8000/health"
+        )
+        run_commands(ip, ssh_user, ssh_pass, [vllm_cmd, health_poll], timeout=960)
+        logger.info(f"[{ip}] vLLM relaunched and healthy")
+
+    return {"ip_address": ip, "role": role, "step": "services_restored"}
+
+
+_ACTION_PATH = {
+    "start":    "start",
+    "stop":     "stop",
+    "shutdown": "shutdown",
+    "restart":  "reboot",
+}
+_TARGET_STATE = {
+    "start":    "running",
+    "stop":     "stopped",
+    "shutdown": "stopped",
+    "restart":  "running",
+}
+
+
+@activity.defn
+async def vm_power_action_activity(payload: dict) -> dict:
+    """
+    Performs start / stop / shutdown / restart on a single VM via Proxmox API,
+    then polls until the VM reaches the expected state.
+    """
+    cluster_id = payload["cluster_id"]
+    vmid       = payload["vmid"]
+    node       = payload["node"]
+    action     = payload["action"]
+
+    db: Session = SessionLocal()
+    try:
+        cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+
+        api_token    = get_api_token(db, cluster.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster)
+
+        # Trigger the action
+        action_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/{_ACTION_PATH[action]}"
+        resp = requests.post(action_url, headers=headers, verify=False, timeout=30)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"VM {vmid} {action} failed: {resp.text}")
+
+        # Poll until target state is reached (max 5 min)
+        target   = _TARGET_STATE[action]
+        deadline = time.time() + 300
+        while time.time() < deadline:
+            st = requests.get(
+                f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current",
+                headers=headers, verify=False, timeout=10
+            )
+            if st.ok and st.json().get("data", {}).get("status") == target:
+                logger.info(f"VM {vmid} reached '{target}' after {action}")
+                return {"vmid": vmid, "node": node, "action": action, "vm_status": target}
+            time.sleep(5)
+
+        raise RuntimeError(f"VM {vmid} did not reach '{target}' within 5 minutes after {action}")
+    finally:
+        db.close()
 
 
 @activity.defn
