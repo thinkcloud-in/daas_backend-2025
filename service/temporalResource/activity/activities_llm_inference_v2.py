@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import ipaddress
 import logging
@@ -92,6 +93,12 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         all_names      = set(existing_names) | set(db_names)
         name_template  = f"{pool_name}-{{n:fixed=3}}"
         vm_name        = proxmoxService.generate_machine_name(name_template, list(all_names), 1)[0]
+        # Proxmox requires DNS-valid hostnames: lowercase, alphanumeric + hyphens only
+        vm_name = re.sub(r'[^a-zA-Z0-9-]', '-', vm_name)
+        vm_name = re.sub(r'-+', '-', vm_name).strip('-').lower()
+        if vm_name and not vm_name[0].isalpha():
+            vm_name = 'vm-' + vm_name
+        vm_name = vm_name[:63]
 
         # ── Resolve IP details from pool ──────────────────────────────────
         ip_entry = db.query(IPEntry).filter(IPEntry.ip == reserved_ip).first()
