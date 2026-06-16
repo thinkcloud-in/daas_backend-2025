@@ -123,6 +123,21 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
         return response_format.error_response(500, "Failed to create LLM inference job", str(e))
 
 
+def _resolve_names(db: Session, cluster_id: int, ip_pool_ids: list) -> tuple:
+    """Return (cluster_name, ip_pool_names) resolved from DB."""
+    cluster     = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    cluster_name = cluster.name if cluster else None
+
+    ip_pool_names: list = []
+    if ip_pool_ids:
+        from models.IPs_model import IPSModel
+        pools = db.query(IPSModel).filter(IPSModel.id.in_(ip_pool_ids)).all()
+        pool_map = {p.id: p.Pool_name for p in pools}
+        ip_pool_names = [pool_map.get(pid) for pid in ip_pool_ids]
+
+    return cluster_name, ip_pool_names
+
+
 def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
     try:
         page      = max(1, page)
@@ -138,24 +153,41 @@ def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
             .all()
         )
 
+        # Bulk-resolve cluster names
+        cluster_ids = list({r.cluster_id for r in records if r.cluster_id})
+        cluster_map: dict = {}
+        if cluster_ids:
+            rows = db.query(Cluster).filter(Cluster.id.in_(cluster_ids)).all()
+            cluster_map = {c.id: c.name for c in rows}
+
+        # Bulk-resolve IP pool names
+        from models.IPs_model import IPSModel
+        all_pool_ids = list({pid for r in records for pid in (r.ip_pool_ids or [])})
+        pool_map: dict = {}
+        if all_pool_ids:
+            pools = db.query(IPSModel).filter(IPSModel.id.in_(all_pool_ids)).all()
+            pool_map = {p.id: p.Pool_name for p in pools}
+
         data = [
             {
-                "id":           r.id,
-                "name":         r.name,
-                "cluster_id":   r.cluster_id,
-                "ip_pool_ids":  r.ip_pool_ids,
-                "template":     r.template,
-                "nodes":        r.nodes,
-                "machine_name": r.machine_name,
-                "pool_os_type": r.pool_os_type,
-                "storage":      r.storage,
-                "vmids":        r.vmids,
-                "ip_addresses": r.ip_addresses,
-                "head_ip":      r.head_ip,
-                "endpoint_url": r.endpoint_url,
-                "status":       r.status,
-                "workflow_id":  r.workflow_id,
-                "created_at":   str(r.created_at),
+                "id":             r.id,
+                "name":           r.name,
+                "cluster_id":     r.cluster_id,
+                "cluster_name":   cluster_map.get(r.cluster_id),
+                "ip_pool_ids":    r.ip_pool_ids,
+                "ip_pool_names":  [pool_map.get(pid) for pid in (r.ip_pool_ids or [])],
+                "template":       r.template,
+                "nodes":          r.nodes,
+                "machine_name":   r.machine_name,
+                "pool_os_type":   r.pool_os_type,
+                "storage":        r.storage,
+                "vmids":          r.vmids,
+                "ip_addresses":   r.ip_addresses,
+                "head_ip":        r.head_ip,
+                "endpoint_url":   r.endpoint_url,
+                "status":         r.status,
+                "workflow_id":    r.workflow_id,
+                "created_at":     str(r.created_at),
             }
             for r in records
         ]
@@ -210,25 +242,29 @@ def get_llm_inference_job(job_id: int, db: Session):
                 "role":       "head" if ip_address == record.head_ip else "worker",
             })
 
+        cluster_name, ip_pool_names = _resolve_names(db, record.cluster_id, record.ip_pool_ids or [])
+
         return response_format.success_response(200, "Fetched", {
-            "id": record.id,
-            "name": record.name,
-            "cluster_id": record.cluster_id,
-            "ip_pool_ids": record.ip_pool_ids,
-            "template": record.template,
-            "nodes": record.nodes,
-            "machine_name": record.machine_name,
-            "pool_os_type": record.pool_os_type,
-            "storage": record.storage,
-            "vmids": record.vmids,
-            "ip_addresses": record.ip_addresses,
-            "head_ip": record.head_ip,
-            "endpoint_url": record.endpoint_url,
-            "status": record.status,
-            "workflow_id": record.workflow_id,
-            "created_at": str(record.created_at),
-            "updated_at": str(record.updated_at),
-            "machines": machines,
+            "id":             record.id,
+            "name":           record.name,
+            "cluster_id":     record.cluster_id,
+            "cluster_name":   cluster_name,
+            "ip_pool_ids":    record.ip_pool_ids,
+            "ip_pool_names":  ip_pool_names,
+            "template":       record.template,
+            "nodes":          record.nodes,
+            "machine_name":   record.machine_name,
+            "pool_os_type":   record.pool_os_type,
+            "storage":        record.storage,
+            "vmids":          record.vmids,
+            "ip_addresses":   record.ip_addresses,
+            "head_ip":        record.head_ip,
+            "endpoint_url":   record.endpoint_url,
+            "status":         record.status,
+            "workflow_id":    record.workflow_id,
+            "created_at":     str(record.created_at),
+            "updated_at":     str(record.updated_at),
+            "machines":       machines,
         })
     except HTTPException:
         raise
