@@ -153,12 +153,22 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
 
         def _resolve_hostpci(g: str) -> str:
             """
-            Mapping name (no colon)  → mapping=<name>,pcie=1
-            Raw PCI address (colon)  → <addr>,pcie=1
-            Both require machine=q35 (set below).
+            Mapping name (no colon)      → mapping=<name>,pcie=1
+            PCI address  (has colon)     → derive mapping gpu-{bus},pcie=1
+              e.g. "0000:41:00.0"        → mapping=gpu-41,pcie=1
+            Proxmox API tokens (even root@pam) with privilege_separation=1
+            cannot set raw PCI devices — hardware mappings are required.
+            Requires machine=q35 (set in config below).
             """
             if ":" not in g:
+                # Already a mapping name e.g. "gpu-41"
                 return f"mapping={g},pcie=1"
+            # PCI address: extract bus segment → derive Proxmox mapping name
+            # Format: domain:bus:slot.func  e.g. 0000:41:00.0 → bus=41
+            bus_match = re.match(r'^[0-9a-fA-F]{4}:([0-9a-fA-F]+):', g)
+            if bus_match:
+                return f"mapping=gpu-{bus_match.group(1)},pcie=1"
+            # Unrecognised format — pass as-is (may fail without privilege_separation=0)
             return f"{g},pcie=1"
 
         hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
