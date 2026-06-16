@@ -173,12 +173,17 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
 
         def _resolve_hostpci(g: str) -> str:
             if ":" not in g:
-                # Already a mapping name
+                # Already a mapping name (e.g. "gpu-41")
                 return f"mapping={g},pcie=1"
+            # Look up hardware mapping fetched from Proxmox
             mapping_name = pci_to_mapping.get(g)
             if mapping_name:
                 return f"mapping={mapping_name},pcie=1"
-            # Raw PCI address — requires root/Sys.Modify on Proxmox
+            # Derive mapping name from PCI address: "0000:41:00.0" → "gpu-41"
+            m = re.match(r'^[0-9a-fA-F]{4}:([0-9a-fA-F]+):', g)
+            if m:
+                return f"mapping=gpu-{m.group(1)},pcie=1"
+            # Raw PCI address fallback (requires root/Sys.Modify on Proxmox)
             return f"{g},pcie=1,x-vga=0"
 
         hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
