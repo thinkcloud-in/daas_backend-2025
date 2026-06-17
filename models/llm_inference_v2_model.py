@@ -21,6 +21,7 @@ class LLMInferenceJob(Base):
     pool_os_type = Column(String, nullable=True)
     storage = Column(String, nullable=True)
     # cpu and ram intentionally omitted — taken from template
+    model = Column(String, nullable=True)                           # HuggingFace model ID
     vmids = Column(ARRAY(Integer), nullable=True)
     ip_addresses = Column(ARRAY(String), nullable=True)
     head_ip = Column(String, nullable=True)
@@ -47,6 +48,10 @@ class LLMInferenceJobCreate(BaseModel):
     nodes: List[NodeConfig]             # [{node, gpu: []}]
     storage: Optional[str] = "local-lvm"
     machine_name: Optional[str] = None
+    model: Optional[str] = None         # HuggingFace model ID e.g. "meta-llama/Llama-3-70B-Instruct"
+    model_path: Optional[str] = "/vllm_data/hf_cache"
+    ssh_user: Optional[str] = None      # VM SSH user  (falls back to LLM_VM_SSH_USER env var)
+    ssh_pass: Optional[str] = None      # VM SSH password (falls back to LLM_VM_SSH_PASS env var)
     # ram: Optional[int] = None         # taken from template
     # cpu: Optional[int] = None         # taken from template
 

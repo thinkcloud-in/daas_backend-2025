@@ -303,9 +303,11 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
     hostname = payload.get("name", "llm-node")
     subnet = payload.get("subnet", "192.168.100.0/24")
     net_iface = payload.get("net_iface", "ens18")
+    model = payload.get("model", "")
+    model_path = payload.get("model_path", "/vllm_data/hf_cache")
 
     # Always set hostname
-    run_commands(ip, ssh_user, ssh_pass, [f"sudo hostnamectl set-hostname {hostname}"], timeout=30)
+    run_commands(ip, ssh_user, ssh_pass, [f"sudo hostnamectl set-hostname '{hostname}'"], timeout=30)
 
     # ── Check: NVIDIA driver already installed? ───────────────────────────────
     try:
@@ -356,12 +358,23 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
 
     # ── Phase 3: Env vars + firewall + dirs (always — all idempotent) ────────
     phase3 = [
-        # Env vars — only append if not already present
+        # ~/.bashrc env vars (for interactive shells)
         "grep -qF 'PATH=/usr/local/cuda/bin' ~/.bashrc || echo 'export PATH=/usr/local/cuda/bin:$PATH' >> ~/.bashrc",
         "grep -qF 'LD_LIBRARY_PATH=/usr/local/cuda/lib64' ~/.bashrc || echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc",
         "grep -qF 'VLLM_USE_V1' ~/.bashrc || echo 'export VLLM_USE_V1=1' >> ~/.bashrc",
         f"grep -qF 'NCCL_SOCKET_IFNAME' ~/.bashrc || echo 'export NCCL_SOCKET_IFNAME={net_iface}' >> ~/.bashrc",
         "grep -qF 'vllm-ray-env/bin' ~/.bashrc || echo 'export PATH=\"$HOME/vllm-ray-env/bin:$PATH\"' >> ~/.bashrc",
+
+        # /etc/environment — used by systemd services + vLLM launch (survives reboot)
+        # Always overwrite model vars so any update takes effect
+        "sudo sed -i '/^LLM_MODEL_NAME=/d' /etc/environment",
+        "sudo sed -i '/^LLM_MODEL_PATH=/d' /etc/environment",
+        "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
+        "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
+        f'echo \'LLM_MODEL_NAME="{model}"\' | sudo tee -a /etc/environment > /dev/null',
+        f'echo \'LLM_MODEL_PATH="{model_path}"\' | sudo tee -a /etc/environment > /dev/null',
+        'echo \'VLLM_USE_V1=1\' | sudo tee -a /etc/environment > /dev/null',
+        f'echo \'NCCL_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
 
         # Firewall (--permanent rules are idempotent — duplicate adds are silently skipped)
         f"sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"{subnet}\" accept' 2>/dev/null || true",
@@ -376,12 +389,13 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
         "sudo mkdir -p /vllm_data/hf_cache",
         "sudo chmod 777 /vllm_data/hf_cache",
 
-        # Confirm versions
+        # Confirm env + versions
+        "cat /etc/environment",
         "~/vllm-ray-env/bin/ray --version",
         "~/vllm-ray-env/bin/vllm --version",
     ]
     run_commands(ip, ssh_user, ssh_pass, phase3, timeout=120)
-    logger.info(f"[{ip}] Ray + vLLM ready")
+    logger.info(f"[{ip}] Ray + vLLM ready — model: {model}")
     return {"ip_address": ip, "step": "ray_vllm_installed"}
 
 

@@ -57,34 +57,37 @@ async def get_proxmox_storages(payload, db):
 
         result = {}
 
-        for ip in ip_list:
-            PROXMOX_BASE_URL = f"https://{ip}:{cluster_data.port}"
-
-            for node in nodes:
-                url = f"{PROXMOX_BASE_URL}/api2/json/nodes/{node}/storage"
-
-                response = requests.get(
-                    url,
-                    headers=headers,
-                    verify=False,
-                    timeout=30
-                )
-
-                if response.status_code != 200:
-                    raise HTTPException(
-                        status_code=response.status_code,
-                        detail=f"Failed to fetch storages for node {node} on {ip}"
+        # For each node, try every cluster IP until one responds.
+        # This handles the case where one Proxmox node IP is unreachable.
+        for node in nodes:
+            node_done = False
+            last_error = None
+            for ip in ip_list:
+                url = f"https://{ip}:{cluster_data.port}/api2/json/nodes/{node}/storage"
+                try:
+                    response = requests.get(
+                        url, headers=headers, verify=False, timeout=10
                     )
+                    if response.status_code == 200:
+                        for storage in response.json().get("data", []):
+                            if not storage or not isinstance(storage, dict):
+                                continue
+                            storage_name = storage.get("storage")
+                            if storage_name and storage_name not in result:
+                                result[storage_name] = storage
+                        node_done = True
+                        break  # success — no need to try remaining IPs for this node
+                    else:
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                except Exception as exc:
+                    last_error = str(exc)
+                    continue  # try next IP
 
-                data = response.json().get("data", [])
-                for storage in data:
-                    if not storage or not isinstance(storage, dict):
-                        continue
-                    storage_name = storage.get("storage")
-                    if not storage_name:
-                        continue
-                    if storage_name not in result:
-                        result[storage_name] = storage
+            if not node_done:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"All cluster IPs unreachable for node '{node}': {last_error}"
+                )
 
         return list(result.values())
     except HTTPException:

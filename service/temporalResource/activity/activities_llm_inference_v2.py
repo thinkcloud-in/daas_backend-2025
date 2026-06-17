@@ -4,6 +4,8 @@ import time
 import ipaddress
 import logging
 import requests
+import paramiko
+from urllib.parse import quote
 
 from temporalio import activity
 from sqlalchemy.orm import Session
@@ -21,7 +23,7 @@ dotenv.load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "vllm")
+_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
 _SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
 
 
@@ -47,6 +49,38 @@ def _wait_for_task(host: str, headers: dict, node: str, upid: str, timeout: int 
                 return
         time.sleep(5)
     raise RuntimeError(f"Proxmox task {upid} timed out after {timeout}s")
+
+
+def _wait_for_ssh_with_key(host: str, username: str, pkey, retries: int = 40, interval: int = 15):
+    """SSH with RSA key auth — works even when PasswordAuthentication is disabled."""
+    for attempt in range(1, retries + 1):
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(host, username=username, pkey=pkey, timeout=10, look_for_keys=False)
+            client.close()
+            return
+        except Exception as exc:
+            logger.debug(f"SSH key attempt {attempt}/{retries} to {host}: {exc}")
+            if attempt < retries:
+                time.sleep(interval)
+    raise RuntimeError(f"Could not SSH (key auth) into {host} after {retries} attempts")
+
+
+def _run_commands_with_key(host: str, username: str, pkey, commands: list):
+    """Run shell commands via key-based SSH session."""
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(host, username=username, pkey=pkey, timeout=30, look_for_keys=False)
+    try:
+        for cmd in commands:
+            _, stdout, stderr = client.exec_command(cmd)
+            exit_code = stdout.channel.recv_exit_status()
+            if exit_code != 0:
+                err = stderr.read().decode(errors="replace").strip()
+                logger.warning(f"Command '{cmd}' exited {exit_code}: {err}")
+    finally:
+        client.close()
 
 
 # ── Activities ────────────────────────────────────────────────────────────────
@@ -85,6 +119,25 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
         if not PROXMOX_HOST:
             raise RuntimeError("No reachable Proxmox host")
+
+        # ── Fetch PCI hardware mappings (PCI addr → mapping name) ─────────
+        # Avoids guessing the mapping name from the bus number.
+        pci_to_mapping: dict = {}
+        try:
+            map_resp = requests.get(
+                f"{PROXMOX_HOST}/api2/json/cluster/mapping/pci",
+                headers=headers, verify=False, timeout=10
+            )
+            if map_resp.ok:
+                for m in map_resp.json().get("data", []):
+                    for map_str in m.get("map", []):
+                        parts = dict(p.split("=", 1) for p in map_str.split(";") if "=" in p)
+                        path = parts.get("path", "")
+                        if path:
+                            pci_to_mapping[path] = m["id"]
+            logger.info(f"[cluster {cluster_id}] PCI mappings: {pci_to_mapping}")
+        except Exception as exc:
+            logger.warning(f"[cluster {cluster_id}] PCI mapping fetch failed (name-derived fallback active): {exc}")
 
         # ── Generate unique VM name ───────────────────────────────────────
         all_vms        = proxmoxService.get_all_cluster_vms(db, cluster_data)
@@ -135,6 +188,33 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
             raise RuntimeError(f"Failed to get next VMID: {resp.text}")
         vmid = int(resp.json()["data"])
 
+        # ── Strip hostpci from template before clone ──────────────────────
+        # If the template has raw PCI devices configured, Proxmox will try
+        # to copy them during clone — API tokens with privilege_separation=1
+        # cannot do that. Remove them first; we add the correct mapped
+        # devices after clone.
+        try:
+            tpl_cfg_resp = requests.get(
+                f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template}/config",
+                headers=headers, verify=False, timeout=10
+            )
+            if tpl_cfg_resp.ok:
+                tpl_cfg = tpl_cfg_resp.json().get("data", {})
+                hostpci_keys = [k for k in tpl_cfg if k.startswith("hostpci")]
+                if hostpci_keys:
+                    del_resp = requests.put(
+                        f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template}/config",
+                        headers=headers,
+                        data={"delete": ",".join(hostpci_keys)},
+                        verify=False, timeout=10
+                    )
+                    logger.info(
+                        f"Template {template} hostpci cleanup "
+                        f"({'ok' if del_resp.ok else del_resp.text}): removed {hostpci_keys}"
+                    )
+        except Exception as exc:
+            logger.warning(f"Template hostpci cleanup failed (proceeding anyway): {exc}")
+
         # ── Clone from template ───────────────────────────────────────────
         clone_data = {"newid": vmid, "name": vm_name, "full": 1}
         if node != template_node:
@@ -152,26 +232,30 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=4800)
 
         def _resolve_hostpci(g: str) -> str:
-            """
-            Mapping name (no colon)      → mapping=<name>,pcie=1
-            PCI address  (has colon)     → derive mapping gpu-{bus},pcie=1
-              e.g. "0000:41:00.0"        → mapping=gpu-41,pcie=1
-            Proxmox API tokens (even root@pam) with privilege_separation=1
-            cannot set raw PCI devices — hardware mappings are required.
-            Requires machine=q35 (set in config below).
-            """
             if ":" not in g:
                 # Already a mapping name e.g. "gpu-41"
                 return f"mapping={g},pcie=1"
-            # PCI address: extract bus segment → derive Proxmox mapping name
-            # Format: domain:bus:slot.func  e.g. 0000:41:00.0 → bus=41
+            # PCI address: look up actual mapping name from fetched cluster mappings
+            mapping_name = pci_to_mapping.get(g)
+            if mapping_name:
+                return f"mapping={mapping_name},pcie=1"
+            # Fallback: derive from bus segment (assumes naming convention gpu-{bus})
             bus_match = re.match(r'^[0-9a-fA-F]{4}:([0-9a-fA-F]+):', g)
             if bus_match:
                 return f"mapping=gpu-{bus_match.group(1)},pcie=1"
-            # Unrecognised format — pass as-is (may fail without privilege_separation=0)
-            return f"{g},pcie=1"
+            return f"mapping={g},pcie=1"
 
         hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
+        logger.info(f"[{vmid}] Resolved hostpci: {hostpci_data}")
+
+        # ── Generate temp RSA key for initial key-based SSH ───────────────
+        # sshkeys cloud-init param adds this key to ciuser's authorized_keys.
+        # Allows SSH even when PasswordAuthentication is disabled in template.
+        temp_rsa_key = paramiko.RSAKey.generate(2048)
+        sshkeys_param = quote(
+            f"{temp_rsa_key.get_name()} {temp_rsa_key.get_base64()} llm-temp\n",
+            safe=""
+        )
 
         # ── Attach GPU + set CPU/RAM + cloud-init in one PUT ──────────────
         # machine=q35 is required for pcie=1 PCI passthrough
@@ -181,6 +265,7 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
             data={
                 **hostpci_data,
                 "machine":      "q35",
+                "sshkeys":      sshkeys_param,
                 "ipconfig0":    f"ip={ip_with_cidr},gw={gateway}",
                 "nameserver":   dns,
                 "searchdomain": vm_name,
@@ -201,6 +286,24 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
             raise RuntimeError(f"VM start failed: {resp.text}")
         upid = resp.json()["data"]
         _wait_for_task(PROXMOX_HOST, headers, node, upid, timeout=120)
+
+        # ── Wait for VM SSH (key auth) then enable PasswordAuthentication ──
+        # Use key-based SSH first — works even if PasswordAuthentication is
+        # disabled in the template (sshkeys cloud-init param adds our key).
+        logger.info(f"[{vmid}] VM started — waiting for SSH (key auth) at {reserved_ip} (up to 10 min)...")
+        _wait_for_ssh_with_key(reserved_ip, ssh_user, temp_rsa_key)
+        logger.info(f"[{vmid}] SSH up — enabling PasswordAuthentication...")
+        _run_commands_with_key(reserved_ip, ssh_user, temp_rsa_key, [
+            "sudo sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config",
+            "sudo find /etc/ssh/sshd_config.d/ -name '*.conf' "
+            "  -exec sed -i 's/^PasswordAuthentication no/PasswordAuthentication yes/' {} \\; 2>/dev/null || true",
+            # Restart sshd in background after a delay — avoids killing this connection
+            # (systemd KillMode=control-group would terminate active sessions on restart)
+            "sudo sh -c 'sleep 2 && systemctl restart sshd' &",
+        ])
+        # Wait for background sshd restart to complete
+        time.sleep(5)
+        logger.info(f"[{vmid}] PasswordAuthentication enabled at {reserved_ip}")
 
         # ── Mark IP as used ───────────────────────────────────────────────
         ip_entry.status = "used"
@@ -225,34 +328,47 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
 
-        vllm_cmd = (
-            "source /etc/environment; "
-            "export VLLM_USE_V1=1; "
-            "nohup /root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server "
-            f"  --model $LLM_MODEL_NAME "
-            "  --served-model-name $LLM_MODEL_NAME "
-            "  --download-dir $LLM_MODEL_PATH "
-            "  --distributed-executor-backend ray "
-            f" --tensor-parallel-size {tp_size} "
-            f" --pipeline-parallel-size {pp_size} "
-            "  --max-model-len 32768 "
-            "  --gpu-memory-utilization 0.90 "
-            "  --enable-chunked-prefill "
-            "  --trust-remote-code "
-            "  --host 0.0.0.0 --port 8000 "
-            "  --enable-auto-tool-choice "
-            "  --tool-call-parser openai "
-            "  > /root/vllm_server.log 2>&1 &"
+        vllm_launch = (
+            # Load env vars written during install_ray_vllm_activity
+            "set -a; source /etc/environment; set +a; "
+            # Guard: fail fast if model name not set
+            "[ -n \"$LLM_MODEL_NAME\" ] || "
+            "  { echo 'ERROR: LLM_MODEL_NAME not set in /etc/environment'; exit 1; }; "
+            # Kill any existing vLLM process
+            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
+            "sleep 2; "
+            # Launch vLLM in background
+            f"nohup /root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server "
+            f"  --model \"$LLM_MODEL_NAME\" "
+            f"  --served-model-name \"$LLM_MODEL_NAME\" "
+            f"  --download-dir \"$LLM_MODEL_PATH\" "
+            f"  --distributed-executor-backend ray "
+            f"  --tensor-parallel-size {tp_size} "
+            f"  --pipeline-parallel-size {pp_size} "
+            f"  --max-model-len 32768 "
+            f"  --gpu-memory-utilization 0.90 "
+            f"  --enable-chunked-prefill "
+            f"  --trust-remote-code "
+            f"  --host 0.0.0.0 --port 8000 "
+            f"  > /root/vllm_server.log 2>&1 & "
+            # Brief wait then verify process actually started
+            "sleep 8; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
+            "  { echo 'ERROR: vLLM process failed to start'; cat /root/vllm_server.log; exit 1; }"
         )
 
         health_poll = (
             "for i in $(seq 1 90); do "
-            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && break; "
+            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
-            "done"
+            "done; "
+            # Explicit failure if health never came up
+            "echo 'ERROR: vLLM did not become healthy in 15 min'; "
+            "tail -50 /root/vllm_server.log; "
+            "exit 1"
         )
 
-        run_commands(ip, ssh_user, ssh_pass, [vllm_cmd, health_poll], timeout=900)
+        run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
 
         endpoint = f"http://{ip}:8000/v1"
         logger.info(f"vLLM started on {ip} — endpoint: {endpoint}")
@@ -303,36 +419,39 @@ async def restore_llm_services_activity(payload: dict) -> dict:
         logger.info(f"[{ip}] Ray cluster is healthy")
 
         # ── Step 3: Kill stale vLLM + relaunch ───────────────────────────────
-        vllm_cmd = (
-            "source /etc/environment; "
-            "export VLLM_USE_V1=1; "
-            # Kill any existing vLLM process first
+        vllm_launch = (
+            "set -a; source /etc/environment; set +a; "
+            "[ -n \"$LLM_MODEL_NAME\" ] || "
+            "  { echo 'ERROR: LLM_MODEL_NAME not set in /etc/environment'; exit 1; }; "
             "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
             "sleep 3; "
             f"nohup {venv_bin}/python3 -m vllm.entrypoints.openai.api_server "
-            f"  --model $LLM_MODEL_NAME "
-            "  --served-model-name $LLM_MODEL_NAME "
-            "  --download-dir $LLM_MODEL_PATH "
-            "  --distributed-executor-backend ray "
+            f"  --model \"$LLM_MODEL_NAME\" "
+            f"  --served-model-name \"$LLM_MODEL_NAME\" "
+            f"  --download-dir \"$LLM_MODEL_PATH\" "
+            f"  --distributed-executor-backend ray "
             f"  --tensor-parallel-size {tp_size} "
             f"  --pipeline-parallel-size {pp_size} "
-            "  --max-model-len 32768 "
-            "  --gpu-memory-utilization 0.90 "
-            "  --enable-chunked-prefill "
-            "  --trust-remote-code "
-            "  --host 0.0.0.0 --port 8000 "
-            "  --enable-auto-tool-choice "
-            "  --tool-call-parser openai "
-            "  > /root/vllm_server.log 2>&1 &"
+            f"  --max-model-len 32768 "
+            f"  --gpu-memory-utilization 0.90 "
+            f"  --enable-chunked-prefill "
+            f"  --trust-remote-code "
+            f"  --host 0.0.0.0 --port 8000 "
+            f"  > /root/vllm_server.log 2>&1 & "
+            "sleep 8; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
+            "  { echo 'ERROR: vLLM process failed to start'; cat /root/vllm_server.log; exit 1; }"
         )
         health_poll = (
             "for i in $(seq 1 90); do "
-            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && break; "
+            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
             "done; "
-            "curl -sf http://localhost:8000/health"
+            "echo 'ERROR: vLLM did not become healthy in 15 min'; "
+            "tail -50 /root/vllm_server.log; "
+            "exit 1"
         )
-        run_commands(ip, ssh_user, ssh_pass, [vllm_cmd, health_poll], timeout=960)
+        run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
         logger.info(f"[{ip}] vLLM relaunched and healthy")
 
     return {"ip_address": ip, "role": role, "step": "services_restored"}

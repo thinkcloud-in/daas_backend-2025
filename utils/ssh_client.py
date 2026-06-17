@@ -4,8 +4,8 @@ import paramiko
 
 logger = logging.getLogger(__name__)
 
-_CONNECT_RETRIES = 20
-_RETRY_INTERVAL = 15  # seconds — OS boot / reboot can take 2-4 min
+_CONNECT_RETRIES = 40
+_RETRY_INTERVAL = 15  # seconds — fresh VM boot + cloud-init can take 5-8 min
 
 
 def _get_client(host: str, username: str, password: str) -> paramiko.SSHClient:

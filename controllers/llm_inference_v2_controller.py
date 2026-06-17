@@ -78,6 +78,7 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             machine_name=data.machine_name,
             pool_os_type=data.poolOSType,
             storage=data.storage or "local-lvm",
+            model=data.model,
             status="provisioning",
         )
         db.add(record)
@@ -95,8 +96,10 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "reserved_ips": reserved_ips,
             "storage":      data.storage or "local-lvm",
             "machine_name": data.machine_name or data.poolName,
-            "ssh_user":     _SSH_USER,
-            "ssh_pass":     _SSH_PASS,
+            "model":        data.model or "",
+            "model_path":   data.model_path or "/vllm_data/hf_cache",
+            "ssh_user":     data.ssh_user or _SSH_USER,
+            "ssh_pass":     data.ssh_pass or _SSH_PASS,
         }
 
         # ── Start Temporal workflow ───────────────────────────────────────────
@@ -256,6 +259,7 @@ def get_llm_inference_job(job_id: int, db: Session):
             "machine_name":   record.machine_name,
             "pool_os_type":   record.pool_os_type,
             "storage":        record.storage,
+            "model":          record.model,
             "vmids":          record.vmids,
             "ip_addresses":   record.ip_addresses,
             "head_ip":        record.head_ip,

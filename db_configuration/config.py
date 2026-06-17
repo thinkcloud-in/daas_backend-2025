@@ -52,6 +52,15 @@ try:
 except Exception as e:
     logger.error(f"Failed to ensure sequences exist: {str(e)}")
 
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            ALTER TABLE llm_inference_jobs
+                ADD COLUMN IF NOT EXISTS model TEXT;
+        """))
+except Exception as e:
+    logger.error(f"Failed to apply llm_inference_jobs migrations: {str(e)}")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()
 def get_db():

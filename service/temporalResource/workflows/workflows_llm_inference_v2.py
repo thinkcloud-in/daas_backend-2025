@@ -94,6 +94,8 @@ class CreateMultiNodeLLMWorkflow:
                     "name":       f"{payload['name']}-{i}",
                     "subnet":     payload.get("subnet", "192.168.100.0/24"),
                     "net_iface":  payload.get("net_iface", "ens18"),
+                    "model":      payload.get("model", ""),
+                    "model_path": payload.get("model_path", "/vllm_data/hf_cache"),
                     **ssh_creds,
                 }],
                 retry_policy=RetryPolicy(maximum_attempts=1),
