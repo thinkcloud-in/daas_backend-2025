@@ -178,7 +178,7 @@ class CreateMultiNodeLLMWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=1),
             start_to_close_timeout=timedelta(minutes=20),
         )
-        endpoint_url = launch_result.get("endpoint_url", f"http://{head_ip}:8000/v1")
+        endpoint_url = launch_result.get("endpoint_url")  # None if vLLM was skipped (no model)
 
         # ── Phase 7: Final DB update ──────────────────────────────────────────
         await workflow.execute_activity(

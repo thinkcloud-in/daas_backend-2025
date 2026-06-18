@@ -371,8 +371,21 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
         "sudo sed -i '/^LLM_MODEL_PATH=/d' /etc/environment",
         "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
         "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
-        f'echo \'LLM_MODEL_NAME="{model}"\' | sudo tee -a /etc/environment > /dev/null',
-        f'echo \'LLM_MODEL_PATH="{model_path}"\' | sudo tee -a /etc/environment > /dev/null',
+        # LLM_MODEL_NAME: use API-provided model; if empty fall back to template's LLM_NAME
+        (
+            f'echo \'LLM_MODEL_NAME={model}\' | sudo tee -a /etc/environment > /dev/null'
+            if model else
+            'LLM_NAME_VAL=$(grep "^LLM_NAME=" /etc/environment | cut -d= -f2- | tr -d \'"\'); '
+            '[ -n "$LLM_NAME_VAL" ] && echo "LLM_MODEL_NAME=$LLM_NAME_VAL" | sudo tee -a /etc/environment > /dev/null || true'
+        ),
+        # LLM_MODEL_PATH: use API-provided path; if default fall back to template's LLM_PATH
+        (
+            f'echo \'LLM_MODEL_PATH={model_path}\' | sudo tee -a /etc/environment > /dev/null'
+            if model_path and model_path != "/vllm_data/hf_cache" else
+            'LLM_PATH_VAL=$(grep "^LLM_PATH=" /etc/environment | cut -d= -f2- | tr -d \'"\'); '
+            f'[ -n "$LLM_PATH_VAL" ] && echo "LLM_MODEL_PATH=$LLM_PATH_VAL" | sudo tee -a /etc/environment > /dev/null '
+            f'|| echo \'LLM_MODEL_PATH={model_path}\' | sudo tee -a /etc/environment > /dev/null'
+        ),
         'echo \'VLLM_USE_V1=1\' | sudo tee -a /etc/environment > /dev/null',
         f'echo \'NCCL_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
 

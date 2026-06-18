@@ -2,6 +2,7 @@ from utils.temporal_client import TemporalClientManager
 import asyncio
 import json
 from fastapi import APIRouter, HTTPException, Depends, Request
+from pydantic import BaseModel
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db
@@ -291,6 +292,47 @@ def get_enable_browser_guacamole_authflow():
 @router.post('/totp/reset-guac-totp/{user_id}')
 def reset_guac_totp(user_id: str):
     return  key_config.reset_guac_totp(user_id)
+
+
+class _TOTPVerifyBody(BaseModel):
+    totp_code: str
+
+
+def _extract_jwt_claims(request: Request) -> dict:
+    """Extract sub + preferred_username from Bearer JWT without signature verification."""
+    import jwt as _pyjwt
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        payload = _pyjwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid JWT token")
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Cannot extract user id from token")
+    return payload
+
+
+@router.post('/totp/verify-totp')
+def verify_totp(body: _TOTPVerifyBody, request: Request):
+    """
+    Verify TOTP via Keycloak directly.
+    Keycloak internally validates the OTP using its own stored secret — no password needed.
+    If user has no OTP configured in Keycloak, returns verified=True (OTP not required).
+    """
+    payload  = _extract_jwt_claims(request)
+    user_id  = payload.get("sub")
+    username = payload.get("preferred_username") or user_id
+
+    if not key_config.has_keycloak_otp(user_id):
+        return response_format.success_response(200, "OTP not enabled for this user", {"verified": True})
+
+    ok = key_config.verify_user_totp(user_id, body.totp_code, username=username)
+    if not ok:
+        raise HTTPException(status_code=401, detail="Invalid TOTP code")
+    key_config.mark_totp_verified(user_id)   # cache for 5 min so delete needs no re-verification
+    return response_format.success_response(200, "TOTP verified successfully", {"verified": True})
 
 
 @router.get("/workflows")

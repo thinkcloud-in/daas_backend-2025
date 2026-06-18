@@ -276,16 +276,42 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         )
         if resp.status_code >= 400:
             raise RuntimeError(f"VM config failed: {resp.text}")
+        # Proxmox may return a UPID when cloud-init image needs regeneration.
+        # Not waiting for it causes "VM is locked (cloudinit)" on the start call.
+        config_upid = resp.json().get("data")
+        if config_upid:
+            logger.info(f"[{vmid}] Waiting for config task {config_upid}...")
+            _wait_for_task(PROXMOX_HOST, headers, node, config_upid, timeout=60)
 
         # ── Boot VM ───────────────────────────────────────────────────────
-        resp = requests.post(
-            f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/start",
-            headers=headers, verify=False, timeout=30
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"VM start failed: {resp.text}")
-        upid = resp.json()["data"]
-        _wait_for_task(PROXMOX_HOST, headers, node, upid, timeout=120)
+        # Retry start up to 5 times with increasing delay to ride out any
+        # transient "VM is locked" states (cloud-init regen, storage settle).
+        start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/start"
+        for attempt in range(1, 6):
+            resp = requests.post(start_url, headers=headers, verify=False, timeout=30)
+            if resp.status_code < 400:
+                break
+            err_text = resp.text
+            if attempt == 5:
+                raise RuntimeError(f"VM start failed after {attempt} attempts: {err_text}")
+            logger.warning(f"[{vmid}] Start attempt {attempt}/5 failed ({resp.status_code}): {err_text} — retrying in {attempt * 3}s")
+            time.sleep(attempt * 3)
+        upid = resp.json().get("data")
+        if upid:
+            _wait_for_task(PROXMOX_HOST, headers, node, upid, timeout=120)
+        else:
+            # Some Proxmox versions return null for synchronous start; poll until running
+            logger.info(f"[{vmid}] Start returned no UPID — polling VM status...")
+            for _ in range(24):
+                time.sleep(5)
+                s = requests.get(
+                    f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current",
+                    headers=headers, verify=False, timeout=10
+                )
+                if s.ok and s.json().get("data", {}).get("status") == "running":
+                    break
+            else:
+                raise RuntimeError(f"VM {vmid} did not reach running state after start")
 
         # ── Wait for VM SSH (key auth) then enable PasswordAuthentication ──
         # Use key-based SSH first — works even if PasswordAuthentication is
@@ -331,9 +357,15 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         vllm_launch = (
             # Load env vars written during install_ray_vllm_activity
             "set -a; source /etc/environment; set +a; "
-            # Guard: fail fast if model name not set
-            "[ -n \"$LLM_MODEL_NAME\" ] || "
-            "  { echo 'ERROR: LLM_MODEL_NAME not set in /etc/environment'; exit 1; }; "
+            # Fallback: if LLM_MODEL_NAME empty, try template's LLM_NAME
+            "[ -n \"$LLM_MODEL_NAME\" ] || LLM_MODEL_NAME=\"$LLM_NAME\"; "
+            # Fallback: if LLM_MODEL_PATH empty, try template's LLM_PATH
+            "[ -n \"$LLM_MODEL_PATH\" ] || LLM_MODEL_PATH=\"${LLM_PATH:-/vllm_data/hf_cache}\"; "
+            # No model configured → skip gracefully (exit 0 so Temporal doesn't retry)
+            "if [ -z \"$LLM_MODEL_NAME\" ]; then "
+            "  echo 'VLLM_SKIP: no model name in LLM_MODEL_NAME or LLM_NAME — skipping vLLM launch'; "
+            "  exit 0; "
+            "fi; "
             # Kill any existing vLLM process
             "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
             "sleep 2; "
@@ -362,13 +394,19 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
             "done; "
-            # Explicit failure if health never came up
             "echo 'ERROR: vLLM did not become healthy in 15 min'; "
             "tail -50 /root/vllm_server.log; "
             "exit 1"
         )
 
-        run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
+        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=60)
+        launch_stdout = launch_results[0]["stdout"] if launch_results else ""
+
+        if "VLLM_SKIP" in launch_stdout:
+            logger.info(f"[{ip}] vLLM launch skipped — no model configured in /etc/environment")
+            return {"endpoint_url": None}
+
+        run_commands(ip, ssh_user, ssh_pass, [health_poll], timeout=960)
 
         endpoint = f"http://{ip}:8000/v1"
         logger.info(f"vLLM started on {ip} — endpoint: {endpoint}")

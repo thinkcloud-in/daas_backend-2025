@@ -31,7 +31,13 @@ def exception_handlers(app: FastAPI):
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         logger.error(f"[HTTP Exception] {request.url}: {exc.detail}", exc_info=True)
-        response = error_response(exc.status_code, exc.detail)
+        if isinstance(exc.detail, dict):
+            msg  = exc.detail.get("message", "Error")
+            data = {k: v for k, v in exc.detail.items() if k != "message"} or None
+        else:
+            msg  = exc.detail
+            data = None
+        response = error_response(exc.status_code, msg, data)
         return JSONResponse(status_code=exc.status_code, content=response.dict())
 
     @app.exception_handler(SQLAlchemyError)

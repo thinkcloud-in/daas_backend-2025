@@ -1,6 +1,5 @@
 import asyncio
 import uuid
-from temporalio.client import Client
 import json
 import requests
 import os
@@ -9,6 +8,174 @@ from service.temporalResource.workflows import workflows_ldap
 from utils.temporal_client import TemporalClientManager
 from dotenv import load_dotenv
 load_dotenv()
+
+import time as _time
+
+# ── Keycloak OTP-only flow constants ────────────────────────────────────────
+_OTP_FLOW_ALIAS = "daas-otp-only-flow"
+_OTP_CLIENT_ID  = "daas-otp-verify"
+_otp_setup_done = False   # module-level cache; idempotent if server restarts
+
+# ── Short-lived TOTP verification cache (user_id → verified_at timestamp) ───
+_TOTP_VERIFIED: dict = {}
+_TOTP_TTL = 300   # 5 minutes — verified OTP is trusted for this window
+
+
+def mark_totp_verified(user_id: str):
+    """Record that this user successfully verified TOTP just now."""
+    _TOTP_VERIFIED[user_id] = _time.time()
+
+
+def is_totp_recently_verified(user_id: str) -> bool:
+    """Return True if user verified TOTP within the last 5 minutes."""
+    ts = _TOTP_VERIFIED.get(user_id)
+    return ts is not None and (_time.time() - ts) < _TOTP_TTL
+
+
+def _ensure_otp_verify_client():
+    """
+    Idempotently create in Keycloak:
+      1. A Direct Grant auth flow with validate-username + validate-otp (no password).
+      2. A public client 'daas-otp-verify' bound to that flow.
+
+    After this, ROPC with client_id=daas-otp-verify verifies ONLY the OTP —
+    Keycloak never checks the password field.
+    """
+    global _otp_setup_done
+    if _otp_setup_done:
+        return
+
+    realm    = os.getenv("KEYCLOAK_REALM") or os.getenv("KEYCLOAK_RELAM")
+    root_url = os.getenv("KEYCLOAK_ROOT_URL")
+    h        = get_login_from_keycloak()
+
+    # ── 1. Create flow (409 = already exists, safe to ignore) ───────────────
+    requests.post(
+        f"{root_url}/admin/realms/{realm}/authentication/flows",
+        headers=h,
+        json={
+            "alias":       _OTP_FLOW_ALIAS,
+            "description": "OTP-only Direct Grant for action verification",
+            "providerId":  "basic-flow",
+            "topLevel":    True,
+            "builtIn":     False,
+        },
+        timeout=10,
+    )
+
+    # ── 2. Add executions only if flow is still empty ───────────────────────
+    exec_url  = f"{root_url}/admin/realms/{realm}/authentication/flows/{_OTP_FLOW_ALIAS}/executions"
+    exec_resp = requests.get(exec_url, headers=h, timeout=10)
+    existing  = {e.get("providerId") for e in (exec_resp.json() if exec_resp.status_code == 200 else [])}
+
+    for provider in ("direct-grant-validate-username", "direct-grant-validate-otp"):
+        if provider not in existing:
+            requests.post(
+                f"{exec_url}/execution",
+                headers=h,
+                json={"provider": provider},
+                timeout=10,
+            )
+
+    # ── 3. Set all executions to REQUIRED ───────────────────────────────────
+    exec_resp = requests.get(exec_url, headers=h, timeout=10)
+    for execution in (exec_resp.json() if exec_resp.status_code == 200 else []):
+        if execution.get("requirement") != "REQUIRED":
+            requests.put(
+                exec_url,
+                headers=h,
+                json={**execution, "requirement": "REQUIRED"},
+                timeout=10,
+            )
+
+    # ── 4. Resolve the flow ID ───────────────────────────────────────────────
+    flows_resp = requests.get(
+        f"{root_url}/admin/realms/{realm}/authentication/flows",
+        headers=h, timeout=10,
+    )
+    flow_id = next(
+        (f["id"] for f in flows_resp.json() if f.get("alias") == _OTP_FLOW_ALIAS),
+        None,
+    )
+
+    # ── 5. Create dedicated public client bound to OTP-only flow ────────────
+    requests.post(
+        f"{root_url}/admin/realms/{realm}/clients",
+        headers=h,
+        json={
+            "clientId":                        _OTP_CLIENT_ID,
+            "name":                            "DaaS OTP Verifier",
+            "enabled":                         True,
+            "publicClient":                    True,
+            "directAccessGrantsEnabled":       True,
+            "standardFlowEnabled":             False,
+            "authenticationFlowBindingOverrides": {
+                "direct_grant": flow_id,
+            },
+        },
+        timeout=10,
+    )
+
+    _otp_setup_done = True
+
+
+def has_keycloak_otp(user_id: str) -> bool:
+    """Return True if the user has an OTP credential configured in Keycloak."""
+    realm    = os.getenv("KEYCLOAK_REALM") or os.getenv("KEYCLOAK_RELAM")
+    root_url = os.getenv("KEYCLOAK_ROOT_URL")
+    try:
+        h    = get_login_from_keycloak()
+        resp = requests.get(
+            f"{root_url}/admin/realms/{realm}/users/{user_id}/credentials",
+            headers=h, timeout=10,
+        )
+        if resp.status_code == 200:
+            return any(c.get("type") == "otp" for c in resp.json())
+    except Exception:
+        pass
+    return False
+
+
+def verify_user_totp(user_id: str, totp_code: str, username: str = "") -> bool:
+    """
+    Verify OTP via Keycloak's OTP-only Direct Grant flow.
+
+    How it works:
+      - Keycloak client 'daas-otp-verify' uses a custom auth flow that
+        validates username existence + OTP only (password field is ignored).
+      - We call the standard ROPC token endpoint; Keycloak performs the
+        OTP check internally using its own stored secret — no secret is
+        ever exposed to us.
+      - Returns True  → OTP valid (Keycloak issued a token).
+      - Returns False → OTP invalid or expired.
+    """
+    if not username:
+        raise HTTPException(status_code=400, detail="Username required for TOTP verification")
+    try:
+        _ensure_otp_verify_client()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Keycloak OTP setup failed: {exc}")
+
+    realm    = os.getenv("KEYCLOAK_REALM") or os.getenv("KEYCLOAK_RELAM")
+    root_url = os.getenv("KEYCLOAK_ROOT_URL")
+
+    try:
+        resp = requests.post(
+            f"{root_url}/realms/{realm}/protocol/openid-connect/token",
+            data={
+                "grant_type": "password",
+                "client_id":  _OTP_CLIENT_ID,
+                "username":   username,
+                "password":   "daas-verify",  # required by ROPC spec; ignored by OTP-only flow
+                "totp":       totp_code,
+            },
+            timeout=10,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def get_login_from_keycloak():
     try:
         resp = requests.post(

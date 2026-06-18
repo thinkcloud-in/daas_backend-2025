@@ -61,6 +61,19 @@ try:
 except Exception as e:
     logger.error(f"Failed to apply llm_inference_jobs migrations: {str(e)}")
 
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS user_action_totp (
+                user_id     VARCHAR PRIMARY KEY,
+                totp_secret VARCHAR NOT NULL,
+                username    VARCHAR,
+                created_at  TIMESTAMP DEFAULT NOW()
+            );
+        """))
+except Exception as e:
+    logger.error(f"Failed to create user_action_totp table: {str(e)}")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()
 def get_db():

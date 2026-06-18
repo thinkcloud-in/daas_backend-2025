@@ -1,13 +1,18 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException, Request, Body
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
+from typing import Any, Optional
 
 from controllers import llm_inference_v2_controller
 from db_configuration.config import get_db
 from models.llm_inference_v2_model import LLMInferenceJobCreate, LLMInferenceJobUpdate, PoolActionRequest
 from models.API_Response_model import APIResponse
-from typing import Any
 
 llm_inference_v2_router = APIRouter(prefix="/v1/llm-inference-v2", tags=["llm-inference-v2"])
+
+
+class DeleteRequest(BaseModel):
+    totp_code: str = ""
 
 
 @llm_inference_v2_router.post("/create-private-llm", response_model=APIResponse[Any])
@@ -35,7 +40,51 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
 
 
 @llm_inference_v2_router.delete("/delete-private-llm/{job_id}", response_model=APIResponse[Any])
-async def delete_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
+async def delete_llm_inference_job(
+    job_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    body: Optional[DeleteRequest] = Body(default=None),
+):
+    """
+    Delete an LLM inference job.
+
+    TOTP logic:
+    - If user has no OTP in Keycloak  → delete directly, no TOTP needed.
+    - If user already called POST /v1/totp/verify-totp (within last 5 min) → delete directly.
+    - If user has OTP but hasn't verified yet → send {"totp_code": "123456"} in body to verify here.
+    """
+    import jwt as _pyjwt
+    from keycloak_configration import keycloak_config as key_config
+
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization header")
+    try:
+        jwt_payload = _pyjwt.decode(token, options={"verify_signature": False})
+        user_id  = jwt_payload.get("sub")
+        username = jwt_payload.get("preferred_username") or user_id
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Cannot extract user id from token")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid JWT token")
+
+    if key_config.has_keycloak_otp(user_id):
+        # Already verified via /totp/verify-totp within the last 5 minutes → skip re-check
+        if not key_config.is_totp_recently_verified(user_id):
+            totp_code = (body.totp_code if body else "") or ""
+            if not totp_code:
+                raise HTTPException(
+                    status_code=400,
+                    detail="OTP required. Call POST /v1/totp/verify-totp first, or send totp_code in request body.",
+                )
+            ok = key_config.verify_user_totp(user_id, totp_code, username=username)
+            if not ok:
+                raise HTTPException(status_code=401, detail="Invalid TOTP code — delete aborted")
+            key_config.mark_totp_verified(user_id)
+
     return await llm_inference_v2_controller.delete_llm_inference_job(job_id, db)
 
 
