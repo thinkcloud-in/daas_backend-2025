@@ -376,14 +376,18 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
         'echo \'VLLM_USE_V1=1\' | sudo tee -a /etc/environment > /dev/null',
         f'echo \'NCCL_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
 
-        # Firewall (--permanent rules are idempotent — duplicate adds are silently skipped)
-        f"sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"{subnet}\" accept' 2>/dev/null || true",
-        "sudo firewall-cmd --permanent --add-port=8000/tcp",
-        "sudo firewall-cmd --permanent --add-port=6379/tcp",
-        "sudo firewall-cmd --permanent --add-port=8265/tcp",
-        "sudo firewall-cmd --permanent --add-port=10001/tcp",
-        "sudo firewall-cmd --permanent --add-port=10002-19999/tcp",
-        "sudo firewall-cmd --reload",
+        # Firewall — start firewalld if not running, then configure ports
+        (
+            f"sudo firewall-cmd --state 2>/dev/null | grep -q running || "
+            f"  {{ sudo systemctl enable firewalld && sudo systemctl start firewalld && sleep 3; }}; "
+            f"sudo firewall-cmd --permanent --add-rich-rule='rule family=\"ipv4\" source address=\"{subnet}\" accept' 2>/dev/null || true; "
+            f"sudo firewall-cmd --permanent --add-port=8000/tcp; "
+            f"sudo firewall-cmd --permanent --add-port=6379/tcp; "
+            f"sudo firewall-cmd --permanent --add-port=8265/tcp; "
+            f"sudo firewall-cmd --permanent --add-port=10001/tcp; "
+            f"sudo firewall-cmd --permanent --add-port=10002-19999/tcp; "
+            f"sudo firewall-cmd --reload"
+        ),
 
         # Model cache dir
         "sudo mkdir -p /vllm_data/hf_cache",

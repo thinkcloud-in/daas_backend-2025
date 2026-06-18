@@ -534,3 +534,107 @@ async def update_llm_inference_job_activity(payload: dict) -> dict:
         return {"ok": True}
     finally:
         db.close()
+
+
+@activity.defn
+async def delete_llm_pool_activity(payload: dict) -> dict:
+    """
+    Delete all VMs for an LLM inference job:
+      1. Remove HA resources / groups
+      2. Strip GPU config
+      3. Stop each VM, wait, then permanently delete it
+      4. Release IPs back to unused
+      5. Remove the DB job record
+    """
+    import time as _time
+    db: Session = SessionLocal()
+    try:
+        job_id       = payload["job_id"]
+        vmids        = payload.get("vmids") or []
+        nodes        = payload.get("nodes") or []
+        cluster_id   = payload["cluster_id"]
+        ip_addresses = payload.get("ip_addresses") or []
+
+        from models.llm_inference_v2_model import LLMInferenceJob
+        record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
+        if not record:
+            logger.warning(f"[delete] Job {job_id} not found — may already be deleted")
+            return {"ok": True, "skipped": True}
+
+        # ── Mark as deleting ─────────────────────────────────────────────
+        record.status = "deleting"
+        db.commit()
+
+        # ── Delete VMs from Proxmox ───────────────────────────────────────
+        if vmids:
+            cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+            if cluster_data:
+                from service.clusterService import get_api_token, getting_Proxmox_host
+                api_token    = get_api_token(db, cluster_data.name)
+                headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+                PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+
+                for i, vmid in enumerate(vmids):
+                    node = nodes[i]["node"] if i < len(nodes) else None
+                    if not node:
+                        continue
+                    logger.info(f"[delete] Removing VM {vmid} from node {node}")
+
+                    # Remove HA resources
+                    requests.delete(
+                        f"{PROXMOX_HOST}/api2/json/cluster/ha/resources/vm%3A{vmid}",
+                        headers=headers, verify=False, timeout=15
+                    )
+                    # Remove HA group
+                    requests.delete(
+                        f"{PROXMOX_HOST}/api2/json/cluster/ha/groups/llm-{vmid}",
+                        headers=headers, verify=False, timeout=15
+                    )
+                    # Strip GPU passthrough config
+                    requests.put(
+                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config",
+                        headers=headers,
+                        data={"delete": "hostpci0,hostpci1,hostpci2,hostpci3"},
+                        verify=False, timeout=15
+                    )
+                    # Stop VM
+                    requests.post(
+                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop",
+                        headers=headers, verify=False, timeout=30
+                    )
+                    # Wait for stopped state (max 60 s)
+                    for _ in range(12):
+                        _time.sleep(5)
+                        st = requests.get(
+                            f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current",
+                            headers=headers, verify=False, timeout=10
+                        )
+                        if st.ok and st.json().get("data", {}).get("status") == "stopped":
+                            break
+                    # Permanently delete VM + disks
+                    requests.delete(
+                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}",
+                        headers=headers,
+                        params={"purge": 1, "destroy-unreferenced-disks": 1},
+                        verify=False, timeout=60
+                    )
+                    logger.info(f"[delete] VM {vmid} deleted")
+
+        # ── Release IPs ───────────────────────────────────────────────────
+        from models.IPs_model import IPEntry
+        for ip in ip_addresses:
+            entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+            if entry:
+                entry.status = "unused"
+                entry.vm_id  = None
+
+        # ── Remove DB record ──────────────────────────────────────────────
+        db.delete(record)
+        db.commit()
+        logger.info(f"[delete] Job {job_id} fully deleted")
+        return {"ok": True, "job_id": job_id}
+
+    except Exception as e:
+        raise RuntimeError(str(e))
+    finally:
+        db.close()

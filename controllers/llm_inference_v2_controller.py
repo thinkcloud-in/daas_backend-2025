@@ -1,15 +1,94 @@
+import asyncio
 import logging
 import os
+import pytz
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
+from temporalio.api.enums.v1 import EventType
+from temporalio.client import WorkflowExecutionStatus
 
 from models.llm_inference_v2_model import LLMInferenceJob, LLMInferenceJobCreate, LLMInferenceJobUpdate, PoolActionRequest
 from models.IPs_model import IPEntry, IPSModel
 from models.models import Cluster, Machine
 from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference_v2 import TASK_QUEUE
-from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow
+from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
 from utils import response_format
+
+_IST = pytz.timezone("Asia/Kolkata")
+_TIME_FMT = "%Y-%m-%d %H:%M:%S"
+
+_ACTIVITY_DISPLAY = {
+    "clone_and_configure_vm_activity":    "VM Clone & Configure",
+    "update_llm_inference_job_activity":  "Update Job Status",
+    "install_ray_vllm_activity":          "Install Ray + vLLM",
+    "add_affinity_rule_activity":         "Set Affinity Rules",
+    "configure_ray_activity":             "Configure Ray",
+    "launch_vllm_from_template_activity": "Launch vLLM",
+    "restore_llm_services_activity":      "Restore LLM Services",
+    "vm_power_action_activity":           "VM Power Action",
+    "delete_llm_pool_activity":           "Delete VMs & Cleanup",
+}
+
+
+def _fmt_time(ts):
+    try:
+        return ts.astimezone(_IST).strftime(_TIME_FMT)
+    except Exception:
+        return None
+
+
+async def _fetch_steps(handle) -> list:
+    """Parse Temporal workflow history into ordered activity step list."""
+    history = await handle.fetch_history()
+    step_map = {}
+    step_order = []
+
+    for event in history.events:
+        et = event.event_type
+
+        if et == EventType.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
+            attrs = event.activity_task_scheduled_event_attributes
+            name  = attrs.activity_type.name
+            step_map[event.event_id] = {
+                "activity_name": name,
+                "display_name":  _ACTIVITY_DISPLAY.get(name, name),
+                "status":        "pending",
+                "scheduled_at":  _fmt_time(event.event_time),
+                "started_at":    None,
+                "completed_at":  None,
+                "error":         None,
+            }
+            step_order.append(event.event_id)
+
+        elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_STARTED:
+            sid = event.activity_task_started_event_attributes.scheduled_event_id
+            if sid in step_map:
+                step_map[sid]["status"]     = "running"
+                step_map[sid]["started_at"] = _fmt_time(event.event_time)
+
+        elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
+            sid = event.activity_task_completed_event_attributes.scheduled_event_id
+            if sid in step_map:
+                step_map[sid]["status"]       = "completed"
+                step_map[sid]["completed_at"] = _fmt_time(event.event_time)
+
+        elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_FAILED:
+            attrs = event.activity_task_failed_event_attributes
+            sid   = attrs.scheduled_event_id
+            if sid in step_map:
+                step_map[sid]["status"]       = "failed"
+                step_map[sid]["completed_at"] = _fmt_time(event.event_time)
+                step_map[sid]["error"]        = getattr(attrs.failure, "message", str(attrs.failure)) if attrs.failure else "Unknown"
+
+        elif et == EventType.EVENT_TYPE_ACTIVITY_TASK_TIMED_OUT:
+            sid = event.activity_task_timed_out_event_attributes.scheduled_event_id
+            if sid in step_map:
+                step_map[sid]["status"]       = "timed_out"
+                step_map[sid]["completed_at"] = _fmt_time(event.event_time)
+                step_map[sid]["error"]        = "Activity timed out"
+
+    return [step_map[eid] for eid in step_order]
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +188,11 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             workflow_payload,
             id=f"llm-inference-v2-{record.id}-{__import__('uuid').uuid4().hex[:8]}",
             task_queue=TASK_QUEUE,
+            search_attributes={
+                "Entity":   [data.poolName],
+                "Action":   ["Private-LLM-Create"],
+                "UserName": ["system"],
+            },
         )
 
         record.workflow_id = handle.id
@@ -291,90 +375,42 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
         return response_format.error_response(500, "Failed to update LLM inference job", str(e))
 
 
-def delete_llm_inference_job(job_id: int, db: Session):
+async def delete_llm_inference_job(job_id: int, db: Session):
     try:
-        import requests as req
-        from service.clusterService import get_api_token, getting_Proxmox_host
-
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="LLM inference job not found")
 
-        # ── Delete VMs from Proxmox ───────────────────────────────────────────
-        if record.vmids:
-            cluster = db.query(Cluster).filter(Cluster.id == record.cluster_id).first()
-            if cluster:
-                api_token    = get_api_token(db, cluster.name)
-                headers      = {"Authorization": f"PVEAPIToken={api_token}"}
-                PROXMOX_HOST = getting_Proxmox_host(cluster)
-                nodes        = record.nodes or []
+        workflow_payload = {
+            "job_id":       job_id,
+            "vmids":        record.vmids or [],
+            "nodes":        record.nodes or [],
+            "cluster_id":   record.cluster_id,
+            "ip_addresses": record.ip_addresses or [],
+        }
 
-                for i, vmid in enumerate(record.vmids):
-                    node = nodes[i]["node"] if i < len(nodes) else None
-                    if not node:
-                        continue
+        client = await TemporalClientManager.get_temporal_client()
+        handle = await client.start_workflow(
+            DeleteLLMPoolWorkflow.run,
+            workflow_payload,
+            id=f"llm-delete-{job_id}-{__import__('uuid').uuid4().hex[:8]}",
+            task_queue=TASK_QUEUE,
+            search_attributes={
+                "Entity":   [record.name],
+                "Action":   ["Private-LLM-Delete"],
+                "UserName": ["system"],
+            },
+        )
 
-                    # 1. Remove from HA resources
-                    req.delete(
-                        f"{PROXMOX_HOST}/api2/json/cluster/ha/resources/vm%3A{vmid}",
-                        headers=headers, verify=False, timeout=15
-                    )
-
-                    # 2. Remove HA group
-                    req.delete(
-                        f"{PROXMOX_HOST}/api2/json/cluster/ha/groups/llm-{vmid}",
-                        headers=headers, verify=False, timeout=15
-                    )
-
-                    # 3. Remove GPU (clear hostpci config)
-                    req.put(
-                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config",
-                        headers=headers,
-                        data={"delete": "hostpci0,hostpci1,hostpci2,hostpci3"},
-                        verify=False, timeout=15
-                    )
-
-                    # 4. Stop VM
-                    req.post(
-                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop",
-                        headers=headers, verify=False, timeout=30
-                    )
-
-                    # 5. Wait for VM to stop (max 60s)
-                    import time
-                    for _ in range(12):
-                        time.sleep(5)
-                        status_resp = req.get(
-                            f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current",
-                            headers=headers, verify=False, timeout=10
-                        )
-                        if status_resp.ok:
-                            if status_resp.json().get("data", {}).get("status") == "stopped":
-                                break
-
-                    # 6. Delete VM permanently with disk cleanup
-                    req.delete(
-                        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}",
-                        headers=headers,
-                        params={"purge": 1, "destroy-unreferenced-disks": 1},
-                        verify=False, timeout=60
-                    )
-
-        # ── Release IPs back to unused ────────────────────────────────────────
-        if record.ip_addresses:
-            for ip in record.ip_addresses:
-                entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                if entry:
-                    entry.status = "unused"
-                    entry.vm_id  = None
-
-        db.delete(record)
-        db.commit()
-        return response_format.success_response(200, "Deleted", {"id": job_id})
+        return response_format.success_response(200, "Delete started", {
+            "job_id":      job_id,
+            "workflow_id": handle.id,
+            "status":      "deleting",
+        })
     except HTTPException:
         raise
     except Exception as e:
-        return response_format.error_response(500, "Failed to delete LLM inference job", str(e))
+        return response_format.error_response(500, "Failed to start delete workflow", str(e))
 
 
 _POOL_ACTION_PENDING_STATUS = {
@@ -423,6 +459,11 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             workflow_payload,
             id=f"pool-action-{job_id}-{data.action}-{__import__('uuid').uuid4().hex[:8]}",
             task_queue=TASK_QUEUE,
+            search_attributes={
+                "Entity":   [record.name],
+                "Action":   [f"Private-LLM-{data.action.capitalize()}"],
+                "UserName": ["system"],
+            },
         )
 
         # Store latest workflow_id for tracking

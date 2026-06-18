@@ -1,6 +1,7 @@
 from utils.temporal_client import TemporalClientManager
+import asyncio
 import json
-from fastapi import APIRouter, HTTPException, Depends, Request 
+from fastapi import APIRouter, HTTPException, Depends, Request
 from fastapi.encoders import jsonable_encoder
 from sqlalchemy.orm import Session
 from db_configuration.config import get_db
@@ -14,6 +15,9 @@ import os
 import pytz
 from models.API_Response_model import APIResponse
 from utils import response_format
+from controllers.llm_inference_v2_controller import _fetch_steps
+
+_LLM_WF_TYPES = {"CreateMultiNodeLLMWorkflow", "PoolVMActionWorkflow", "DeleteLLMPoolWorkflow"}
 
 router = APIRouter(prefix="/v1")
 
@@ -367,6 +371,24 @@ async def list_workflows():
                 "UserName": wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
             })
     
+    # Enrich LLM inference workflows with Temporal activity steps
+    async def _add_steps(wf):
+        if wf.get("workflow_type") not in _LLM_WF_TYPES:
+            return wf
+        try:
+            handle = client.get_workflow_handle(wf["workflow_id"])
+            steps  = await _fetch_steps(handle)
+            wf["steps"]           = steps
+            wf["total_steps"]     = len(steps)
+            wf["completed_steps"] = sum(1 for s in steps if s["status"] == "completed")
+            running = [s for s in steps if s["status"] == "running"]
+            wf["current_step"] = running[0]["display_name"] if running else None
+        except Exception:
+            wf["steps"] = []
+        return wf
+
+    workflows = list(await asyncio.gather(*[_add_steps(w) for w in workflows]))
+
     return response_format.success_response(200, "Workflows retrieved successfully.", workflows)
 
 

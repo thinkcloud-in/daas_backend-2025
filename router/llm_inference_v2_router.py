@@ -35,8 +35,8 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
 
 
 @llm_inference_v2_router.delete("/delete-private-llm/{job_id}", response_model=APIResponse[Any])
-def delete_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
-    return llm_inference_v2_controller.delete_llm_inference_job(job_id, db)
+async def delete_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
+    return await llm_inference_v2_controller.delete_llm_inference_job(job_id, db)
 
 
 @llm_inference_v2_router.post("/pool-action/{job_id}", response_model=APIResponse[Any])

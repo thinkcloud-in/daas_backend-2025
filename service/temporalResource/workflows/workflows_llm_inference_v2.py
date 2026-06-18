@@ -8,6 +8,8 @@ from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_llm_inference_v2
 from service.temporalResource.activity import activities_llm_inference  # reuse ray activities
 
+_RETRY_ONCE = RetryPolicy(maximum_attempts=1)
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -282,3 +284,22 @@ class PoolVMActionWorkflow:
 
         logger.info(f"PoolVMActionWorkflow: job {job_id} action='{action}' → '{final_status}'")
         return {"job_id": job_id, "action": action, "results": results, "status": final_status}
+
+
+@workflow.defn(sandboxed=False)
+class DeleteLLMPoolWorkflow:
+    """
+    Deletes all VMs, releases IPs, and removes the DB record for an LLM job.
+    Single activity so the full deletion is visible as one step in /workflows.
+    """
+
+    @workflow.run
+    async def run(self, payload: dict) -> dict:
+        result = await workflow.execute_activity(
+            activities_llm_inference_v2.delete_llm_pool_activity,
+            args=[payload],
+            retry_policy=_RETRY_ONCE,
+            start_to_close_timeout=timedelta(minutes=30),
+        )
+        logger.info(f"DeleteLLMPoolWorkflow: job {payload.get('job_id')} deleted")
+        return result
