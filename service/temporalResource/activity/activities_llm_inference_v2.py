@@ -354,39 +354,78 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
 
+        _vllm_bin = "/root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
+        _vllm_common_args = (
+            f" --distributed-executor-backend ray"
+            f" --tensor-parallel-size {tp_size}"
+            f" --pipeline-parallel-size {pp_size}"
+            f" --max-model-len 32768"
+            f" --gpu-memory-utilization 0.90"
+            f" --enable-chunked-prefill"
+            f" --trust-remote-code"
+            f" --host 0.0.0.0 --port 8000"
+        )
+
         vllm_launch = (
-            # Load env vars written during install_ray_vllm_activity
+            # ── 1. Load /etc/environment ──────────────────────────────────────
             "set -a; source /etc/environment; set +a; "
-            # Fallback: if LLM_MODEL_NAME empty, try template's LLM_NAME
-            "[ -n \"$LLM_MODEL_NAME\" ] || LLM_MODEL_NAME=\"$LLM_NAME\"; "
-            # Fallback: if LLM_MODEL_PATH empty, try template's LLM_PATH
-            "[ -n \"$LLM_MODEL_PATH\" ] || LLM_MODEL_PATH=\"${LLM_PATH:-/vllm_data/hf_cache}\"; "
-            # No model configured → skip gracefully (exit 0 so Temporal doesn't retry)
-            "if [ -z \"$LLM_MODEL_NAME\" ]; then "
-            "  echo 'VLLM_SKIP: no model name in LLM_MODEL_NAME or LLM_NAME — skipping vLLM launch'; "
+
+            # ── 2. Start with explicitly configured model (LLM_MODEL_NAME only)
+            # LLM_NAME is a node identifier — NOT used as model name
+            "RESOLVED_MODEL=\"${LLM_MODEL_NAME:-}\"; "
+
+            # ── 3. Scan LLM_PATH from env (e.g. /opt/models/vllm) ────────────
+            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"$LLM_PATH\" ]; then "
+            "  _f=$(find \"$LLM_PATH\" -maxdepth 2 -name 'config.json' 2>/dev/null | head -1); "
+            "  if [ -n \"$_f\" ]; then "
+            "    RESOLVED_MODEL=$(dirname \"$_f\"); "
+            "    echo \"[vLLM] Found model in LLM_PATH ($LLM_PATH): $RESOLVED_MODEL\"; "
+            "  fi; "
+            "fi; "
+
+            # ── 4. Fallback: scan /vllm_data/hf_cache ────────────────────────
+            # Handles both direct dirs (config.json at depth 1-2) and
+            # HuggingFace cache layout (snapshots/<hash>/config.json at depth 3-4)
+            "if [ -z \"$RESOLVED_MODEL\" ]; then "
+            "  _f=$(find /vllm_data/hf_cache -maxdepth 4 -name 'config.json' 2>/dev/null | head -1); "
+            "  if [ -n \"$_f\" ]; then "
+            "    RESOLVED_MODEL=$(dirname \"$_f\"); "
+            "    echo \"[vLLM] Found model in /vllm_data/hf_cache: $RESOLVED_MODEL\"; "
+            "  fi; "
+            "fi; "
+
+            # ── 5. Nothing found → skip gracefully ───────────────────────────
+            "if [ -z \"$RESOLVED_MODEL\" ]; then "
+            "  echo 'VLLM_SKIP: no model found in LLM_MODEL_NAME, LLM_PATH, or /vllm_data/hf_cache'; "
             "  exit 0; "
             "fi; "
-            # Kill any existing vLLM process
-            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
-            "sleep 2; "
-            # Launch vLLM in background
-            f"nohup /root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server "
-            f"  --model \"$LLM_MODEL_NAME\" "
-            f"  --served-model-name \"$LLM_MODEL_NAME\" "
-            f"  --download-dir \"$LLM_MODEL_PATH\" "
-            f"  --distributed-executor-backend ray "
-            f"  --tensor-parallel-size {tp_size} "
-            f"  --pipeline-parallel-size {pp_size} "
-            f"  --max-model-len 32768 "
-            f"  --gpu-memory-utilization 0.90 "
-            f"  --enable-chunked-prefill "
-            f"  --trust-remote-code "
-            f"  --host 0.0.0.0 --port 8000 "
-            f"  > /root/vllm_server.log 2>&1 & "
-            # Brief wait then verify process actually started
+
+            # ── 6. Kill stale vLLM process ────────────────────────────────────
+            "echo \"[vLLM] Launching model: $RESOLVED_MODEL\"; "
+            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 2; "
+
+            # ── 7. Launch vLLM
+            # Local absolute path → no --download-dir (model IS the path)
+            # HuggingFace ID     → --download-dir needed for cached weights
+            "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
+            f"  nohup {_vllm_bin}"
+            f"    --model \"$RESOLVED_MODEL\""
+            f"    --served-model-name \"$RESOLVED_MODEL\""
+            f"    {_vllm_common_args}"
+            f"    > /root/vllm_server.log 2>&1 & "
+            "else "
+            f"  nohup {_vllm_bin}"
+            f"    --model \"$RESOLVED_MODEL\""
+            f"    --served-model-name \"$RESOLVED_MODEL\""
+            f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
+            f"    {_vllm_common_args}"
+            f"    > /root/vllm_server.log 2>&1 & "
+            "fi; "
+
+            # ── 8. Verify process started ─────────────────────────────────────
             "sleep 8; "
             "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
-            "  { echo 'ERROR: vLLM process failed to start'; cat /root/vllm_server.log; exit 1; }"
+            "  { echo 'ERROR: vLLM process failed to start'; tail -30 /root/vllm_server.log; exit 1; }"
         )
 
         health_poll = (
@@ -399,11 +438,11 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "exit 1"
         )
 
-        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=60)
+        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=90)
         launch_stdout = launch_results[0]["stdout"] if launch_results else ""
 
         if "VLLM_SKIP" in launch_stdout:
-            logger.info(f"[{ip}] vLLM launch skipped — no model configured in /etc/environment")
+            logger.info(f"[{ip}] vLLM launch skipped — no model found in any configured path")
             return {"endpoint_url": None}
 
         run_commands(ip, ssh_user, ssh_pass, [health_poll], timeout=960)
