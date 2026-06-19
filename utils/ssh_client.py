@@ -14,6 +14,9 @@ def _get_client(host: str, username: str, password: str) -> paramiko.SSHClient:
     for attempt in range(1, _CONNECT_RETRIES + 1):
         try:
             client.connect(host, username=username, password=password, timeout=10)
+            transport = client.get_transport()
+            if transport:
+                transport.set_keepalive(15)  # SSH keepalive every 15s — prevents NAT/conntrack drop
             logger.info(f"SSH connected to {host} on attempt {attempt}")
             return client
         except Exception as e:
