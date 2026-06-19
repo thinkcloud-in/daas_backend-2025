@@ -375,23 +375,29 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "RESOLVED_MODEL=\"${LLM_MODEL_NAME:-}\"; "
 
             # ── 3. Scan LLM_PATH from env (e.g. /opt/models/vllm) ────────────
+            # Glob-based: does NOT recurse into blobs — fast even on huge caches
             "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"$LLM_PATH\" ]; then "
-            "  _f=$(find \"$LLM_PATH\" -maxdepth 2 -name 'config.json' 2>/dev/null | head -1); "
-            "  if [ -n \"$_f\" ]; then "
-            "    RESOLVED_MODEL=$(dirname \"$_f\"); "
-            "    echo \"[vLLM] Found model in LLM_PATH ($LLM_PATH): $RESOLVED_MODEL\"; "
-            "  fi; "
+            "  for _cfg in \"$LLM_PATH\"/*/config.json \"$LLM_PATH\"/config.json; do "
+            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
+            "      echo \"[vLLM] Found model in LLM_PATH: $RESOLVED_MODEL\"; break; }; "
+            "  done; "
             "fi; "
 
             # ── 4. Fallback: scan /vllm_data/hf_cache ────────────────────────
-            # Handles both direct dirs (config.json at depth 1-2) and
-            # HuggingFace cache layout (snapshots/<hash>/config.json at depth 3-4)
+            # Two targeted globs — avoids traversing blobs/ which can have 10k+ files
+            # Pattern A: direct model dir  → /vllm_data/hf_cache/<model>/config.json
+            # Pattern B: HF snapshot layout → /vllm_data/hf_cache/models--*/snapshots/*/config.json
             "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  _f=$(find /vllm_data/hf_cache -maxdepth 4 -name 'config.json' 2>/dev/null | head -1); "
-            "  if [ -n \"$_f\" ]; then "
-            "    RESOLVED_MODEL=$(dirname \"$_f\"); "
-            "    echo \"[vLLM] Found model in /vllm_data/hf_cache: $RESOLVED_MODEL\"; "
-            "  fi; "
+            "  for _cfg in /vllm_data/hf_cache/*/config.json; do "
+            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
+            "      echo \"[vLLM] Found model in hf_cache (direct): $RESOLVED_MODEL\"; break; }; "
+            "  done; "
+            "fi; "
+            "if [ -z \"$RESOLVED_MODEL\" ]; then "
+            "  for _cfg in /vllm_data/hf_cache/models--*/snapshots/*/config.json; do "
+            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
+            "      echo \"[vLLM] Found model in hf_cache (HF snapshot): $RESOLVED_MODEL\"; break; }; "
+            "  done; "
             "fi; "
 
             # ── 5. Nothing found → skip gracefully ───────────────────────────
