@@ -440,8 +440,16 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "exit 1"
         )
 
-        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
-        launch_stdout = launch_results[0]["stdout"] if launch_results else ""
+        try:
+            launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
+            launch_stdout = launch_results[0]["stdout"] if launch_results else ""
+        except Exception as launch_err:
+            # SSH drop (exit -1) or any other launch error → reboot VM and retry once
+            logger.warning(f"[{ip}] vLLM launch failed ({launch_err}) — rebooting VM and retrying...")
+            reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=30)
+            logger.info(f"[{ip}] VM back online after reboot — retrying vLLM launch...")
+            launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
+            launch_stdout = launch_results[0]["stdout"] if launch_results else ""
 
         if "VLLM_SKIP" in launch_stdout:
             logger.info(f"[{ip}] vLLM launch skipped — no model found in any configured path")
