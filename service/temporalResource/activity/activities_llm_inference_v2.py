@@ -404,28 +404,24 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "echo \"[vLLM] Launching model: $RESOLVED_MODEL\"; "
             "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 2; "
 
-            # ── 7. Launch vLLM
-            # Local absolute path → no --download-dir (model IS the path)
-            # HuggingFace ID     → --download-dir needed for cached weights
+            # ── 7. Fire-and-forget launch (disown detaches from shell immediately)
+            # SSH session closes right after nohup starts — OOM during model
+            # load cannot kill this SSH connection. Health poll verifies readiness.
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
             f"  nohup {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
             f"    {_vllm_common_args}"
-            f"    > /root/vllm_server.log 2>&1 & "
+            f"    > /root/vllm_server.log 2>&1 & disown; "
             "else "
             f"  nohup {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
             f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
             f"    {_vllm_common_args}"
-            f"    > /root/vllm_server.log 2>&1 & "
+            f"    > /root/vllm_server.log 2>&1 & disown; "
             "fi; "
-
-            # ── 8. Verify process started ─────────────────────────────────────
-            "sleep 8; "
-            "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
-            "  { echo 'ERROR: vLLM process failed to start'; tail -30 /root/vllm_server.log; exit 1; }"
+            "echo \"[vLLM] Process launched in background\""
         )
 
         health_poll = (
@@ -438,7 +434,7 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "exit 1"
         )
 
-        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=90)
+        launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
         launch_stdout = launch_results[0]["stdout"] if launch_results else ""
 
         if "VLLM_SKIP" in launch_stdout:
