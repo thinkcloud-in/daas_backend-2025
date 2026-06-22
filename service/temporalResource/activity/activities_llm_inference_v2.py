@@ -443,13 +443,19 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         try:
             launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
             launch_stdout = launch_results[0]["stdout"] if launch_results else ""
-        except Exception as launch_err:
-            # SSH drop (exit -1) or any other launch error → reboot VM and retry once
-            logger.warning(f"[{ip}] vLLM launch failed ({launch_err}) — rebooting VM and retrying...")
-            reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=30)
-            logger.info(f"[{ip}] VM back online after reboot — retrying vLLM launch...")
-            launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
-            launch_stdout = launch_results[0]["stdout"] if launch_results else ""
+        except RuntimeError as launch_err:
+            if "exit -1" in str(launch_err):
+                # SSH channel dropped after nohup was submitted.
+                # nohup runs independently — SSH drop does NOT kill it.
+                # Wait for the process to initialize, then let health poll verify.
+                logger.warning(
+                    f"[{ip}] SSH dropped during vLLM launch (exit -1) — "
+                    f"nohup already submitted. Waiting 60s then health-polling..."
+                )
+                time.sleep(60)
+                launch_stdout = "ASSUMED_LAUNCHED"
+            else:
+                raise
 
         if "VLLM_SKIP" in launch_stdout:
             logger.info(f"[{ip}] vLLM launch skipped — no model found in any configured path")
