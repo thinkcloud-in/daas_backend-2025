@@ -74,6 +74,28 @@ try:
 except Exception as e:
     logger.error(f"Failed to create user_action_totp table: {str(e)}")
 
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS library (
+                id          SERIAL PRIMARY KEY,
+                name        VARCHAR  NOT NULL,
+                type        VARCHAR  NOT NULL,
+                version     VARCHAR,
+                file_name   VARCHAR  NOT NULL,
+                file_path   VARCHAR  NOT NULL,
+                file_size   BIGINT,
+                status      VARCHAR  NOT NULL DEFAULT 'uploading',
+                workflow_id VARCHAR,
+                created_at  TIMESTAMP DEFAULT NOW(),
+                updated_at  TIMESTAMP DEFAULT NOW()
+            );
+            ALTER TABLE library ADD COLUMN IF NOT EXISTS status      VARCHAR NOT NULL DEFAULT 'uploading';
+            ALTER TABLE library ADD COLUMN IF NOT EXISTS workflow_id VARCHAR;
+        """))
+except Exception as e:
+    logger.error(f"Failed to create library table: {str(e)}")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()
 def get_db():

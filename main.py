@@ -29,12 +29,14 @@ from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workers import workers_llm_inference
 from service.temporalResource.workers import workers_llm_inference_v2
+from service.temporalResource.workers import workers_library
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from router.ssl_router import ssl_router
 from router.llm_inference_router import llm_inference_router
 from router.llm_inference_v2_router import llm_inference_v2_router
+from router.library_router import library_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -52,7 +54,7 @@ app.add_middleware(BaseHTTPMiddleware)
 @app.on_event("startup")
 async def startup():
     import starlette.formparsers
-    starlette.formparsers.MultiPartParser.max_part_size = 20 * 1024 * 1024  # 20MB
+    starlette.formparsers.MultiPartParser.max_part_size = 10 * 1024 * 1024 * 1024  # 10GB for library uploads
 
 app = FastAPI(on_startup=[startup_event_client])
 
@@ -86,6 +88,7 @@ app.include_router(hyper_v_router)
 app.include_router(ssl_router)
 app.include_router(llm_inference_router)
 app.include_router(llm_inference_v2_router)
+app.include_router(library_router)
 
 
 def start_async_worker(target):
@@ -165,6 +168,7 @@ def start_workers():
     start_thread_manager("SSL", workers_ssl.ssl_workers)
     #start_thread_manager("LLMInference", workers_llm_inference.run_all_llm_inference_workers)
     start_thread_manager("LLMInferenceV2", workers_llm_inference_v2.run_all_llm_inference_v2_workers)
+    start_thread_manager("LibraryUpload", workers_library.run_all_library_workers)
     
     print("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

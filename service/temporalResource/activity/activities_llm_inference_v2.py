@@ -433,10 +433,12 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         health_poll = (
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
-            "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
+            "  echo \"Waiting for vllm... $i/90\"; "
+            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died'; break; }; "
+            "  sleep 10; "
             "done; "
             "echo 'ERROR: vLLM did not become healthy in 15 min'; "
-            "tail -50 /root/vllm_server.log; "
+            "[ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log file not found — vLLM may not have started'; "
             "exit 1"
         )
 
@@ -445,15 +447,39 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             launch_stdout = launch_results[0]["stdout"] if launch_results else ""
         except RuntimeError as launch_err:
             if "exit -1" in str(launch_err):
-                # SSH channel dropped after nohup was submitted.
-                # nohup runs independently — SSH drop does NOT kill it.
-                # Wait for the process to initialize, then let health poll verify.
-                logger.warning(
-                    f"[{ip}] SSH dropped during vLLM launch (exit -1) — "
-                    f"nohup already submitted. Waiting 60s then health-polling..."
+                # SSH channel dropped — exit -1 means channel closed without exit status.
+                # This can happen BEFORE or AFTER nohup was submitted, so we cannot assume
+                # the process is running. Wait 30s then verify with a fresh SSH connection.
+                logger.warning(f"[{ip}] SSH dropped during vLLM launch (exit -1) — verifying process...")
+                time.sleep(30)
+
+                # Fresh SSH: check if vLLM process is actually running
+                _check_cmd = (
+                    "pgrep -fl 'vllm.entrypoints.openai.api_server' "
+                    "&& echo VLLM_RUNNING || echo VLLM_NOT_RUNNING"
                 )
-                time.sleep(60)
-                launch_stdout = "ASSUMED_LAUNCHED"
+                try:
+                    _chk = run_commands(ip, ssh_user, ssh_pass, [_check_cmd], timeout=30)
+                    _chk_out = _chk[0]["stdout"] if _chk else "VLLM_NOT_RUNNING"
+                except Exception:
+                    _chk_out = "VLLM_NOT_RUNNING"
+
+                if "VLLM_NOT_RUNNING" in _chk_out:
+                    # nohup never ran — re-launch now
+                    logger.warning(f"[{ip}] vLLM process not found after exit -1 — re-launching...")
+                    try:
+                        re_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=60)
+                        launch_stdout = re_results[0]["stdout"] if re_results else ""
+                    except RuntimeError as relaunch_err:
+                        if "exit -1" in str(relaunch_err):
+                            logger.warning(f"[{ip}] Re-launch also got exit -1 — assuming nohup submitted, waiting 60s")
+                            time.sleep(60)
+                            launch_stdout = "ASSUMED_LAUNCHED"
+                        else:
+                            raise
+                else:
+                    logger.info(f"[{ip}] vLLM confirmed running after exit -1 — proceeding to health poll")
+                    launch_stdout = "ASSUMED_LAUNCHED"
             else:
                 raise
 
@@ -538,10 +564,12 @@ async def restore_llm_services_activity(payload: dict) -> dict:
         health_poll = (
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
-            "  echo \"Waiting for vllm... $i/90\"; sleep 10; "
+            "  echo \"Waiting for vllm... $i/90\"; "
+            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died'; break; }; "
+            "  sleep 10; "
             "done; "
             "echo 'ERROR: vLLM did not become healthy in 15 min'; "
-            "tail -50 /root/vllm_server.log; "
+            "[ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log file not found — vLLM may not have started'; "
             "exit 1"
         )
         run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
