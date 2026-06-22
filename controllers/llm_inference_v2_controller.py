@@ -19,6 +19,7 @@ _IST = pytz.timezone("Asia/Kolkata")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 _ACTIVITY_DISPLAY = {
+    # LLM inference
     "clone_and_configure_vm_activity":    "VM Clone & Configure",
     "update_llm_inference_job_activity":  "Update Job Status",
     "install_ray_vllm_activity":          "Install Ray + vLLM",
@@ -28,6 +29,12 @@ _ACTIVITY_DISPLAY = {
     "restore_llm_services_activity":      "Restore LLM Services",
     "vm_power_action_activity":           "VM Power Action",
     "delete_llm_pool_activity":           "Delete VMs & Cleanup",
+    # Library
+    "transfer_file_activity":             "File Transfer to Storage",
+    "finalize_library_record_activity":   "Finalize Record",
+    "mark_upload_failed_activity":        "Cleanup Failed Upload",
+    "delete_library_file_activity":       "Delete File from Storage",
+    "update_library_metadata_activity":   "Update Library Metadata",
 }
 
 

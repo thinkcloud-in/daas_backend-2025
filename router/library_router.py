@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Form, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Form, Query, Request, UploadFile, File
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from typing import Any, Optional
@@ -12,18 +12,19 @@ library_router = APIRouter(prefix="/v1/library", tags=["library"])
 
 @library_router.post("/upload", response_model=APIResponse[Any])
 async def upload_library_item(
-    name:    str        = Form(..., description="Display name for this item"),
-    type:    str        = Form(..., description="base_os | devraq_agent | open_web_ui"),
-    version: Optional[str] = Form(None, description="Version string (required for devraq_agent)"),
-    file:    UploadFile = File(..., description="File to upload"),
-    db:      Session    = Depends(get_db),
+    request: Request,
+    name:    str           = Form(..., description="Display name for this item"),
+    type:    str           = Form(..., description="base_os | devraq_agent | open_web_ui"),
+    version: Optional[str] = Form(None, description="Version string (for devraq_agent)"),
+    file:    UploadFile    = File(..., description="File to upload"),
+    db:      Session       = Depends(get_db),
 ):
-    return await library_controller.upload_library_item(name, type, version, file, db)
+    return await library_controller.upload_library_item(name, type, version, file, db, request)
 
 
 @library_router.get("/list", response_model=APIResponse[Any])
 def list_library_items(
-    type:      Optional[str] = Query(None, description="Filter by type: base_os | devraq_agent | open_web_ui"),
+    type:      Optional[str] = Query(None, description="Filter: base_os | devraq_agent | open_web_ui"),
     page:      int           = Query(1,  ge=1),
     page_size: int           = Query(10, ge=1, le=100),
     db:        Session       = Depends(get_db),
@@ -46,6 +47,17 @@ def get_library_item(item_id: int, db: Session = Depends(get_db)):
     return library_controller.get_library_item(item_id, db)
 
 
+@library_router.put("/{item_id}", response_model=APIResponse[Any])
+async def update_library_item(
+    item_id: int,
+    request: Request,
+    name:    Optional[str] = Form(None, description="New display name"),
+    version: Optional[str] = Form(None, description="New version string"),
+    db:      Session       = Depends(get_db),
+):
+    return await library_controller.update_library_item(item_id, name, version, db, request)
+
+
 @library_router.delete("/{item_id}", response_model=APIResponse[Any])
-def delete_library_item(item_id: int, db: Session = Depends(get_db)):
-    return library_controller.delete_library_item(item_id, db)
+async def delete_library_item(item_id: int, request: Request, db: Session = Depends(get_db)):
+    return await library_controller.delete_library_item(item_id, db, request)

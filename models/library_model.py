@@ -24,26 +24,28 @@ class LibraryItem(Base):
     version     = Column(String, nullable=True)
     file_name   = Column(String, nullable=False)
     file_path   = Column(String, nullable=False)
-    file_size   = Column(BigInteger, nullable=True)
-    status      = Column(String, nullable=False, default="uploading")  # uploading | ready | failed
-    workflow_id = Column(String, nullable=True)
+    file_size    = Column(BigInteger, nullable=True)
+    progress_pct = Column(Integer, nullable=False, default=0)          # 0-100
+    status       = Column(String, nullable=False, default="uploading") # uploading | ready | failed
+    workflow_id  = Column(String, nullable=True)
     created_at  = Column(DateTime, default=datetime.datetime.utcnow)
     updated_at  = Column(DateTime, default=datetime.datetime.utcnow,
                          onupdate=datetime.datetime.utcnow)
 
 
 class LibraryItemOut(BaseModel):
-    id:          int
-    name:        str
-    type:        str
-    version:     Optional[str]
-    file_name:   str
-    file_path:   str
-    file_size:   Optional[int]
-    status:      str
-    workflow_id: Optional[str]
-    created_at:  Optional[str]
-    updated_at:  Optional[str]
+    id:           int
+    name:         str
+    type:         str
+    version:      Optional[str]
+    file_name:    str
+    file_path:    str
+    file_size:    Optional[int]
+    progress_pct: int
+    status:       str
+    workflow_id:  Optional[str]
+    created_at:   Optional[str]
+    updated_at:   Optional[str]
 
     class Config:
         orm_mode = True

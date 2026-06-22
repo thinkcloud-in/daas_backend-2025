@@ -354,6 +354,30 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
 
+        # ── Step 0: Reboot VM ─────────────────────────────────────────────────
+        # Fresh clone ke baad GPU drivers properly initialize nahi hote.
+        # Reboot ensures clean GPU state before vLLM load.
+        logger.info(f"[{ip}] Rebooting VM to ensure clean GPU initialization...")
+        reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=90)
+        logger.info(f"[{ip}] VM back online after reboot")
+
+        # ── Step 0.5: Wait for Ray head service (systemd Restart=always) ─────
+        # Reboot ke baad Ray head service auto-start hoti hai — wait karo ready hone ka
+        _wait_ray_head = (
+            "for i in $(seq 1 48); do "
+            "  systemctl is-active ray-head.service && echo 'ray-head active' && exit 0; "
+            "  echo \"Waiting for ray-head... $i/48\"; sleep 5; "
+            "done; "
+            "echo 'WARNING: ray-head not active after 4 min'; "
+            "systemctl status ray-head.service --no-pager || true; "
+            "exit 0"  # non-fatal — vLLM launch will tell us if Ray is actually broken
+        )
+        try:
+            run_commands(ip, ssh_user, ssh_pass, [_wait_ray_head], timeout=260)
+            logger.info(f"[{ip}] Ray head service confirmed active")
+        except RuntimeError as _ray_err:
+            logger.warning(f"[{ip}] Ray head wait encountered error (non-fatal): {_ray_err}")
+
         _vllm_bin = "/root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
         _vllm_common_args = (
             f" --distributed-executor-backend ray"

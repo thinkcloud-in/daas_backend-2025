@@ -18,7 +18,10 @@ from models.API_Response_model import APIResponse
 from utils import response_format
 from controllers.llm_inference_v2_controller import _fetch_steps
 
-_LLM_WF_TYPES = {"CreateMultiNodeLLMWorkflow", "PoolVMActionWorkflow", "DeleteLLMPoolWorkflow"}
+_LLM_WF_TYPES = {
+    "CreateMultiNodeLLMWorkflow", "PoolVMActionWorkflow", "DeleteLLMPoolWorkflow",
+    "LibraryUploadWorkflow", "LibraryDeleteWorkflow", "LibraryUpdateWorkflow",
+}
 
 router = APIRouter(prefix="/v1")
 
