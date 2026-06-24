@@ -1,7 +1,7 @@
 from sqlalchemy import Column, Integer, String, DateTime
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.ext.declarative import declarative_base
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional, List, Literal
 import datetime
 
@@ -54,6 +54,12 @@ class LLMInferenceJobCreate(BaseModel):
     ssh_pass: Optional[str] = None      # VM SSH password (falls back to LLM_VM_SSH_PASS env var)
     # ram: Optional[int] = None         # taken from template
     # cpu: Optional[int] = None         # taken from template
+
+    @validator("template")
+    def template_must_not_be_empty(cls, v):
+        if not v or not v.strip():
+            raise ValueError("Template VM is required. Provide a valid Proxmox template VMID or name.")
+        return v.strip()
 
 
 class LLMInferenceJobUpdate(BaseModel):

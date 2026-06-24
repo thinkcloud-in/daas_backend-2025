@@ -109,6 +109,8 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             raise HTTPException(status_code=400, detail="At least one node is required")
         if len(data.ipPools) == 0:
             raise HTTPException(status_code=400, detail="At least one IP pool is required")
+        if not data.template or not data.template.strip():
+            raise HTTPException(status_code=400, detail="Template VM is required. Provide a valid Proxmox template VMID or name.")
 
         # ── Prevent duplicate job name ────────────────────────────────────────
         existing = db.query(LLMInferenceJob).filter(LLMInferenceJob.name == data.poolName).first()

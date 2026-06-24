@@ -394,49 +394,67 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             # ── 1. Load /etc/environment ──────────────────────────────────────
             "set -a; source /etc/environment; set +a; "
 
-            # ── 2. Start with explicitly configured model (LLM_MODEL_NAME only)
-            # LLM_NAME is a node identifier — NOT used as model name
-            "RESOLVED_MODEL=\"${LLM_MODEL_NAME:-}\"; "
+            # ── 2. Resolve model path from LLM_MODEL_PATH + LLM_MODEL_NAME ────
+            # LLM_MODEL_PATH = base dir  e.g. /vllm_data/hf_cache
+            # LLM_MODEL_NAME = model dir e.g. ArtLLM
+            # Combined → /vllm_data/hf_cache/ArtLLM
+            #
+            # Also supports:
+            #   LLM_MODEL_NAME as absolute path  (/some/path/model)
+            #   LLM_MODEL_NAME as HF ID          (org/model-name)
+            "RESOLVED_MODEL=''; "
 
-            # ── 3. Scan LLM_PATH from env (e.g. /opt/models/vllm) ────────────
-            # Glob-based: does NOT recurse into blobs — fast even on huge caches
-            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"$LLM_PATH\" ]; then "
-            "  for _cfg in \"$LLM_PATH\"/*/config.json \"$LLM_PATH\"/config.json; do "
+            # Case A: LLM_MODEL_PATH + LLM_MODEL_NAME both set → combine them
+            "if [ -n \"${LLM_MODEL_PATH:-}\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+            "  _combined=\"${LLM_MODEL_PATH}/${LLM_MODEL_NAME}\"; "
+            "  if [ -f \"${_combined}/config.json\" ]; then "
+            "    RESOLVED_MODEL=\"$_combined\"; "
+            "    echo \"[vLLM] Model resolved: $RESOLVED_MODEL (LLM_MODEL_PATH + LLM_MODEL_NAME)\"; "
+            "  else "
+            "    echo \"[vLLM] WARNING: ${_combined}/config.json not found\"; "
+            "  fi; "
+            "fi; "
+
+            # Case B: LLM_MODEL_NAME alone is an absolute path or HF ID (has slash)
+            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+            "  case \"$LLM_MODEL_NAME\" in "
+            "    /*) "  # absolute path
+            "      [ -f \"${LLM_MODEL_NAME}/config.json\" ] && RESOLVED_MODEL=\"$LLM_MODEL_NAME\" "
+            "        && echo \"[vLLM] Model resolved: $RESOLVED_MODEL (absolute path)\"; ;; "
+            "    */*) "  # HF ID like org/model
+            "      RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; "
+            "      echo \"[vLLM] Model resolved: $RESOLVED_MODEL (HuggingFace ID)\"; ;; "
+            "  esac; "
+            "fi; "
+
+            # Case C: Fallback scan inside LLM_MODEL_PATH if name not set
+            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_PATH:-}\" ]; then "
+            "  for _cfg in \"$LLM_MODEL_PATH\"/*/config.json \"$LLM_MODEL_PATH\"/config.json; do "
             "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
-            "      echo \"[vLLM] Found model in LLM_PATH: $RESOLVED_MODEL\"; break; }; "
+            "      echo \"[vLLM] Found model in LLM_MODEL_PATH: $RESOLVED_MODEL\"; break; }; "
             "  done; "
             "fi; "
 
-            # ── 4. Fallback: scan /vllm_data/hf_cache ────────────────────────
-            # Two targeted globs — avoids traversing blobs/ which can have 10k+ files
-            # Pattern A: direct model dir  → /vllm_data/hf_cache/<model>/config.json
-            # Pattern B: HF snapshot layout → /vllm_data/hf_cache/models--*/snapshots/*/config.json
+            # Case D: Final fallback — scan /vllm_data/hf_cache
             "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  for _cfg in /vllm_data/hf_cache/*/config.json; do "
+            "  for _cfg in /vllm_data/hf_cache/*/config.json "
+            "             /vllm_data/hf_cache/models--*/snapshots/*/config.json; do "
             "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
-            "      echo \"[vLLM] Found model in hf_cache (direct): $RESOLVED_MODEL\"; break; }; "
-            "  done; "
-            "fi; "
-            "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  for _cfg in /vllm_data/hf_cache/models--*/snapshots/*/config.json; do "
-            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
-            "      echo \"[vLLM] Found model in hf_cache (HF snapshot): $RESOLVED_MODEL\"; break; }; "
+            "      echo \"[vLLM] Found model in hf_cache fallback: $RESOLVED_MODEL\"; break; }; "
             "  done; "
             "fi; "
 
-            # ── 5. Nothing found → skip gracefully ───────────────────────────
+            # ── 3. Nothing found → skip gracefully ───────────────────────────
             "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  echo 'VLLM_SKIP: no model found in LLM_MODEL_NAME, LLM_PATH, or /vllm_data/hf_cache'; "
+            "  echo 'VLLM_SKIP: LLM_MODEL_PATH/LLM_MODEL_NAME not set and no model found in /vllm_data/hf_cache'; "
             "  exit 0; "
             "fi; "
 
-            # ── 6. Kill stale vLLM process ────────────────────────────────────
-            "echo \"[vLLM] Launching model: $RESOLVED_MODEL\"; "
+            # ── 4. Kill stale vLLM process ────────────────────────────────────
+            "echo \"[vLLM] Launching: $RESOLVED_MODEL\"; "
             "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 2; "
 
-            # ── 7. Fire-and-forget launch (disown detaches from shell immediately)
-            # SSH session closes right after nohup starts — OOM during model
-            # load cannot kill this SSH connection. Health poll verifies readiness.
+            # ── 5. Fire-and-forget launch ─────────────────────────────────────
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
             f"  nohup {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
@@ -458,11 +476,15 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; "
-            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died'; break; }; "
+            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
             "  sleep 10; "
             "done; "
-            "echo 'ERROR: vLLM did not become healthy in 15 min'; "
-            "[ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log file not found — vLLM may not have started'; "
+            "{ "
+            "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
+            "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
+            "  echo '=== vllm_server.log (last 80 lines) ==='; "
+            "  [ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log not found'; "
+            "} >&2; "
             "exit 1"
         )
 
@@ -562,25 +584,43 @@ async def restore_llm_services_activity(payload: dict) -> dict:
         logger.info(f"[{ip}] Ray cluster is healthy")
 
         # ── Step 3: Kill stale vLLM + relaunch ───────────────────────────────
+        _vllm_bin_r = f"{venv_bin}/python3 -m vllm.entrypoints.openai.api_server"
+        _vllm_args_r = (
+            f" --distributed-executor-backend ray"
+            f" --tensor-parallel-size {tp_size}"
+            f" --pipeline-parallel-size {pp_size}"
+            f" --max-model-len 32768"
+            f" --gpu-memory-utilization 0.90"
+            f" --enable-chunked-prefill"
+            f" --trust-remote-code"
+            f" --host 0.0.0.0 --port 8000"
+        )
         vllm_launch = (
             "set -a; source /etc/environment; set +a; "
-            "[ -n \"$LLM_MODEL_NAME\" ] || "
-            "  { echo 'ERROR: LLM_MODEL_NAME not set in /etc/environment'; exit 1; }; "
-            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; "
-            "sleep 3; "
-            f"nohup {venv_bin}/python3 -m vllm.entrypoints.openai.api_server "
-            f"  --model \"$LLM_MODEL_NAME\" "
-            f"  --served-model-name \"$LLM_MODEL_NAME\" "
-            f"  --download-dir \"$LLM_MODEL_PATH\" "
-            f"  --distributed-executor-backend ray "
-            f"  --tensor-parallel-size {tp_size} "
-            f"  --pipeline-parallel-size {pp_size} "
-            f"  --max-model-len 32768 "
-            f"  --gpu-memory-utilization 0.90 "
-            f"  --enable-chunked-prefill "
-            f"  --trust-remote-code "
-            f"  --host 0.0.0.0 --port 8000 "
-            f"  > /root/vllm_server.log 2>&1 & "
+
+            # Resolve model: LLM_MODEL_PATH + LLM_MODEL_NAME → combined path
+            "RESOLVED_MODEL=''; "
+            "if [ -n \"${LLM_MODEL_PATH:-}\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+            "  _combined=\"${LLM_MODEL_PATH}/${LLM_MODEL_NAME}\"; "
+            "  [ -f \"${_combined}/config.json\" ] && RESOLVED_MODEL=\"$_combined\" "
+            "    && echo \"[vLLM-restore] Model: $RESOLVED_MODEL\"; "
+            "fi; "
+            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+            "  case \"$LLM_MODEL_NAME\" in "
+            "    /*) [ -f \"${LLM_MODEL_NAME}/config.json\" ] && RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; ;; "
+            "    */*) RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; ;; "
+            "  esac; "
+            "fi; "
+            "if [ -z \"$RESOLVED_MODEL\" ]; then "
+            "  echo 'ERROR: Cannot resolve model — set LLM_MODEL_PATH and LLM_MODEL_NAME in /etc/environment'; exit 1; "
+            "fi; "
+
+            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 3; "
+            "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
+            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\"{_vllm_args_r} > /root/vllm_server.log 2>&1 & disown; "
+            "else "
+            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\" --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\"{_vllm_args_r} > /root/vllm_server.log 2>&1 & disown; "
+            "fi; "
             "sleep 8; "
             "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
             "  { echo 'ERROR: vLLM process failed to start'; cat /root/vllm_server.log; exit 1; }"
@@ -589,11 +629,15 @@ async def restore_llm_services_activity(payload: dict) -> dict:
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; "
-            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died'; break; }; "
+            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
             "  sleep 10; "
             "done; "
-            "echo 'ERROR: vLLM did not become healthy in 15 min'; "
-            "[ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log file not found — vLLM may not have started'; "
+            "{ "
+            "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
+            "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
+            "  echo '=== vllm_server.log (last 80 lines) ==='; "
+            "  [ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log not found'; "
+            "} >&2; "
             "exit 1"
         )
         run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)

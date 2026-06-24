@@ -74,8 +74,8 @@ class CreateMultiNodeLLMWorkflow:
         head_ip  = ip_addrs[0]
 
         # Compute parallelism sizes from topology
-        n_nodes          = len(nodes)                        # one stage per node
-        n_gpus_per_node  = len(nodes[0]["gpu"]) if nodes else 1  # GPUs within each node
+        n_nodes          = len(nodes)                             # pipeline stages (cross-node)
+        n_gpus_per_node  = len(nodes[0]["gpu"]) if nodes else 1  # tensor parallelism (within-node)
         net_iface        = payload.get("net_iface", "ens18")
 
         # ── Phase 2: Update DB with VM info ───────────────────────────────────
@@ -165,14 +165,14 @@ class CreateMultiNodeLLMWorkflow:
             await asyncio.gather(*worker_tasks)
 
         # ── Phase 6: Launch vLLM on head node ────────────────────────────────
-        # tensor_parallel_size = number of nodes (pipeline stages)
-        # pipeline_parallel_size = GPUs per node (within-node parallelism)
+        # tensor_parallel_size  = GPUs per node (within-node, NVLink/PCIe)
+        # pipeline_parallel_size = number of nodes (cross-node pipeline stages)
         launch_result = await workflow.execute_activity(
             activities_llm_inference_v2.launch_vllm_from_template_activity,
             args=[{
                 "ip_address":             head_ip,
-                "tensor_parallel_size":   n_nodes,
-                "pipeline_parallel_size": n_gpus_per_node,
+                "tensor_parallel_size":   n_gpus_per_node,
+                "pipeline_parallel_size": n_nodes,
                 **ssh_creds,
             }],
             retry_policy=RetryPolicy(maximum_attempts=1),

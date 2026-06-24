@@ -371,12 +371,12 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
         "sudo sed -i '/^LLM_MODEL_PATH=/d' /etc/environment",
         "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
         "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
-        # LLM_MODEL_NAME: use API-provided model; if empty fall back to template's LLM_NAME
-        (
-            f'echo \'LLM_MODEL_NAME={model}\' | sudo tee -a /etc/environment > /dev/null'
-            if model else
-            'LLM_NAME_VAL=$(grep "^LLM_NAME=" /etc/environment | cut -d= -f2- | tr -d \'"\'); '
-            '[ -n "$LLM_NAME_VAL" ] && echo "LLM_MODEL_NAME=$LLM_NAME_VAL" | sudo tee -a /etc/environment > /dev/null || true'
+        # LLM_MODEL_NAME: write only if API provided a real model path or HF ID.
+        # LLM_NAME is a node identifier — NEVER copy it to LLM_MODEL_NAME.
+        # If model is empty, leave LLM_MODEL_NAME unset → launch script scans paths.
+        *(
+            [f'echo \'LLM_MODEL_NAME={model}\' | sudo tee -a /etc/environment > /dev/null']
+            if model else []
         ),
         # LLM_MODEL_PATH: use API-provided path; if default fall back to template's LLM_PATH
         (
