@@ -50,9 +50,9 @@ async def delete_llm_inference_job(
     Delete an LLM inference job.
 
     TOTP logic:
-    - If user has no OTP in Keycloak  → delete directly, no TOTP needed.
-    - If user already called POST /v1/totp/verify-totp (within last 5 min) → delete directly.
-    - If user has OTP but hasn't verified yet → send {"totp_code": "123456"} in body to verify here.
+    - Admin ne Keycloak mein OTP disabled kiya hai → directly delete, no OTP needed.
+    - Admin ne OTP enabled kiya hai AND user ne last 5 min mein verify kiya → directly delete.
+    - Admin ne OTP enabled kiya hai AND user ne verify nahi kiya → totp_code body mein do.
     """
     import jwt as _pyjwt
     from keycloak_configration import keycloak_config as key_config
@@ -71,8 +71,8 @@ async def delete_llm_inference_job(
     except Exception:
         raise HTTPException(status_code=401, detail="Invalid JWT token")
 
-    if key_config.has_keycloak_otp(user_id):
-        # Already verified via /totp/verify-totp within the last 5 minutes → skip re-check
+    # Gate: only enforce OTP if admin has enabled it globally (same flag as /totp/get-enable-disable-guac)
+    if key_config.get_Auth_flow_Value_browser():
         if not key_config.is_totp_recently_verified(user_id):
             totp_code = (body.totp_code if body else "") or ""
             if not totp_code:
