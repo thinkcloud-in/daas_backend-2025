@@ -435,7 +435,8 @@ async def configure_ray_activity(payload: dict) -> dict:
     num_gpus = payload.get("num_gpus", 1)
     net_iface = payload.get("net_iface", "ens18")
 
-    venv_bin = "/root/vllm-ray-env/bin"
+    home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
+    venv_bin = f"{home_dir}/vllm-ray-env/bin"
     cuda_path = "/usr/local/cuda/bin"
 
     if role == "head":
@@ -535,7 +536,8 @@ async def launch_vllm_model_activity(payload: dict) -> dict:
     max_model_len = payload.get("max_model_len", 32768)
     gpu_memory_utilization = payload.get("gpu_memory_utilization", 0.90)
 
-    venv_python = "/root/vllm-ray-env/bin/python3"
+    home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
+    venv_python = f"{home_dir}/vllm-ray-env/bin/python3"
 
     quantization_flag = f"--quantization {quantization} \\" if quantization else ""
 

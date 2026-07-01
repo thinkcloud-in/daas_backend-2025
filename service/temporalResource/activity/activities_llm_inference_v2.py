@@ -378,7 +378,8 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         except RuntimeError as _ray_err:
             logger.warning(f"[{ip}] Ray head wait encountered error (non-fatal): {_ray_err}")
 
-        _vllm_bin = "/root/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
+        home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
+        _vllm_bin = f"{home_dir}/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
         _vllm_common_args = (
             f" --distributed-executor-backend ray"
             f" --tensor-parallel-size {tp_size}"
@@ -557,7 +558,8 @@ async def restore_llm_services_activity(payload: dict) -> dict:
     role     = payload.get("role", "head")   # "head" | "worker"
     tp_size  = payload.get("tensor_parallel_size", 1)
     pp_size  = payload.get("pipeline_parallel_size", 1)
-    venv_bin = "/root/vllm-ray-env/bin"
+    home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
+    venv_bin = f"{home_dir}/vllm-ray-env/bin"
     service  = "ray-head" if role == "head" else "ray-worker"
 
     # ── Step 1: Wait for systemd Ray service to be active (max 3 min) ─────────
