@@ -229,7 +229,7 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         if resp.status_code >= 400:
             raise RuntimeError(f"Clone failed: {resp.text}")
         upid = resp.json()["data"]
-        _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=4800)
+        _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=10800)
 
         def _resolve_hostpci(g: str) -> str:
             if ":" not in g:

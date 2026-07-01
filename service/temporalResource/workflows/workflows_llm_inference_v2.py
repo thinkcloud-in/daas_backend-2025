@@ -59,7 +59,7 @@ class CreateMultiNodeLLMWorkflow:
                         **ssh_creds,
                     }],
                     retry_policy=RetryPolicy(maximum_attempts=1),
-                    start_to_close_timeout=timedelta(minutes=90),
+                    start_to_close_timeout=timedelta(minutes=210),
                 )
             )
 
