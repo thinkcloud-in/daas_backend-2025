@@ -30,11 +30,17 @@ _ACTIVITY_DISPLAY = {
     "vm_power_action_activity":           "VM Power Action",
     "delete_llm_pool_activity":           "Delete VMs & Cleanup",
     # Library
-    "transfer_file_activity":             "File Transfer to Storage",
+    "transfer_file_activity":             "File Transfer to PV",
+    "transfer_file_to_harbor_activity":   "File Transfer to Harbor (SFTP)",
     "finalize_library_record_activity":   "Finalize Record",
     "mark_upload_failed_activity":        "Cleanup Failed Upload",
     "delete_library_file_activity":       "Delete File from Storage",
     "update_library_metadata_activity":   "Update Library Metadata",
+    # LXC Restore
+    "upload_lxc_to_proxmox_activity":    "Upload LXC Backup to Proxmox",
+    "restore_lxc_container_activity":    "Restore & Start LXC Container",
+    "setup_lxc_container_activity":      "Configure SSH + iptables",
+    "update_lxc_job_status_activity":    "Update Job Status",
 }
 
 

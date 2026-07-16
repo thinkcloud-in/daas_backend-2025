@@ -106,6 +106,61 @@ for _col_sql in [
     except Exception as e:
         logger.error(f"Failed to apply library migration [{_col_sql[:50]}]: {str(e)}")
 
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS lxc_restore_jobs (
+                id              SERIAL PRIMARY KEY,
+                name            VARCHAR   NOT NULL,
+                cluster_id      INTEGER   NOT NULL,
+                ip_pool_id      INTEGER   NOT NULL,
+                library_item_id INTEGER   NOT NULL,
+                node            VARCHAR,
+                vmid            INTEGER,
+                ip_address      VARCHAR,
+                storage         VARCHAR   DEFAULT 'local-lvm',
+                status          VARCHAR   NOT NULL DEFAULT 'provisioning',
+                workflow_id     VARCHAR,
+                created_at      TIMESTAMP DEFAULT NOW(),
+                updated_at      TIMESTAMP DEFAULT NOW()
+            )
+        """))
+except Exception as e:
+    logger.error(f"Failed to create lxc_restore_jobs table: {str(e)}")
+
+for _lxc_col_sql in [
+    "ALTER TABLE lxc_restore_jobs ADD COLUMN IF NOT EXISTS container_state VARCHAR DEFAULT 'unknown'",
+]:
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(_lxc_col_sql))
+    except Exception as e:
+        logger.error(f"Failed to apply lxc_restore_jobs migration [{_lxc_col_sql[:60]}]: {str(e)}")
+
+
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS harbor_images (
+                id           SERIAL PRIMARY KEY,
+                name         VARCHAR   NOT NULL,
+                type         VARCHAR   NOT NULL,
+                machine_name VARCHAR   NOT NULL,
+                machine_ip   VARCHAR,
+                image_tag    VARCHAR   NOT NULL DEFAULT 'latest',
+                project      VARCHAR   NOT NULL DEFAULT 'library',
+                harbor_image VARCHAR,
+                file_name    VARCHAR,
+                file_size    BIGINT,
+                status       VARCHAR   NOT NULL DEFAULT 'pending',
+                workflow_id  VARCHAR,
+                created_at   TIMESTAMP DEFAULT NOW(),
+                updated_at   TIMESTAMP DEFAULT NOW()
+            )
+        """))
+except Exception as e:
+    logger.error(f"Failed to create harbor_images table: {str(e)}")
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()
 def get_db():

@@ -24,8 +24,7 @@ async def library_upload_worker():
         task_queue=TASK_QUEUE,
         workflows=[LibraryUploadWorkflow, LibraryDeleteWorkflow, LibraryUpdateWorkflow],
         activities=[
-            activities_library.transfer_file_activity,
-            activities_library.finalize_library_record_activity,
+            activities_library.transfer_file_activity,      # Library-Track-Upload-Progress
             activities_library.mark_upload_failed_activity,
             activities_library.delete_library_file_activity,
             activities_library.update_library_metadata_activity,
