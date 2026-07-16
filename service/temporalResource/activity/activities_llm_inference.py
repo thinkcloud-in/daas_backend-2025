@@ -20,7 +20,7 @@ dotenv.load_dotenv()
 logger = logging.getLogger(__name__)
 
 VERIFY_SSL = False
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
+_SSH_USER = os.getenv("LLM_VM_SSH_USER", "vllm")
 _SSH_PASS = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
 _DEVRAQ_RPM_URL = os.getenv("DEVRAQ_RPM_URL", "")  # URL to devraq-agent RPM
 
@@ -73,7 +73,7 @@ def _wait_for_task(host: str, headers: dict, node: str, upid: str, timeout: int 
 # ── activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
-async def create_vm_with_gpu_activity(payload: dict) -> dict:
+def create_vm_with_gpu_activity(payload: dict) -> dict:
     db: Session = SessionLocal()
     try:
         try:
@@ -188,7 +188,7 @@ async def create_vm_with_gpu_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def add_affinity_rule_activity(payload: dict) -> dict:
+def add_affinity_rule_activity(payload: dict) -> dict:
     """
     Adds a HA affinity rule to keep the LLM VM on its designated node.
     Proxmox HA rules are node-pinned via the 'ha' group resource.
@@ -230,7 +230,7 @@ async def add_affinity_rule_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def configure_cloudinit_activity(payload: dict) -> dict:
+def configure_cloudinit_activity(payload: dict) -> dict:
     """
     Cloud-init config is already set during VM creation.
     This activity only starts the VM and returns the IP address.
@@ -269,7 +269,7 @@ async def configure_cloudinit_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def install_devraq_agent_activity(payload: dict) -> dict:
+def install_devraq_agent_activity(payload: dict) -> dict:
     """
     SSHes into the VM and installs the devraq guest agent RPM.
     """
@@ -289,7 +289,7 @@ async def install_devraq_agent_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def install_ray_vllm_activity(payload: dict) -> dict:
+def install_ray_vllm_activity(payload: dict) -> dict:
     """
     Idempotent setup: NVIDIA driver + CUDA + Ray + vLLM on Rocky Linux 9.
     Each phase is skipped if already installed — safe to re-run on existing VMs.
@@ -306,8 +306,26 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
     model = payload.get("model", "")
     model_path = payload.get("model_path", "/vllm_data/hf_cache")
 
+    # Log exactly what we received so we can prove whether this activity is the
+    # one touching /etc/environment's LLM_MODEL_NAME. Empty model => we leave the
+    # template's value untouched; non-empty => we delete + rewrite it.
+    logger.info(
+        f"[{ip}] install_ray_vllm: model={model!r} (will_overwrite_name={bool(model)}), "
+        f"model_path={model_path!r} (will_overwrite_path={bool(model_path and model_path != '/vllm_data/hf_cache')})"
+    )
+
     # Always set hostname
     run_commands(ip, ssh_user, ssh_pass, [f"sudo hostnamectl set-hostname '{hostname}'"], timeout=30)
+
+    # ── SELinux → permissive ──────────────────────────────────────────────────
+    # Enforcing SELinux blocks systemd from exec'ing the Ray binary in /home
+    # (user_home_t context) → ray-head.service crash-loops with 203/EXEC.
+    # setenforce 0 fixes the running mode now; the config edit makes it survive
+    # reboots. Idempotent — safe to re-run.
+    run_commands(ip, ssh_user, ssh_pass, [
+        "sudo setenforce 0 2>/dev/null || true",
+        "sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true",
+    ], timeout=30)
 
     # ── Check: NVIDIA driver already installed? ───────────────────────────────
     try:
@@ -366,26 +384,41 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
         "grep -qF 'vllm-ray-env/bin' ~/.bashrc || echo 'export PATH=\"$HOME/vllm-ray-env/bin:$PATH\"' >> ~/.bashrc",
 
         # /etc/environment — used by systemd services + vLLM launch (survives reboot)
-        # Always overwrite model vars so any update takes effect
-        "sudo sed -i '/^LLM_MODEL_NAME=/d' /etc/environment",
-        "sudo sed -i '/^LLM_MODEL_PATH=/d' /etc/environment",
-        "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
-        "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
-        # LLM_MODEL_NAME: write only if API provided a real model path or HF ID.
-        # LLM_NAME is a node identifier — NEVER copy it to LLM_MODEL_NAME.
-        # If model is empty, leave LLM_MODEL_NAME unset → launch script scans paths.
+        # MODEL vars come from the TEMPLATE's /etc/environment by default.
+        # We only OVERWRITE them when the API request explicitly provides a value;
+        # if the request leaves model / model_path empty, the template's existing
+        # LLM_MODEL_NAME and LLM_MODEL_PATH are left untouched.
+
+        # ── Guard: ensure /etc/environment ends with a newline BEFORE any append.
+        # If the template's file has no trailing newline on its last line (e.g.
+        # "LLM_MODEL_NAME=..."), the first `tee -a` below would glue onto it
+        # ("LLM_MODEL_NAME=ArtLLMVLLM_USE_V1=1") — silently corrupting/erasing
+        # that line. This appends a single newline only when the last byte isn't one.
+        "sudo test -s /etc/environment && "
+        "[ -n \"$(sudo tail -c1 /etc/environment)\" ] && "
+        "echo | sudo tee -a /etc/environment > /dev/null || true",
+
+        # LLM_MODEL_NAME: overwrite only if API provided a real model (HF ID / path).
+        # If empty → keep the template's LLM_MODEL_NAME from /etc/environment.
         *(
-            [f'echo \'LLM_MODEL_NAME={model}\' | sudo tee -a /etc/environment > /dev/null']
+            [
+                "sudo sed -i '/^LLM_MODEL_NAME=/d' /etc/environment",
+                f'echo \'LLM_MODEL_NAME={model}\' | sudo tee -a /etc/environment > /dev/null',
+            ]
             if model else []
         ),
-        # LLM_MODEL_PATH: use API-provided path; if default fall back to template's LLM_PATH
-        (
-            f'echo \'LLM_MODEL_PATH={model_path}\' | sudo tee -a /etc/environment > /dev/null'
-            if model_path and model_path != "/vllm_data/hf_cache" else
-            'LLM_PATH_VAL=$(grep "^LLM_PATH=" /etc/environment | cut -d= -f2- | tr -d \'"\'); '
-            f'[ -n "$LLM_PATH_VAL" ] && echo "LLM_MODEL_PATH=$LLM_PATH_VAL" | sudo tee -a /etc/environment > /dev/null '
-            f'|| echo \'LLM_MODEL_PATH={model_path}\' | sudo tee -a /etc/environment > /dev/null'
+        # LLM_MODEL_PATH: overwrite only if API provided a non-default path.
+        # If empty/default → keep the template's LLM_MODEL_PATH from /etc/environment.
+        *(
+            [
+                "sudo sed -i '/^LLM_MODEL_PATH=/d' /etc/environment",
+                f'echo \'LLM_MODEL_PATH={model_path}\' | sudo tee -a /etc/environment > /dev/null',
+            ]
+            if model_path and model_path != "/vllm_data/hf_cache" else []
         ),
+        # Runtime vars — safe to always refresh (not model-related)
+        "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
+        "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
         'echo \'VLLM_USE_V1=1\' | sudo tee -a /etc/environment > /dev/null',
         f'echo \'NCCL_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
 
@@ -417,7 +450,7 @@ async def install_ray_vllm_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def configure_ray_activity(payload: dict) -> dict:
+def configure_ray_activity(payload: dict) -> dict:
     """
     Creates ray-head.service (head node) or ray-worker.service (worker node)
     systemd unit file, then starts and enables it.
@@ -428,7 +461,7 @@ async def configure_ray_activity(payload: dict) -> dict:
       head_ip      : head node IP (only needed when role == "worker")
     """
     ip = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
+    ssh_user = payload.get("ssh_user") or _SSH_USER
     ssh_pass = payload.get("ssh_pass", _SSH_PASS)
     role = payload.get("role", "head")
     head_ip = payload.get("head_ip", ip)
@@ -465,7 +498,8 @@ async def configure_ray_activity(payload: dict) -> dict:
         "",
         "[Service]",
         "Type=simple",
-        "User=root",
+        f"User={ssh_user}",
+        f"Group={ssh_user}",
         f'Environment="PATH={venv_bin}:{cuda_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"',
         f'Environment="NCCL_SOCKET_IFNAME={net_iface}"',
         'Environment="VLLM_USE_V1=1"',
@@ -497,18 +531,29 @@ async def configure_ray_activity(payload: dict) -> dict:
         # Enable + start
         f"sudo systemctl enable {service_name}.service",
         f"sudo systemctl start {service_name}.service",
-
-        # Give ray a moment then verify
-        "sleep 5",
-        f"{venv_bin}/ray status",
+        "",
+        # Verify service is active
+        f"sudo systemctl is-active {service_name}.service || {{ sudo journalctl -u {service_name}.service --no-pager; exit 1; }}",
+        # Poll Ray status until GCS is up (Type=simple means "started" != "ready").
+        # Ray head can take 10-60s to bootstrap; retry up to 2 min before failing.
+        (
+            f"for i in $(seq 1 24); do "
+            f"  {venv_bin}/ray status" + ("" if role == "head" else f" --address={head_ip}:6379") + " 2>/dev/null && exit 0; "
+            f"  sudo systemctl is-active --quiet {service_name}.service || {{ echo 'ERROR: {service_name} died'; sudo journalctl -u {service_name}.service --no-pager | tail -50; exit 1; }}; "
+            f"  echo \"Waiting for ray... $i/24\"; sleep 5; "
+            f"done; "
+            f"echo 'ERROR: Ray not ready after 2 min'; "
+            f"sudo journalctl -u {service_name}.service --no-pager | tail -50; "
+            f"exit 1"
+        ),
     ]
-    run_commands(ip, ssh_user, ssh_pass, cmds, timeout=120)
+    run_commands(ip, ssh_user, ssh_pass, cmds, timeout=240)
     logger.info(f"Ray {role} started on {ip} via {service_name}.service")
     return {"ip_address": ip, "role": role, "step": "ray_configured"}
 
 
 @activity.defn
-async def launch_vllm_model_activity(payload: dict) -> dict:
+def launch_vllm_model_activity(payload: dict) -> dict:
     """
     Launches vLLM OpenAI-compatible server on the head node.
     Model is downloaded from HuggingFace into /vllm_data/hf_cache.
@@ -561,7 +606,7 @@ async def launch_vllm_model_activity(payload: dict) -> dict:
         f"  --port 8000 \\\n"
         f"  --enable-auto-tool-choice \\\n"
         f"  --tool-call-parser openai \\\n"
-        f"> /root/vllm_server.log 2>&1 &"
+        f"> {home_dir}/vllm_server.log 2>&1 &"
     )
 
     cmds = [
@@ -576,7 +621,7 @@ async def launch_vllm_model_activity(payload: dict) -> dict:
         (
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && break; "
-            "  echo \"Waiting for vllm... attempt $i/90 (check /root/vllm_server.log)\"; "
+            "  echo \"Waiting for vllm... attempt $i/90 (check {home_dir}/vllm_server.log)\"; "
             "  sleep 10; "
             "done"
         ),
@@ -588,7 +633,7 @@ async def launch_vllm_model_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def update_llm_inference_status_activity(payload: dict) -> dict:
+def update_llm_inference_status_activity(payload: dict) -> dict:
     """
     Persists vmid, ip_address, endpoint_url, and status back to the DB record.
     """

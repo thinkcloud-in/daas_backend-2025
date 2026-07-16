@@ -4,6 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from pydantic import BaseModel, validator
 from typing import Optional, List, Literal
 import datetime
+import os
 
 Base = declarative_base()
 
@@ -49,7 +50,7 @@ class LLMInferenceJobCreate(BaseModel):
     storage: Optional[str] = "local-lvm"
     machine_name: Optional[str] = None
     model: Optional[str] = None         # HuggingFace model ID e.g. "meta-llama/Llama-3-70B-Instruct"
-    model_path: Optional[str] = "/vllm_data/hf_cache"
+    model_path: Optional[str] = None
     ssh_user: Optional[str] = None      # VM SSH user  (falls back to LLM_VM_SSH_USER env var)
     ssh_pass: Optional[str] = None      # VM SSH password (falls back to LLM_VM_SSH_PASS env var)
     # ram: Optional[int] = None         # taken from template
@@ -60,6 +61,14 @@ class LLMInferenceJobCreate(BaseModel):
         if not v or not v.strip():
             raise ValueError("Template VM is required. Provide a valid Proxmox template VMID or name.")
         return v.strip()
+
+    @validator("model", pre=True, always=True)
+    def set_model_from_env(cls, v):
+        return v or os.getenv("LLM_MODEL_NAME")
+
+    @validator("model_path", pre=True, always=True)
+    def set_model_path_from_env(cls, v):
+        return v or os.getenv("LLM_MODEL_PATH", "/vllm_data/hf_cache")
 
 
 class LLMInferenceJobUpdate(BaseModel):

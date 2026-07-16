@@ -33,20 +33,67 @@ def _netmask_to_cidr(netmask: str) -> int:
     return ipaddress.IPv4Network(f"0.0.0.0/{netmask}").prefixlen
 
 
-def _wait_for_task(host: str, headers: dict, node: str, upid: str, timeout: int = 300):
+def _all_hosts(cluster_data) -> list:
+    """Build all candidate 'https://ip:port' URLs for a cluster (no probing)."""
+    ip_field = cluster_data.ip
+    port     = cluster_data.port
+    if isinstance(ip_field, str):
+        ips = [ip.strip() for ip in ip_field.split(",") if ip.strip()]
+    elif isinstance(ip_field, list):
+        ips = [ip.strip() for ip in ip_field if isinstance(ip, str) and ip.strip()]
+    else:
+        ips = []
+    return [f"https://{ip}:{port}" for ip in ips]
+
+
+def _wait_for_task(hosts, headers: dict, node: str, upid: str, timeout: int = 300):
+    """
+    Poll a Proxmox task until it stops. `hosts` may be a single URL or a list of
+    cluster host URLs — on a connection failure we rotate to the next host, since
+    any node in a Proxmox cluster can answer a cluster-wide task-status query.
+    """
     import time
-    deadline = time.time() + timeout
+    if isinstance(hosts, str):
+        hosts = [hosts]
+    deadline   = time.time() + timeout
+    poll_count = 0
+    hi         = 0  # current host index
+    conn_fail  = 0  # consecutive connection failures
+
     while time.time() < deadline:
-        resp = requests.get(
-            f"{host}/api2/json/nodes/{node}/tasks/{upid}/status",
-            headers=headers, verify=False, timeout=10
-        )
-        if resp.ok:
-            data = resp.json().get("data", {})
-            if data.get("status") == "stopped":
-                if data.get("exitstatus", "OK") != "OK":
-                    raise RuntimeError(f"Proxmox task {upid} failed: {data.get('exitstatus')}")
-                return
+        poll_count += 1
+        host = hosts[hi % len(hosts)]
+        try:
+            resp = requests.get(
+                f"{host}/api2/json/nodes/{node}/tasks/{quote(upid, safe='')}/status",
+                headers=headers, verify=False, timeout=10
+            )
+            conn_fail = 0  # reachable again
+            if resp.ok:
+                data = resp.json().get("data", {})
+                if data.get("status") == "stopped":
+                    if data.get("exitstatus", "OK") != "OK":
+                        raise RuntimeError(f"Proxmox task {upid} failed: {data.get('exitstatus')}")
+                    return
+                if poll_count % 12 == 0:  # log every ~1 min
+                    logger.info(f"Task {upid} on {node}: still {data.get('status')} (via {host})")
+            else:
+                logger.warning(f"Task status poll failed ({resp.status_code}) for {upid} via {host}: {resp.text[:200]}")
+                if resp.status_code in (401, 403, 404) and poll_count >= 6:
+                    raise RuntimeError(
+                        f"Cannot read status of task {upid} on {node} "
+                        f"(HTTP {resp.status_code} after {poll_count} attempts): {resp.text[:300]}"
+                    )
+        except requests.exceptions.RequestException as exc:
+            # Connection dropped — rotate to the next cluster host and keep polling
+            conn_fail += 1
+            logger.warning(f"Task poll connection error via {host} (fail #{conn_fail}): {exc}")
+            hi += 1
+            if conn_fail >= len(hosts) * 6:
+                raise RuntimeError(
+                    f"All cluster hosts unreachable while polling task {upid} "
+                    f"(tried {hosts}, {conn_fail} consecutive failures)"
+                )
         time.sleep(5)
     raise RuntimeError(f"Proxmox task {upid} timed out after {timeout}s")
 
@@ -86,7 +133,7 @@ def _run_commands_with_key(host: str, username: str, pkey, commands: list):
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
-async def clone_and_configure_vm_activity(payload: dict) -> dict:
+def clone_and_configure_vm_activity(payload: dict) -> dict:
     """
     For one node:
       1. Clone template VM onto the target node
@@ -119,25 +166,10 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
         if not PROXMOX_HOST:
             raise RuntimeError("No reachable Proxmox host")
+        # All cluster hosts — used for task-status failover if one node drops mid-clone
+        ALL_HOSTS = _all_hosts(cluster_data) or [PROXMOX_HOST]
 
-        # ── Fetch PCI hardware mappings (PCI addr → mapping name) ─────────
-        # Avoids guessing the mapping name from the bus number.
-        pci_to_mapping: dict = {}
-        try:
-            map_resp = requests.get(
-                f"{PROXMOX_HOST}/api2/json/cluster/mapping/pci",
-                headers=headers, verify=False, timeout=10
-            )
-            if map_resp.ok:
-                for m in map_resp.json().get("data", []):
-                    for map_str in m.get("map", []):
-                        parts = dict(p.split("=", 1) for p in map_str.split(";") if "=" in p)
-                        path = parts.get("path", "")
-                        if path:
-                            pci_to_mapping[path] = m["id"]
-            logger.info(f"[cluster {cluster_id}] PCI mappings: {pci_to_mapping}")
-        except Exception as exc:
-            logger.warning(f"[cluster {cluster_id}] PCI mapping fetch failed (name-derived fallback active): {exc}")
+        logger.info(f"[cluster {cluster_id}] GPUs (raw PCI): {gpus}")
 
         # ── Generate unique VM name ───────────────────────────────────────
         all_vms        = proxmoxService.get_all_cluster_vms(db, cluster_data)
@@ -215,6 +247,15 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         except Exception as exc:
             logger.warning(f"Template hostpci cleanup failed (proceeding anyway): {exc}")
 
+        # ── Release the DB connection BEFORE the long clone ───────────────
+        # All DB reads are done. The clone + boot + SSH below take ~40 min, and
+        # Postgres/poolers reap idle connections in that window → the later
+        # db.close() would blow up with "server closed the connection
+        # unexpectedly". We reopen a fresh short-lived session at the very end
+        # only to mark the IP as used.
+        db.close()
+        db = None
+
         # ── Clone from template ───────────────────────────────────────────
         clone_data = {"newid": vmid, "name": vm_name, "full": 1}
         if node != template_node:
@@ -229,24 +270,13 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         if resp.status_code >= 400:
             raise RuntimeError(f"Clone failed: {resp.text}")
         upid = resp.json()["data"]
-        _wait_for_task(PROXMOX_HOST, headers, template_node, upid, timeout=10800)
+        _wait_for_task(ALL_HOSTS, headers, template_node, upid, timeout=10800)
 
-        def _resolve_hostpci(g: str) -> str:
-            if ":" not in g:
-                # Already a mapping name e.g. "gpu-41"
-                return f"mapping={g},pcie=1"
-            # PCI address: look up actual mapping name from fetched cluster mappings
-            mapping_name = pci_to_mapping.get(g)
-            if mapping_name:
-                return f"mapping={mapping_name},pcie=1"
-            # Fallback: derive from bus segment (assumes naming convention gpu-{bus})
-            bus_match = re.match(r'^[0-9a-fA-F]{4}:([0-9a-fA-F]+):', g)
-            if bus_match:
-                return f"mapping=gpu-{bus_match.group(1)},pcie=1"
-            return f"mapping={g},pcie=1"
-
-        hostpci_data = {f"hostpci{i}": _resolve_hostpci(g) for i, g in enumerate(gpus)}
-        logger.info(f"[{vmid}] Resolved hostpci: {hostpci_data}")
+        hostpci_data = {
+            f"hostpci{i}": f"{pci},pcie=1"
+            for i, pci in enumerate(gpus)
+        }
+        logger.info(f"[{vmid}] hostpci config: {hostpci_data}")
 
         # ── Generate temp RSA key for initial key-based SSH ───────────────
         # sshkeys cloud-init param adds this key to ciuser's authorized_keys.
@@ -281,7 +311,7 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         config_upid = resp.json().get("data")
         if config_upid:
             logger.info(f"[{vmid}] Waiting for config task {config_upid}...")
-            _wait_for_task(PROXMOX_HOST, headers, node, config_upid, timeout=60)
+            _wait_for_task(ALL_HOSTS, headers, node, config_upid, timeout=60)
 
         # ── Boot VM ───────────────────────────────────────────────────────
         # Retry start up to 5 times with increasing delay to ride out any
@@ -298,7 +328,7 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
             time.sleep(attempt * 3)
         upid = resp.json().get("data")
         if upid:
-            _wait_for_task(PROXMOX_HOST, headers, node, upid, timeout=120)
+            _wait_for_task(ALL_HOSTS, headers, node, upid, timeout=120)
         else:
             # Some Proxmox versions return null for synchronous start; poll until running
             logger.info(f"[{vmid}] Start returned no UPID — polling VM status...")
@@ -331,20 +361,32 @@ async def clone_and_configure_vm_activity(payload: dict) -> dict:
         time.sleep(5)
         logger.info(f"[{vmid}] PasswordAuthentication enabled at {reserved_ip}")
 
-        # ── Mark IP as used ───────────────────────────────────────────────
-        ip_entry.status = "used"
-        ip_entry.vm_id  = str(vmid)
-        db.commit()
+        # ── Mark IP as used (fresh short-lived session) ───────────────────
+        # The original session was closed before the clone; open a new one now
+        # and re-query the IPEntry so we commit on a live connection.
+        mark_db: Session = SessionLocal()
+        try:
+            ip_entry = mark_db.query(IPEntry).filter(IPEntry.ip == reserved_ip).first()
+            if ip_entry:
+                ip_entry.status = "used"
+                ip_entry.vm_id  = str(vmid)
+                mark_db.commit()
+            else:
+                logger.warning(f"[{vmid}] IPEntry for {reserved_ip} not found when marking used")
+        finally:
+            mark_db.close()
 
         logger.info(f"VM {vmid} ({vm_name}) cloned on {node} — IP: {ip_with_cidr}, GPUs: {gpus}")
         return {"vmid": vmid, "node": node, "ip_address": reserved_ip}
 
     finally:
-        db.close()
+        # db may already be closed (set to None before the clone) — guard it.
+        if db is not None:
+            db.close()
 
 
 @activity.defn
-async def launch_vllm_from_template_activity(payload: dict) -> dict:
+def launch_vllm_from_template_activity(payload: dict) -> dict:
 
     try:
         import time
@@ -357,13 +399,41 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
         # ── Step 0: Reboot VM ─────────────────────────────────────────────────
         # Fresh clone ke baad GPU drivers properly initialize nahi hote.
         # Reboot ensures clean GPU state before vLLM load.
-        logger.info(f"[{ip}] Rebooting VM to ensure clean GPU initialization...")
-        reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=90)
-        logger.info(f"[{ip}] VM back online after reboot")
+        # skip_reboot lets a test jump straight to the launch+health step (the
+        # part we're debugging) without the ~3 min reboot.
+        if payload.get("skip_reboot"):
+            logger.info(f"[{ip}] skip_reboot=True — skipping reboot, going straight to launch")
+        else:
+            logger.info(f"[{ip}] Rebooting VM to ensure clean GPU initialization...")
+            reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=90)
+            logger.info(f"[{ip}] VM back online after reboot")
 
-        # ── Step 0.5: Wait for Ray head service (systemd Restart=always) ─────
+        # ── Step 0.1: Wait for NVIDIA driver/NVML to be ready ─────────────────
+        # After reboot the nvidia kernel modules take time to initialize. If vLLM
+        # launches before NVML responds it fails with "Driver Not Loaded /
+        # Failed to infer device type". Gate on nvidia-smi returning cleanly.
+        _wait_gpu = (
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
+            "for i in $(seq 1 30); do "
+            "  nvidia-smi > /dev/null 2>&1 && echo 'gpu ready' && exit 0; "
+            "  echo \"Waiting for GPU/NVML... $i/30\"; sleep 5; "
+            "done; "
+            "echo 'ERROR: GPU/NVML not ready after 150s'; nvidia-smi; exit 1"
+        )
+        run_commands(ip, ssh_user, ssh_pass, [_wait_gpu], timeout=180)
+        logger.info(f"[{ip}] GPU/NVML ready")
+
+        # ── Step 0.5: Compute if multi-node (determines Ray vLLM params) ──────
+        is_multinode = pp_size > 1
+
+        # ── Step 0.6: Wait for Ray head service (always, but only vLLM uses it if multi-node) ──
         # Reboot ke baad Ray head service auto-start hoti hai — wait karo ready hone ka
         _wait_ray_head = (
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
             "for i in $(seq 1 48); do "
             "  systemctl is-active ray-head.service && echo 'ray-head active' && exit 0; "
             "  echo \"Waiting for ray-head... $i/48\"; sleep 5; "
@@ -380,21 +450,50 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
 
         home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
         _vllm_bin = f"{home_dir}/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
-        _vllm_common_args = (
-            f" --distributed-executor-backend ray"
-            f" --tensor-parallel-size {tp_size}"
-            f" --pipeline-parallel-size {pp_size}"
-            f" --max-model-len 32768"
-            f" --gpu-memory-utilization 0.90"
-            f" --enable-chunked-prefill"
-            f" --trust-remote-code"
-            f" --host 0.0.0.0 --port 8000"
+        # Single-node inference (pp_size=1) → no Ray, simpler & faster.
+        # Multi-node inference (pp_size>1) → Ray for pipeline parallelism.
+        if is_multinode:
+            _vllm_common_args = (
+                f" --distributed-executor-backend ray"
+                f" --tensor-parallel-size {tp_size}"
+                f" --pipeline-parallel-size {pp_size}"
+                f" --max-model-len 4096"
+                f" --gpu-memory-utilization 0.90"
+                f" --enable-chunked-prefill"
+                f" --trust-remote-code"
+                f" --host 0.0.0.0 --port 8000"
+            )
+        else:
+            # Single node: no Ray overhead, plain in-process inference
+            _vllm_common_args = (
+                f" --max-model-len 4096"
+                f" --gpu-memory-utilization 0.90"
+                f" --enable-chunked-prefill"
+                f" --trust-remote-code"
+                f" --host 0.0.0.0 --port 8000"
+            )
+
+        _vllm_env_setup = (
+            f"source {home_dir}/vllm-ray-env/bin/activate; "
+            f"export CUDA_HOME=/usr/local/cuda; "
+            f"export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu; "
+            f"export PATH=$PATH:/usr/local/cuda/bin; "
+            f"export VLLM_DEVICE=cuda; "
+            f"export CUDA_VISIBLE_DEVICES=0; "
         )
 
         vllm_launch = (
-            # ── 1. Load /etc/environment ──────────────────────────────────────
-            "set -a; source /etc/environment; set +a; "
-
+            # ── 0.5: Load CUDA & vLLM env ────────────────────────────────────────
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
+            # set -a/source /etc/environment is unreliable in non-login SSH shells.
+            # Parse and export each key=value line explicitly instead.
+            "while IFS='=' read -r _k _v; do "
+            "  case \"$_k\" in '#'*|'') continue;; esac; "
+            "  export \"$_k=$_v\"; "
+            "done < /etc/environment; "
+            + _vllm_env_setup +
             # ── 2. Resolve model path from LLM_MODEL_PATH + LLM_MODEL_NAME ────
             # LLM_MODEL_PATH = base dir  e.g. /vllm_data/hf_cache
             # LLM_MODEL_NAME = model dir e.g. ArtLLM
@@ -445,35 +544,59 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "  done; "
             "fi; "
 
-            # ── 3. Nothing found → skip gracefully ───────────────────────────
+            # ── 3. Nothing found → fail loudly with env dump ─────────────────
             "if [ -z \"$RESOLVED_MODEL\" ]; then "
             "  echo 'VLLM_SKIP: LLM_MODEL_PATH/LLM_MODEL_NAME not set and no model found in /vllm_data/hf_cache'; "
-            "  exit 0; "
+            "  echo \"  LLM_MODEL_PATH=${LLM_MODEL_PATH:-<unset>}\"; "
+            "  echo \"  LLM_MODEL_NAME=${LLM_MODEL_NAME:-<unset>}\"; "
+            "  echo \"  /etc/environment contents:\"; cat /etc/environment 2>/dev/null || echo '  (not found)'; "
+            "  echo \"  /vllm_data/hf_cache listing:\"; ls /vllm_data/hf_cache/ 2>/dev/null || echo '  (not found)'; "
+            "  exit 1; "  # fail instead of silently skipping so health_poll never runs
             "fi; "
 
-            # ── 4. Kill stale vLLM process ────────────────────────────────────
+            # ── 4. Kill stale vLLM process + TRUNCATE old log ─────────────────
+            # Overwrite the log with a dated marker so we never read a stale log
+            # left over from template prep. Everything after appends (>>).
             "echo \"[vLLM] Launching: $RESOLVED_MODEL\"; "
-            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 2; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; sleep 2; "
+            f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/vllm_server.log; "
 
             # ── 5. Fire-and-forget launch ─────────────────────────────────────
+            # env VAR=value prefix guarantees vars reach the nohup subprocess
+            # even if the SSH channel closes before shell exports are inherited.
+            f"_VLLM_ENV=\"VLLM_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 CUDA_HOME=/usr/local/cuda\"; "
+
+            # Log exact env + command to vllm_server.log before launching
+            f"echo \"[vLLM-env] VLLM_DEVICE=$VLLM_DEVICE\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-env] CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-env] CUDA_HOME=$CUDA_HOME\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-env] LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-env] _VLLM_ENV=$_VLLM_ENV\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-env] /dev/nvidia* = $(ls /dev/nvidia* 2>/dev/null || echo MISSING)\" >> {home_dir}/vllm_server.log; "
+
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-            f"  nohup {_vllm_bin}"
+            f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+            f"  nohup env $_VLLM_ENV {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
             f"    {_vllm_common_args}"
-            f"    > /root/vllm_server.log 2>&1 & disown; "
+            f"    >> {home_dir}/vllm_server.log 2>&1 & "
             "else "
-            f"  nohup {_vllm_bin}"
+            f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+            f"  nohup env $_VLLM_ENV {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
             f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
             f"    {_vllm_common_args}"
-            f"    > /root/vllm_server.log 2>&1 & disown; "
+            f"    >> {home_dir}/vllm_server.log 2>&1 & "
             "fi; "
             "echo \"[vLLM] Process launched in background\""
         )
 
         health_poll = (
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; "
@@ -484,13 +607,13 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
             "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
             "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
             "  echo '=== vllm_server.log (last 80 lines) ==='; "
-            "  [ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log not found'; "
+            f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
             "} >&2; "
             "exit 1"
         )
 
         try:
-            launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=30)
+            launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=120)
             launch_stdout = launch_results[0]["stdout"] if launch_results else ""
         except RuntimeError as launch_err:
             if "exit -1" in str(launch_err):
@@ -545,7 +668,7 @@ async def launch_vllm_from_template_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def restore_llm_services_activity(payload: dict) -> dict:
+def restore_llm_services_activity(payload: dict) -> dict:
     """
     Called after VM start/restart.
     1. Waits for ray-head/ray-worker systemd service to become active (Restart=always handles it).
@@ -564,6 +687,9 @@ async def restore_llm_services_activity(payload: dict) -> dict:
 
     # ── Step 1: Wait for systemd Ray service to be active (max 3 min) ─────────
     wait_ray_service = (
+        f"source /etc/profile || true; "
+        f"source ~/.bash_profile || true; "
+        f"source ~/.bashrc || true; "
         f"for i in $(seq 1 36); do "
         f"  systemctl is-active {service}.service && echo '{service} active' && break; "
         f"  echo \"Waiting for {service}... $i/36\"; sleep 5; "
@@ -576,6 +702,9 @@ async def restore_llm_services_activity(payload: dict) -> dict:
     # ── Step 2: Wait for Ray cluster to be healthy (head node only) ───────────
     if role == "head":
         wait_ray_cluster = (
+            f"source /etc/profile || true; "
+            f"source ~/.bash_profile || true; "
+            f"source ~/.bashrc || true; "
             f"for i in $(seq 1 30); do "
             f"  {venv_bin}/ray status 2>/dev/null && echo 'ray cluster ready' && break; "
             f"  echo \"Waiting for ray cluster... $i/30\"; sleep 5; "
@@ -591,14 +720,21 @@ async def restore_llm_services_activity(payload: dict) -> dict:
             f" --distributed-executor-backend ray"
             f" --tensor-parallel-size {tp_size}"
             f" --pipeline-parallel-size {pp_size}"
-            f" --max-model-len 32768"
+            f" --max-model-len 4096"
             f" --gpu-memory-utilization 0.90"
             f" --enable-chunked-prefill"
             f" --trust-remote-code"
             f" --host 0.0.0.0 --port 8000"
         )
         vllm_launch = (
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
             "set -a; source /etc/environment; set +a; "
+            f"export CUDA_HOME=/usr/local/cuda; "
+            f"export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu; "
+            f"export PATH=$PATH:/usr/local/cuda/bin; "
+            f"export VLLM_TARGET_DEVICE=cuda; "
 
             # Resolve model: LLM_MODEL_PATH + LLM_MODEL_NAME → combined path
             "RESOLVED_MODEL=''; "
@@ -617,17 +753,20 @@ async def restore_llm_services_activity(payload: dict) -> dict:
             "  echo 'ERROR: Cannot resolve model — set LLM_MODEL_PATH and LLM_MODEL_NAME in /etc/environment'; exit 1; "
             "fi; "
 
-            "pkill -f 'vllm.entrypoints.openai.api_server' 2>/dev/null || true; sleep 3; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; sleep 3; "
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\"{_vllm_args_r} > /root/vllm_server.log 2>&1 & disown; "
+            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\"{_vllm_args_r} > {home_dir}/vllm_server.log 2>&1 & disown; "
             "else "
-            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\" --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\"{_vllm_args_r} > /root/vllm_server.log 2>&1 & disown; "
+            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\" --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\"{_vllm_args_r} > {home_dir}/vllm_server.log 2>&1 & disown; "
             "fi; "
             "sleep 8; "
             "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
-            "  { echo 'ERROR: vLLM process failed to start'; cat /root/vllm_server.log; exit 1; }"
+            f"  {{ echo 'ERROR: vLLM process failed to start'; cat {home_dir}/vllm_server.log; exit 1; }}"
         )
         health_poll = (
+            "source /etc/profile || true; "
+            "source ~/.bash_profile || true; "
+            "source ~/.bashrc || true; "
             "for i in $(seq 1 90); do "
             "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
             "  echo \"Waiting for vllm... $i/90\"; "
@@ -638,7 +777,7 @@ async def restore_llm_services_activity(payload: dict) -> dict:
             "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
             "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
             "  echo '=== vllm_server.log (last 80 lines) ==='; "
-            "  [ -f /root/vllm_server.log ] && tail -80 /root/vllm_server.log || echo 'Log not found'; "
+            f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
             "} >&2; "
             "exit 1"
         )
@@ -663,7 +802,7 @@ _TARGET_STATE = {
 
 
 @activity.defn
-async def vm_power_action_activity(payload: dict) -> dict:
+def vm_power_action_activity(payload: dict) -> dict:
     """
     Performs start / stop / shutdown / restart on a single VM via Proxmox API,
     then polls until the VM reaches the expected state.
@@ -708,7 +847,7 @@ async def vm_power_action_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def update_llm_inference_job_activity(payload: dict) -> dict:
+def update_llm_inference_job_activity(payload: dict) -> dict:
     """Update LLMInferenceJob record fields."""
     db: Session = SessionLocal()
     try:
@@ -728,7 +867,7 @@ async def update_llm_inference_job_activity(payload: dict) -> dict:
 
 
 @activity.defn
-async def delete_llm_pool_activity(payload: dict) -> dict:
+def delete_llm_pool_activity(payload: dict) -> dict:
     """
     Delete all VMs for an LLM inference job:
       1. Remove HA resources / groups

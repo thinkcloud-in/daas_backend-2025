@@ -37,12 +37,16 @@ def run_commands(host: str, username: str, password: str, commands: list[str], t
     try:
         for cmd in commands:
             logger.info(f"[SSH {host}] Running: {cmd[:120]}")
-            _, stdout, stderr = client.exec_command(cmd, timeout=timeout)
-            exit_code = stdout.channel.recv_exit_status()
+            _, stdout, stderr = client.exec_command(cmd)
+            # Read stdout+stderr BEFORE recv_exit_status to avoid channel deadlock.
+            # (If the process fills the SSH buffer and we block on recv_exit_status
+            # first, neither side makes progress and the call hangs forever.)
+            stdout.channel.settimeout(timeout)
             out = stdout.read().decode(errors="replace").strip()
             err = stderr.read().decode(errors="replace").strip()
+            exit_code = stdout.channel.recv_exit_status()
             results.append({"cmd": cmd, "stdout": out, "stderr": err, "exit_code": exit_code})
-            if exit_code != 0:
+            if exit_code not in (0, -1):
                 raise RuntimeError(
                     f"Command failed (exit {exit_code}) on {host}:\n"
                     f"  CMD   : {cmd}\n"

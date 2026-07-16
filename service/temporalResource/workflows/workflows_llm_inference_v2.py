@@ -36,6 +36,24 @@ class CreateMultiNodeLLMWorkflow:
 
     @workflow.run
     async def run(self, payload: dict) -> dict:
+        job_id = payload["job_id"]
+        try:
+            return await self._provision(payload)
+        except Exception as e:
+            # Any failure (bad GPU, clone error, vLLM launch, etc.) must flip the
+            # DB job to 'failed' so the UI stops showing "provisioning" forever.
+            try:
+                await workflow.execute_activity(
+                    activities_llm_inference_v2.update_llm_inference_job_activity,
+                    args=[{"job_id": job_id, "status": "failed"}],
+                    retry_policy=_RETRY,
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+            except Exception as upd_err:
+                logger.error(f"Failed to mark job {job_id} as failed: {upd_err}")
+            raise
+
+    async def _provision(self, payload: dict) -> dict:
         job_id    = payload["job_id"]
         nodes     = payload["nodes"]          # [{"node": str, "gpu": [str]}]
         ips       = payload["reserved_ips"]   # [{"ip": str, "pool_id": int}]
@@ -176,7 +194,7 @@ class CreateMultiNodeLLMWorkflow:
                 **ssh_creds,
             }],
             retry_policy=RetryPolicy(maximum_attempts=1),
-            start_to_close_timeout=timedelta(minutes=20),
+            start_to_close_timeout=timedelta(minutes=30),
         )
         endpoint_url = launch_result.get("endpoint_url")  # None if vLLM was skipped (no model)
 

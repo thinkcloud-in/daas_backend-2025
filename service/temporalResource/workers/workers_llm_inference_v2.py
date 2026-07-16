@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from temporalio.client import Client
 from temporalio.worker import Worker
 
@@ -15,6 +16,10 @@ TASK_QUEUE = "llm-inference-v2-task-queue"
 
 async def llm_inference_v2_worker():
     client = await TemporalClientManager.get_temporal_client()
+    # Activities are synchronous (def) with blocking I/O (SSH, HTTP, sleep).
+    # Temporal runs each in its own thread from this pool → true parallelism
+    # for multi-machine provisioning (e.g. cloning 5 VMs at once).
+    activity_executor = ThreadPoolExecutor(max_workers=50)
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
@@ -30,6 +35,9 @@ async def llm_inference_v2_worker():
             activities_llm_inference.configure_ray_activity,
             activities_llm_inference.install_ray_vllm_activity,
         ],
+        activity_executor=activity_executor,
+        max_concurrent_activities=50,
+
     )
     logger.info(f"LLM Inference v2 worker started on queue: {TASK_QUEUE}")
     await worker.run()

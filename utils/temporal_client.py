@@ -21,7 +21,8 @@ class TemporalClientManager:
                     temporal_server = temporal_server.split("://")[1]
                 
                 logger.info(f"Connecting to Temporal server at {temporal_server}...")
-                cls._client = await Client.connect(temporal_server)
+                namespace = os.getenv('TEMPORAL_NAMESPACE', 'default')
+                cls._client = await Client.connect(temporal_server, namespace=namespace)
                 logger.info("Successfully connected to Temporal server.")
             except Exception as e:
                 logger.error(f"Failed to connect to Temporal server: {e}", exc_info=True)

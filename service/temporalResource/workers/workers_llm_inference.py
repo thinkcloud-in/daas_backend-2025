@@ -1,4 +1,5 @@
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from temporalio.worker import Worker
 from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workflows.workflows_llm_inference import CreateLLMInferenceWorkflow
@@ -24,6 +25,9 @@ async def llm_inference_worker():
         logger.warning("Temporal client unavailable — LLM inference worker not started")
         return
 
+    # Activities are synchronous (def) — Temporal needs a thread-pool executor
+    # to run them (each in its own thread).
+    activity_executor = ThreadPoolExecutor(max_workers=50)
     worker = Worker(
         client,
         task_queue=TASK_QUEUE,
@@ -38,6 +42,8 @@ async def llm_inference_worker():
             launch_vllm_model_activity,
             update_llm_inference_status_activity,
         ],
+        activity_executor=activity_executor,
+        max_concurrent_activities=50,
     )
     logger.info(f"LLM inference worker started on queue '{TASK_QUEUE}'")
     try:

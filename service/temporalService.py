@@ -12,7 +12,6 @@ from datetime import timedelta, datetime
 from typing import Dict, List
 from urllib.parse import quote
 import base64
-
 import os
 from temporalio.common import RetryPolicy
 from dotenv import load_dotenv
