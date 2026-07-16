@@ -91,3 +91,5 @@ async def delete_llm_inference_job(
 @llm_inference_v2_router.post("/pool-action/{job_id}", response_model=APIResponse[Any])
 async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session = Depends(get_db)):
     return await llm_inference_v2_controller.pool_vm_action(job_id, data, db)
+
+

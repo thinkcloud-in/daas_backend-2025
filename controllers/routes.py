@@ -21,6 +21,7 @@ from controllers.llm_inference_v2_controller import _fetch_steps
 _LLM_WF_TYPES = {
     "CreateMultiNodeLLMWorkflow", "PoolVMActionWorkflow", "DeleteLLMPoolWorkflow",
     "LibraryUploadWorkflow", "LibraryDeleteWorkflow", "LibraryUpdateWorkflow",
+    "LXCRestoreWorkflow",
 }
 
 router = APIRouter(prefix="/v1")
@@ -387,7 +388,7 @@ async def list_workflows():
                 "start_time": start_time_ist,
                 "close_time": close_time_ist,
                 "execution_time": execution_time,
-                "status": wf.status.name,
+                "status": wf.status.name if wf.status else "RUNNING",
                 "UserName": UserName
             })
     except Exception as e:
@@ -412,7 +413,7 @@ async def list_workflows():
                 "action": wf.search_attributes.get("Action", ["UnknownAction"])[0],
                 "start_time": start_time_ist,
                 "close_time": close_time_ist,
-                "status": wf.status.name,
+                "status": wf.status.name if wf.status else "RUNNING",
                 "UserName": wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
             })
     

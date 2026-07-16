@@ -25,56 +25,26 @@ _RETRY_TRANSFER = RetryPolicy(
 @workflow.defn(sandboxed=False)
 class LibraryUploadWorkflow:
     """
-    Transfers an uploaded file from the temp staging area to the PV mount.
-    Temporal UI shows live progress via activity heartbeats:
-      {"progress_pct": 42.5, "bytes_done": 403_000_000, "bytes_total": 1_047_000_000}
+    HTTP handler seedha pod mein stream karta hai (no temp file).
+    Ye workflow sirf Temporal UI mein progress dikhata hai — DB poll karke heartbeat bhejta hai.
+    Jab DB status=ready ho jaaye, workflow complete.
     """
 
     @workflow.run
     async def run(self, payload: dict) -> dict:
-        item_id   = payload["item_id"]
-        temp_path = payload["temp_path"]
-        dest_path = payload["dest_path"]
+        item_id    = payload["item_id"]
+        total_size = payload.get("total_size", 0)
 
-        # Phase 1: Copy temp → PV (heartbeats every 5 MB)
-        try:
-            transfer_result = await workflow.execute_activity(
-                activities_library.transfer_file_activity,
-                args=[payload],
-                retry_policy=_RETRY_TRANSFER,
-                start_to_close_timeout=timedelta(hours=6),
-                heartbeat_timeout=timedelta(minutes=2),
-            )
-        except Exception as exc:
-            logger.error(f"[Library] item={item_id} transfer failed: {exc}")
-            await workflow.execute_activity(
-                activities_library.mark_upload_failed_activity,
-                args=[{"item_id": item_id, "temp_path": temp_path, "dest_path": dest_path}],
-                retry_policy=_RETRY,
-                start_to_close_timeout=timedelta(minutes=2),
-            )
-            raise
-
-        # Phase 2: Finalize DB record → status=ready
-        await workflow.execute_activity(
-            activities_library.finalize_library_record_activity,
-            args=[{
-                "item_id":     item_id,
-                "file_path":   transfer_result["file_path"],
-                "file_size":   transfer_result["file_size"],
-                "workflow_id": workflow.info().workflow_id,
-            }],
+        result = await workflow.execute_activity(
+            activities_library.transfer_file_activity,
+            args=[{"item_id": item_id, "total_size": total_size}],
             retry_policy=_RETRY,
-            start_to_close_timeout=timedelta(minutes=2),
+            start_to_close_timeout=timedelta(hours=6),
+            heartbeat_timeout=timedelta(seconds=10),
         )
 
-        logger.info(f"[Library] item={item_id} upload workflow complete")
-        return {
-            "item_id":   item_id,
-            "file_path": transfer_result["file_path"],
-            "file_size": transfer_result["file_size"],
-            "status":    "ready",
-        }
+        logger.info(f"[Library] item={item_id} upload workflow complete — status={result['status']}")
+        return result
 
 
 @workflow.defn(sandboxed=False)

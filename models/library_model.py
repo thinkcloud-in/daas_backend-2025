@@ -6,13 +6,27 @@ import datetime
 
 Base = declarative_base()
 
-LIBRARY_TYPES = {"base_os", "devraq_agent", "open_web_ui"}
-
-TYPE_SUBDIR = {
-    "base_os":       "base-os",
-    "devraq_agent":  "devraq-agent",
-    "open_web_ui":   "open-web-ui",
+LIBRARY_TYPES = {
+    "harbor_template", "lxc_backup",
+    "base_os", "open_web_ui",
+    "vectordb", "podman",
+    "devraq_agent", "general",
 }
+
+# type → pod subdirectory under /data/library/
+TYPE_SUBDIR = {
+    "harbor_template": "harbor",
+    "lxc_backup":      "harbor",
+    "base_os":         "os",
+    "open_web_ui":     "openwebui",
+    "vectordb":        "vectordb",
+    "podman":          "podman",
+    "devraq_agent":    "general",
+    "general":         "general",
+}
+
+# All directories present in the pod
+POD_DIRS = {"harbor", "os", "openwebui", "vectordb", "podman", "general"}
 
 
 class LibraryItem(Base):
