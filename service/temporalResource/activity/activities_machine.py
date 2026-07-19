@@ -95,7 +95,26 @@ async def create_machine_activity(machine_data: dict):
             if cluster_type == "proxmox" or not is_automated:
                 response = await get_machine_name(machine_data)
                 if response == 'Machine Already Existed':
-                    return {"msg": "Machine already exists"}
+                    vm_id = machine_data.get("vm_id")
+                    name = machine_data.get("name")
+                    logger.error(
+                        f"Name collision: a Guacamole connection named '{name}' already exists, "
+                        f"but VM {vm_id} was just cloned in Proxmox and has no matching database "
+                        f"record. That Proxmox VM is now orphaned and needs manual cleanup or a "
+                        f"retry under a different name."
+                    )
+                    return {
+                        "status": "error",
+                        "error_type": "name_collision",
+                        "vm_id": vm_id,
+                        "name": name,
+                        "msg": (
+                            f"VM {vm_id} was cloned in Proxmox but could not be registered: a "
+                            f"Guacamole connection named '{name}' already exists (likely stale/orphaned "
+                            f"from a previous attempt). The Proxmox VM now exists with no DB record — "
+                            f"manual cleanup required."
+                        ),
+                    }
             logger.info("Machine name is unique, proceeding with creation.")
             # Create the machine in Guacamole first (external system)
             guaca_machine_response = await gucamoleService.creating_connection(machine_data)

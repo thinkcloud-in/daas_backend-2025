@@ -140,6 +140,7 @@ async def create_pool_activity(request: dict) -> dict:
 
                 clone_payload_dict = {
                     "cluster_id": str(cluster_data.id),
+                    "pool_id": id_pool,
                     "node": nodes,
                     "template_vm_id": template_vm_id,
                     "name_template": name_template,
@@ -151,6 +152,8 @@ async def create_pool_activity(request: dict) -> dict:
                     "ou": pool_data.get("pool_ad_path"),
                     "username": pool_data.get("pool_ad_username"),
                     "domain_password": pool_data.get("pool_ad_password"),
+                    "join_ad": bool(pool_data.get("join_ad", False)),
+                    "email": email,
                     "is_cluster": actual_is_cluster,
                 }
 
@@ -165,7 +168,7 @@ async def create_pool_activity(request: dict) -> dict:
                         raise Exception(response.get("error", "Proxmox cloning failed"))
 
                 assigned_vms = response.get("vms", [])
-                logger.info(f"Hyper-V cloning response received. Number of VMs: {len(assigned_vms)}")
+                logger.info(f"Cloning response received. Number of VMs: {len(assigned_vms)}")
                 logger.debug(f"Raw assigned_vms: {assigned_vms}")
 
                 # ── Release any unused IPs (if cloning failed or partially failed) ───
@@ -179,136 +182,54 @@ async def create_pool_activity(request: dict) -> dict:
                             ip_obj.vm_id = None
                 db.commit()
 
-                pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
-                db.commit()
-                db.refresh(pool)
+                if cluster_type == "proxmox":
+                    # CloneVMWorkflow already created the Machine rows (and set
+                    # pool.pool_vmids) step-by-step as each VM was cloned/IP'd/
+                    # powered on — that happened in a separate DB session, so
+                    # refresh to see it, and just read back what it built.
+                    db.refresh(pool)
+                    machines_json = [
+                        jsonable_encoder(m) for m in response.get("machines", []) if m
+                    ]
+                else:
+                    # Hyper-V path is unchanged: it doesn't create machine rows
+                    # itself, so build them here exactly as before.
+                    pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
+                    db.commit()
+                    db.refresh(pool)
 
-                for idx, vm in enumerate(assigned_vms):
-                    name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
-                    vmid = vm.get("vmid")
-                    # FIX: shadowed loop variable `node` renamed to `vm_node`
-                    vm_node = vm.get("node") or (nodes[0] if nodes else None)
-                    ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
+                    for idx, vm in enumerate(assigned_vms):
+                        name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
+                        vmid = vm.get("vmid")
+                        vm_node = vm.get("node") or (nodes[0] if nodes else None)
+                        ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
 
-                    # ── Mark IP as used ──────────────────────────────────────
-                    if ip:
-                        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                        if ip_entry:
-                            ip_entry.status = "used"
-                            ip_entry.vm_id = str(vmid)
-                    
-                    # ── Create machine record ────────────────────────────────
-                    try:
-                        workflow_ids = [
-                            wid
-                            for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                            if wid
-                        ]
-                        machine_data = {
-                            "vm_id": str(vmid) if vmid is not None else None,
-                            "name": name,
-                            "hostname": ip or "",
-                            "port": pool.pool_port,
-                            "protocol": pool.pool_protocol,
-                            "guacd_port": pool.pool_guacd_port,
-                            "guacd_encryption": pool.pool_guacd_encryption,
-                            "guacd_hostname": pool.pool_guacd_hostname,
-                            "os_type": pool.pool_os_type,
-                            "pool_id": pool.id,
-                            "weight": pool.pool_weight,
-                            "failover_only": pool.pool_failover_only,
-                            "username": pool.pool_username,
-                            "password": pool.pool_password,
-                            "security": pool.pool_security,
-                            "domain": pool.pool_domain,
-                            "disable_auth": pool.pool_disable_auth,
-                            "ignore_cert": pool.pool_ignore_cert,
-                            "max_connections": pool.pool_max_connections,
-                            "max_connections_per_user": pool.pool_max_connections_per_user,
-                            "gateway_port": pool.pool_gateway_port,
-                            "gateway_username": pool.pool_gateway_username,
-                            "gateway_password": pool.pool_gateway_password,
-                            "gateway_domain": pool.pool_gateway_domain,
-                            "initial_program": pool.pool_initial_program,
-                            "client_name": pool.pool_client_name,
-                            "timezone": pool.pool_timezone,
-                            "console": pool.pool_console,
-                            "width": pool.pool_width,
-                            "height": pool.pool_height,
-                            "dpi": pool.pool_dpi,
-                            "color_depth": pool.pool_color_depth,
-                            "resize_method": pool.pool_resize_method,
-                            "read_only": pool.pool_read_only,
-                            "clipboard_encoding": pool.pool_clipboard_encoding,
-                            "disable_copy": pool.pool_disable_copy,
-                            "disable_paste": pool.pool_disable_paste,
-                            "console_audio": pool.pool_console_audio,
-                            "enable_audio_input": pool.pool_enable_audio_input,
-                            "enable_printing": pool.pool_enable_printing,
-                            "printer_name": pool.pool_printer_name,
-                            "enable_drive": pool.pool_enable_drive,
-                            "drive_name": pool.pool_drive_name,
-                            "drive_path": pool.pool_drive_path,
-                            "cursor": pool.pool_cursor,
-                            "enable_wallpaper": pool.pool_enable_wallpaper,
-                            "enable_theming": pool.pool_enable_theming,
-                            "enable_font_smoothing": pool.pool_enable_font_smoothing,
-                            "enable_full_window_drag": pool.pool_enable_full_window_drag,
-                            "enable_desktop_composition": pool.pool_enable_desktop_composition,
-                            "enable_menu_animations": pool.pool_enable_menu_animations,
-                            "disable_bitmap_caching": pool.pool_disable_bitmap_caching,
-                            "disable_offscreen_caching": pool.pool_disable_offscreen_caching,
-                            "disable_glyph_caching": pool.pool_disable_glyph_caching,
-                            "load_balance_info": pool.pool_load_balance_info,
-                            "recording_path": pool.pool_recording_path,
-                            "recording_name": pool.pool_recording_name,
-                            "create_recording_path": pool.pool_create_recording_path,
-                            "recording_exclude_mouse": pool.pool_recording_exclude_mouse,
-                            "recording_include_keys": pool.pool_recording_include_keys,
-                            "exclude_touch_events": pool.pool_exclude_touch_events,
-                            "enable_sftp": pool.pool_enable_sftp,
-                            "sftp_port": pool.pool_sftp_port,
-                            "sftp_username": pool.pool_sftp_username,
-                            "font_name": pool.pool_font_name,
-                            "sftp_password": pool.pool_sftp_password,
-                            "sftp_host_key": pool.pool_sftp_host_key,
-                            "sftp_private_key": pool.pool_sftp_private_key,
-                            "sftp_passphrase": pool.pool_sftp_passphrase,
-                            "sftp_root_directory": pool.pool_sftp_root_directory,
-                            "sftp_directory": pool.pool_sftp_directory,
-                            "sftp_server_alive_interval": pool.pool_sftp_server_alive_interval,
-                            "private_key": pool.pool_private_key,
-                            "passphrase": pool.pool_passphrase,
-                            "color_scheme": pool.pool_color_scheme,
-                            "scrollback": pool.pool_scrollback,
-                            "font_size": pool.pool_font_size,
-                            "backspace": pool.pool_backspace,
-                            "terminal_type": pool.pool_terminal_type,
-                            "typescript_path": pool.pool_typescript_path,
-                            "typescript_name": pool.pool_typescript_name,
-                            "create_typescript_path": pool.pool_create_typescript_path,
-                            "swap_red_blue": pool.pool_swap_red_blue,
-                            "destination_host": pool.pool_dest_host,
-                            "destination_port": pool.pool_dest_port,
-                            "exclude_mouse": pool.pool_exclude_mouse,
-                            "exclude_graphics_streams": pool.pool_exclude_graphics_streams,
-                            "enable_audio": pool.pool_enable_audio,
-                            "audio_servername": pool.pool_audio_servername,
-                            "args": pool.pool_args,
-                            "is_custom_machine": False,
-                            "email": email,
-                            "clone_workflow_id": workflow_ids,
-                            "error_message": "power-off",
+                        if ip:
+                            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+                            if ip_entry:
+                                ip_entry.status = "used"
+                                ip_entry.vm_id = str(vmid)
 
-                        }
-                        machine_data_obj = CreateMachineBase(**machine_data)
-                        machine_result = await controllers.create_machine(machine_data_obj, db=db)
-                        machines_json.append(jsonable_encoder(machine_result))
-                    except Exception as e:
-                        print(f"Error creating machine for vmid {vmid}: {e}")
-                        continue
-                
-                db.commit()
+                        try:
+                            workflow_ids = [
+                                wid
+                                for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
+                                if wid
+                            ]
+                            machine_data = machinedata(
+                                email, None, pool,
+                                vm_id=str(vmid) if vmid is not None else None,
+                                name=name, hostname=ip or "",
+                                workflow_ids=workflow_ids,
+                            )
+                            machine_data_obj = CreateMachineBase(**machine_data)
+                            machine_result = await controllers.create_machine(machine_data_obj, db=db)
+                            machines_json.append(jsonable_encoder(machine_result))
+                        except Exception as e:
+                            logger.error(f"Error creating machine for vmid {vmid}: {e}")
+                            continue
+
+                    db.commit()
 
                 msg = f"Pool and {num_allocated} VM(s) created successfully."
                 if num_missing > 0:
@@ -317,11 +238,18 @@ async def create_pool_activity(request: dict) -> dict:
                         "available IPs in the selected pools."
                     )
 
-                return {
+                result = {
                     "msg": msg,
                     "pool": jsonable_encoder(pool),
                     "machines": machines_json,
                 }
+                if cluster_type == "proxmox" and response.get("partial_failure"):
+                    # Don't let orphaned Proxmox VMs (cloned but not registered
+                    # due to e.g. a stale Guacamole name collision) go unnoticed.
+                    result["partial_failure"] = True
+                    result["failed_vms"] = response.get("failed_vms", [])
+                    result["msg"] = response.get("msg", msg)
+                return result
 
             return {
                 "msg": "Pool created successfully",
@@ -336,17 +264,26 @@ async def create_pool_activity(request: dict) -> dict:
     finally:
         db.close()
  
-def machinedata(email,machine, db_pool):
+def machinedata(email, machine, db_pool, *, vm_id=None, name=None, hostname=None,
+                 workflow_ids=None, provisioning_status=None):
+    """
+    Builds the machine_data dict from pool settings.
+    - machine given (update-pool path, unchanged): fields come from the existing row.
+    - machine=None (clone path): fields come from vm_id/name/hostname/workflow_ids,
+      since there's no row yet — one being created for the first time.
+    """
     machine_data = {
-        "vm_id": machine.vm_id,
-        "name": machine.name,
-        "hostname": machine.hostname,
-        "guacd_hostname": machine.guacd_hostname,
-        "identifier": machine.identifier,
-        "status": machine.status,
-        "error_message": machine.error_message,
-        "workflow_status": machine.workflow_status,
-        "workflowId": machine.workflowId,
+        "vm_id": machine.vm_id if machine else vm_id,
+        "name": machine.name if machine else name,
+        "hostname": machine.hostname if machine else hostname,
+        "guacd_hostname": machine.guacd_hostname if machine else db_pool.pool_guacd_hostname,
+        "identifier": machine.identifier if machine else None,
+        "status": machine.status if machine else "RUNNING",
+        "error_message": machine.error_message if machine else None,
+        "workflow_status": machine.workflow_status if machine else None,
+        "workflowId": machine.workflowId if machine else (workflow_ids or []),
+        "clone_workflow_id": None if machine else (workflow_ids or []),
+        "provisioning_status": (machine.provisioning_status if machine else None) or provisioning_status or "cloned",
         "pool_id": db_pool.id,
         "port": db_pool.pool_port,
         "protocol": db_pool.pool_protocol,
@@ -437,9 +374,113 @@ def machinedata(email,machine, db_pool):
         "args": db_pool.pool_args,
         "is_custom_machine": False,
         "email": email,
-        "users_assigned": machine.users_assigned,
+        "users_assigned": machine.users_assigned if machine else None,
         }
     return machine_data
+
+
+@activity.defn
+async def finalize_cloned_machine_activity(payload: dict) -> dict:
+    """
+    Runs right after a VM is cloned in Proxmox: marks its IP as used, records
+    the vmid on the pool, and creates the Machine DB row + Guacamole connection
+    by calling the raw create_machine_activity directly (not via
+    controllers.create_machine/CreateMachineWorkflow) so its automatic
+    power-on trigger doesn't fire early — the clone workflow powers VMs on
+    itself, after IP + domain-join are configured.
+    """
+    from service.temporalResource.activity import activities_machine
+
+    pool_id = payload["pool_id"]
+    vmid = payload["vmid"]
+    name = payload["name"]
+    ip = payload.get("ip")
+    email = payload.get("email")
+    workflow_ids = payload.get("workflow_ids") or []
+
+    db = SessionLocal()
+    try:
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool:
+            return {"status": "error", "error": f"Pool {pool_id} not found"}
+
+        if ip:
+            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+            if ip_entry:
+                ip_entry.status = "used"
+                ip_entry.vm_id = str(vmid)
+
+        existing_vmids = pool.pool_vmids or []
+        if str(vmid) not in existing_vmids:
+            pool.pool_vmids = existing_vmids + [str(vmid)]
+
+        db.commit()
+
+        machine_data = machinedata(
+            email, None, pool,
+            vm_id=str(vmid), name=name, hostname=ip or "",
+            workflow_ids=workflow_ids,
+        )
+    finally:
+        db.close()
+
+    result = await activities_machine.create_machine_activity(machine_data)
+    if result.get("msg") != "Machine created successfully":
+        if result.get("error_type") == "name_collision":
+            # The VM is real in Proxmox but can never be registered under this
+            # name — keeping it around just wastes resources and blocks the
+            # IP. Undo the clone: delete the VM and release the IP/vmid.
+            await _cleanup_unregisterable_vm(pool_id, vmid, ip)
+        return {"status": "error", "error": result}
+    return {"status": "ok", "machine": result.get("machine")}
+
+
+async def _cleanup_unregisterable_vm(pool_id: int, vmid, ip: str | None) -> None:
+    from service.proxmoxService import delete_proxmox_vm
+
+    db = SessionLocal()
+    try:
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool:
+            return
+
+        try:
+            cluster_id_raw = str(pool.cluster_id)
+            cluster_id = cluster_id_raw.split("_")[-1] if "_" in cluster_id_raw else cluster_id_raw
+            cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+            if cluster:
+                await delete_proxmox_vm(vmid, cluster)
+                logger.info(f"Cleaned up orphaned (unregisterable) VM {vmid} in Proxmox.")
+        except Exception as e:
+            logger.error(f"Failed to delete orphaned VM {vmid} in Proxmox — needs manual cleanup: {e}")
+
+        if ip:
+            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+            if ip_entry:
+                ip_entry.status = "unused"
+                ip_entry.vm_id = None
+
+        existing_vmids = pool.pool_vmids or []
+        if str(vmid) in existing_vmids:
+            pool.pool_vmids = [v for v in existing_vmids if v != str(vmid)]
+
+        db.commit()
+    finally:
+        db.close()
+
+
+@activity.defn
+async def configure_domain_join_activity(payload: dict) -> dict:
+    """Thin wrapper so the clone workflow can attach the AD-join cloud-init
+    snippet to already-cloned VMs before they're powered on."""
+    return await domain_join_activity(
+        payload["pool_id"],
+        payload["pool_ad_domain"],
+        payload["pool_ad_password"],
+        payload["pool_ad_username"],
+        payload.get("pool_ad_path", ""),
+    )
+
 
 @activity.defn()
 async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
@@ -475,6 +516,8 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
         machines_json = []
         vm_add_error = None
         vms = []
+        response = {}
+        cluster_type = ""
         email = pool_data.get("email", None)
 
         # ── Clone additional VMs when count increased ────────────────────────
@@ -555,6 +598,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             clone_payload_dict = {
                 "cluster_id": str(cluster_data.id),
+                "pool_id": db_pool.id,
                 "node": nodes,
                 "template_vm_id": template_for_clone,
                 "name_template": name_template,
@@ -566,6 +610,8 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "ou": pool_data.get("pool_ad_path", db_pool.pool_ad_path),
                 "username": pool_data.get("pool_ad_username", db_pool.pool_ad_username),
                 "domain_password": pool_data.get("pool_ad_password", db_pool.pool_ad_password),
+                "join_ad": bool(pool_data.get("join_ad", False)),
+                "email": email,
                 "is_cluster": actual_is_cluster,
             }
 
@@ -613,145 +659,69 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         if is_automated and added_count > 0 and vms:
             db_pool.pool_number_of_vms = old_vm_count + len(vms)
-            existing_vmids = db_pool.pool_vmids or []
-            new_vmids = [str(vm["vmid"]) for vm in vms if "vmid" in vm]
-            db_pool.pool_vmids = existing_vmids + new_vmids
+            if cluster_type != "proxmox":
+                # For Proxmox, CloneVMWorkflow already appended each new vmid
+                # to pool.pool_vmids (in its own DB session) as part of
+                # finalize_cloned_machine_activity — recomputing it here from
+                # this function's stale pre-clone `db_pool` snapshot would
+                # race with / overwrite that. Hyper-V still needs it set here.
+                existing_vmids = db_pool.pool_vmids or []
+                new_vmids = [str(vm["vmid"]) for vm in vms if "vmid" in vm]
+                db_pool.pool_vmids = existing_vmids + new_vmids
 
         db.commit()
         db.refresh(db_pool)
 
         # ── Create machine records for each newly cloned VM ──────────────────
+        # For Proxmox, CloneVMWorkflow already created these rows (and set
+        # pool.pool_vmids) as part of its clone→IP→domain-join→power-on
+        # sequence — read them back from the workflow's response instead of
+        # creating them again here. Hyper-V keeps its own machine-creation
+        # loop since clone_vm_hyper_v_service doesn't create rows itself.
         if is_automated and added_count > 0 and vms:
-            for idx, vm in enumerate(vms):
-                name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
-                vmid = vm.get("vmid")
-                ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
+            if cluster_type == "proxmox":
+                machines_json.extend(
+                    jsonable_encoder(m) for m in response.get("machines", []) if m
+                )
+            else:
+                for idx, vm in enumerate(vms):
+                    name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
+                    vmid = vm.get("vmid")
+                    ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
 
-                # Mark IP as used
-                try:
-                    if ip:
-                        ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                        if ip_entry:
-                            ip_entry.status = "used"
-                            ip_entry.vm_id = str(vmid)
-                except Exception as e:
-                    # FIX: log instead of silently swallowing; re-raise so callers
-                    #      know IP tracking failed (prevents phantom IPs).
-                    print(f"Failed to mark IP {ip} as used: {e}")
+                    # Mark IP as used
+                    try:
+                        if ip:
+                            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
+                            if ip_entry:
+                                ip_entry.status = "used"
+                                ip_entry.vm_id = str(vmid)
+                    except Exception as e:
+                        print(f"Failed to mark IP {ip} as used: {e}")
 
-                # Create machine record
-                try:
-                    workflow_ids = [
-                        wid
-                        for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                        if wid
-                    ]
-                    machine_data = {
-                        "vm_id": str(vmid) if vmid is not None else None,
-                        "name": name,
-                        "hostname": ip or "",
-                        "port": db_pool.pool_port,
-                        "protocol": db_pool.pool_protocol,
-                        "guacd_port": db_pool.pool_guacd_port,
-                        "guacd_encryption": db_pool.pool_guacd_encryption,
-                        "guacd_hostname": db_pool.pool_guacd_hostname,
-                        "os_type": db_pool.pool_os_type,
-                        "pool_id": db_pool.id,
-                        "weight": db_pool.pool_weight,
-                        "failover_only": db_pool.pool_failover_only,
-                        "username": db_pool.pool_username,
-                        "password": db_pool.pool_password,
-                        "security": db_pool.pool_security,
-                        "domain": db_pool.pool_domain,
-                        "disable_auth": db_pool.pool_disable_auth,
-                        "ignore_cert": db_pool.pool_ignore_cert,
-                        "max_connections": db_pool.pool_max_connections,
-                        "max_connections_per_user": db_pool.pool_max_connections_per_user,
-                        "gateway_port": db_pool.pool_gateway_port,
-                        "gateway_username": db_pool.pool_gateway_username,
-                        "gateway_password": db_pool.pool_gateway_password,
-                        "gateway_domain": db_pool.pool_gateway_domain,
-                        "initial_program": db_pool.pool_initial_program,
-                        "client_name": db_pool.pool_client_name,
-                        "timezone": db_pool.pool_timezone,
-                        "console": db_pool.pool_console,
-                        "width": db_pool.pool_width,
-                        "height": db_pool.pool_height,
-                        "dpi": db_pool.pool_dpi,
-                        "color_depth": db_pool.pool_color_depth,
-                        "resize_method": db_pool.pool_resize_method,
-                        "read_only": db_pool.pool_read_only,
-                        "clipboard_encoding": db_pool.pool_clipboard_encoding,
-                        "disable_copy": db_pool.pool_disable_copy,
-                        "disable_paste": db_pool.pool_disable_paste,
-                        "console_audio": db_pool.pool_console_audio,
-                        "enable_audio_input": db_pool.pool_enable_audio_input,
-                        "enable_printing": db_pool.pool_enable_printing,
-                        "printer_name": pool_data.get("pool_printer_name", db_pool.pool_printer_name),
-                        "enable_drive": db_pool.pool_enable_drive,
-                        "drive_name": db_pool.pool_drive_name,
-                        "drive_path": db_pool.pool_drive_path,
-                        "cursor": db_pool.pool_cursor,
-                        "enable_wallpaper": db_pool.pool_enable_wallpaper,
-                        "enable_theming": db_pool.pool_enable_theming,
-                        "enable_font_smoothing": db_pool.pool_enable_font_smoothing,
-                        "enable_full_window_drag": db_pool.pool_enable_full_window_drag,
-                        "enable_desktop_composition": db_pool.pool_enable_desktop_composition,
-                        "enable_menu_animations": db_pool.pool_enable_menu_animations,
-                        "disable_bitmap_caching": db_pool.pool_disable_bitmap_caching,
-                        "disable_offscreen_caching": db_pool.pool_disable_offscreen_caching,
-                        "disable_glyph_caching": db_pool.pool_disable_glyph_caching,
-                        "load_balance_info": db_pool.pool_load_balance_info,
-                        "recording_path": db_pool.pool_recording_path,
-                        "recording_name": db_pool.pool_recording_name,
-                        "create_recording_path": db_pool.pool_create_recording_path,
-                        "recording_exclude_mouse": db_pool.pool_recording_exclude_mouse,
-                        "recording_include_keys": db_pool.pool_recording_include_keys,
-                        "exclude_touch_events": db_pool.pool_exclude_touch_events,
-                        "enable_sftp": db_pool.pool_enable_sftp,
-                        "sftp_port": db_pool.pool_sftp_port,
-                        "sftp_username": db_pool.pool_sftp_username,
-                        "font_name": db_pool.pool_font_name,
-                        "sftp_password": db_pool.pool_sftp_password,
-                        "sftp_host_key": db_pool.pool_sftp_host_key,
-                        "sftp_private_key": db_pool.pool_sftp_private_key,
-                        "sftp_passphrase": db_pool.pool_sftp_passphrase,
-                        "sftp_root_directory": db_pool.pool_sftp_root_directory,
-                        "sftp_directory": db_pool.pool_sftp_directory,
-                        "sftp_server_alive_interval": db_pool.pool_sftp_server_alive_interval,
-                        "private_key": db_pool.pool_private_key,
-                        "passphrase": db_pool.pool_passphrase,
-                        "color_scheme": db_pool.pool_color_scheme,
-                        "scrollback": db_pool.pool_scrollback,
-                        "font_size": db_pool.pool_font_size,
-                        "backspace": db_pool.pool_backspace,
-                        "terminal_type": db_pool.pool_terminal_type,
-                        "typescript_path": db_pool.pool_typescript_path,
-                        "typescript_name": db_pool.pool_typescript_name,
-                        "create_typescript_path": db_pool.pool_create_typescript_path,
-                        "swap_red_blue": db_pool.pool_swap_red_blue,
-                        "destination_host": db_pool.pool_dest_host,
-                        "destination_port": db_pool.pool_dest_port,
-                        "exclude_mouse": db_pool.pool_exclude_mouse,
-                        "exclude_graphics_streams": db_pool.pool_exclude_graphics_streams,
-                        "enable_audio": db_pool.pool_enable_audio,
-                        "audio_servername": db_pool.pool_audio_servername,
-                        "args": db_pool.pool_args,
-                        "is_custom_machine": False,
-                        "email": email,
-                        "clone_workflow_id": workflow_ids,
-                        "error_message": "power-off",
-                    }
-                    machine_data_obj = CreateMachineBase(**machine_data)
-                    machine_result = await controllers.create_machine(machine_data_obj, db=db)
-                    machines_json.append(jsonable_encoder(machine_result))
-                except Exception as e:
-                    # FIX: was silently `continue`-ing, masking machine creation
-                    #      failures. Log + continue is safer than swallowing.
-                    print(f"[update_pool] Warning: failed to create machine for vmid={vmid}: {e}")
-                    continue
-            
+                    # Create machine record
+                    try:
+                        workflow_ids = [
+                            wid
+                            for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
+                            if wid
+                        ]
+                        machine_data = machinedata(
+                            email, None, db_pool,
+                            vm_id=str(vmid) if vmid is not None else None,
+                            name=name, hostname=ip or "",
+                            workflow_ids=workflow_ids,
+                        )
+                        machine_data["printer_name"] = pool_data.get("pool_printer_name", db_pool.pool_printer_name)
+                        machine_data_obj = CreateMachineBase(**machine_data)
+                        machine_result = await controllers.create_machine(machine_data_obj, db=db)
+                        machines_json.append(jsonable_encoder(machine_result))
+                    except Exception as e:
+                        logger.error(f"[update_pool] Warning: failed to create machine for vmid={vmid}: {e}")
+                        continue
+
             db.commit()
+            db.refresh(db_pool)
 
         # ── Sync existing (non-custom) machines with updated pool config ──────
         existing_machines = (
@@ -784,7 +754,14 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             elif vm_add_error:
                 msg += f", {vm_add_error}"
 
-        return {"msg": msg, "pool": db_pool_json, "machines": machines_in_pool}
+        result = {"msg": msg, "pool": db_pool_json, "machines": machines_in_pool}
+        if cluster_type == "proxmox" and response.get("partial_failure"):
+            # Don't let orphaned Proxmox VMs (cloned but not registered due to
+            # e.g. a stale Guacamole name collision) go unnoticed.
+            result["partial_failure"] = True
+            result["failed_vms"] = response.get("failed_vms", [])
+            result["msg"] = response.get("msg", msg)
+        return result
 
     except Exception as e:
         db.rollback()

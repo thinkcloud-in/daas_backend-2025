@@ -628,6 +628,7 @@ class Machine(Base):
     workflowId = Column(ARRAY(String), default=[])
     status = Column(String, default='RUNNING') # e.g., 'RUNNING', 'COMPLETED', etc.
     error_message = Column(Text, nullable=True, default='power-off')
+    provisioning_status = Column(String, nullable=True, default='cloned')
 
     # workflow_status = Column(JSON, default=dict) # NEW: workflow_status field for tracking status of all workflow IDs
     workflow_status = Column(MutableDict.as_mutable(JSON), default=dict)
@@ -772,6 +773,7 @@ class CreateMachineBase(BaseModel):
     clone_workflow_id: Optional[Union[str, List[str]]] = None
     status: Optional[str] = "RUNNING"
     error_message: Optional[str] = "power-off"
+    provisioning_status: Optional[str] = "cloned"
     workflow_status: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 #pydantic model to update machine
 class UpdateMachineBase(BaseModel):
@@ -917,6 +919,7 @@ class UpdateMachineBase(BaseModel):
     clone_workflow_id: Optional[Union[str, List[str]]] = None
     status: Optional[str]
     error_message: Optional[str] = None
+    provisioning_status: Optional[str] = None
     workflow_status: Optional[Dict[str, Dict[str, Optional[str]]]] = Field(default_factory=dict)
 
     # date_created: Optional[str] = None

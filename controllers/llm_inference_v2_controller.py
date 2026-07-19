@@ -189,11 +189,12 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "nodes":        [n.dict() for n in data.nodes],
             "reserved_ips": reserved_ips,
             "storage":      data.storage or "local-lvm",
-            "machine_name": data.machine_name or data.poolName,
-            "model":        data.model or "",
-            "model_path":   data.model_path or "/vllm_data/hf_cache",
-            "ssh_user":     data.ssh_user or _SSH_USER,
-            "ssh_pass":     data.ssh_pass or _SSH_PASS,
+            "machine_name":  data.machine_name or data.poolName,
+            "name_template": data.machine_name or None,
+            "model":         data.model or "",
+            "model_path":    data.model_path or "/vllm_data/hf_cache",
+            "ssh_user":      data.ssh_user or _SSH_USER,
+            "ssh_pass":      data.ssh_pass or _SSH_PASS,
         }
 
         # ── Start Temporal workflow ───────────────────────────────────────────

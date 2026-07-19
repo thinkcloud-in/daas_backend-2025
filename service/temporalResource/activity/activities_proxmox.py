@@ -5,6 +5,7 @@ from temporalio import activity
 from sqlalchemy.orm import Session
 from db_configuration.config import SessionLocal, get_db
 import requests
+import aiohttp
 import asyncio
 from models.models import Machine, Cluster,Pool
 from service.clusterService import get_all_nodes
@@ -124,6 +125,33 @@ import requests
 
 PROXMOX_STORAGE = os.getenv("PROXMOX_STORAGE")
 
+async def _get_existing_guacamole_connection_names() -> set:
+    """Best-effort fetch of current Guacamole connection names, so name
+    generation can avoid colliding with stale/orphaned connections that
+    Proxmox/DB checks alone wouldn't see."""
+    try:
+        payload = {
+            "username": os.getenv("USER_GUACA"),
+            "password": os.getenv("GUACA_PASS"),
+        }
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens", data=payload, headers=headers) as token_resp:
+                token_data = await token_resp.json()
+                auth_token = token_data.get("authToken")
+                if not auth_token:
+                    return set()
+                url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections?token={auth_token}"
+                async with session.get(url) as conn_resp:
+                    if conn_resp.status != 200:
+                        return set()
+                    connections = await conn_resp.json()
+                    return {c.get("name") for c in connections.values() if c.get("name")}
+    except Exception as e:
+        logger.warning(f"Could not fetch existing Guacamole connection names (continuing without them): {e}")
+        return set()
+
+
 @activity.defn
 async def clone_vm_activity(clone_payload: dict):
     db: Session = SessionLocal()
@@ -144,7 +172,13 @@ async def clone_vm_activity(clone_payload: dict):
             all_vms = proxmoxService.get_all_cluster_vms(db, cluster_data)
             existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
             db_names = [m.name for m in db.query(Machine).all()]
-            all_existing_names = set(existing_names) | set(db_names)
+            # Also exclude names already used by Guacamole connections — a
+            # stale/orphaned connection (e.g. left over from a previous failed
+            # attempt) is invisible to the Proxmox/DB checks above, and would
+            # otherwise let us generate a name that collides at registration
+            # time, leaving a freshly-cloned VM orphaned (see finalize_cloned_machine_activity).
+            guacamole_names = await _get_existing_guacamole_connection_names()
+            all_existing_names = set(existing_names) | set(db_names) | guacamole_names
             new_names = proxmoxService.generate_machine_name(
                 clone_payload['name_template'],
                 list(all_existing_names),
@@ -329,6 +363,23 @@ async def wait_for_vm_ready_activity(args: dict):
  
  
  
+@activity.defn
+async def update_machine_provisioning_status_activity(args: dict):
+    db: Session = SessionLocal()
+    try:
+        vmid = args["vmid"]
+        step = args["step"]
+        machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
+        if not machine:
+            logger.warning(f"update_machine_provisioning_status_activity: machine with vmid {vmid} not found, skipping step '{step}'")
+            return {"status": "skipped", "reason": "machine_not_found"}
+        machine.provisioning_status = step
+        db.commit()
+        return {"status": "ok"}
+    finally:
+        db.close()
+
+
 @activity.defn
 async def assign_ip_to_vm_activity(args: dict):
     db: Session = SessionLocal()
@@ -822,6 +873,7 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None):
                 "newid": vmid,
                 "name": machine.name,
                 "target": node,
+                "storage": pool.pool_storage,
                 "full": 1
             }
             clone_resp = requests.post(clone_url, headers=headers, data=clone_payload, verify=False)
@@ -830,13 +882,17 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None):
 
             
             machine.error_message = "cloning..."
+            machine.provisioning_status = "cloned"
             db.commit()
 
             return {
                 "status": "success",
                 "vmid": vmid,
                 "upid": upid,
-                "node": node
+                "node": node,
+                "cluster_id": str(cluster_id),
+                "machine_name": machine.name,
+                "ip_address": machine.hostname,
             }
 
         except Exception as e:

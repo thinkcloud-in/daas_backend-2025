@@ -6,6 +6,7 @@ from service.temporalResource.activity.activities_proxmox import (
     clone_vm_activity,
     wait_for_vm_ready_activity,
     assign_ip_to_vm_activity,
+    update_machine_provisioning_status_activity,
     migrate_bucket_new_data_activity,
     start_vm_proxmox_activity,
     stop_vm_proxmox_activity,
@@ -13,6 +14,10 @@ from service.temporalResource.activity.activities_proxmox import (
     shutdown_vm_proxmox_activity,
     vm_rebuild_activity
 
+)
+from service.temporalResource.activity.activities_pool import (
+    finalize_cloned_machine_activity,
+    configure_domain_join_activity,
 )
 
 import logging
@@ -33,12 +38,15 @@ async def clone_vm_worker():
             clone_vm_activity,
             wait_for_vm_ready_activity,
             assign_ip_to_vm_activity,
+            update_machine_provisioning_status_activity,
+            finalize_cloned_machine_activity,
+            configure_domain_join_activity,
         ],
     )
-    
+
     try:
         await worker.run()
-        
+
     except Exception as e:
         raise Exception(f"Error in clone VM worker: {e}")
         
@@ -93,7 +101,8 @@ async def vm_rebuild_worker():
         activities=[
             vm_rebuild_activity,
             wait_for_vm_ready_activity,
-            assign_ip_to_vm_activity,   
+            assign_ip_to_vm_activity,
+            update_machine_provisioning_status_activity,
         ],
     )
     

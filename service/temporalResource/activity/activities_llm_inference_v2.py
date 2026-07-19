@@ -176,7 +176,9 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
         db_names       = [m.name for m in db.query(Machine).all()]
         all_names      = set(existing_names) | set(db_names)
-        name_template  = f"{pool_name}-{{n:fixed=3}}"
+        # Use name_template from payload if provided (e.g. "lucky-{n:fixed=3}"),
+        # otherwise fall back to "{pool_name}-{n:fixed=3}".
+        name_template  = payload.get("name_template") or f"{pool_name}-{{n:fixed=3}}"
         vm_name        = proxmoxService.generate_machine_name(name_template, list(all_names), 1)[0]
         # Proxmox requires DNS-valid hostnames: lowercase, alphanumeric + hyphens only
         vm_name = re.sub(r'[^a-zA-Z0-9-]', '-', vm_name)
@@ -257,10 +259,15 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         db = None
 
         # ── Clone from template ───────────────────────────────────────────
-        clone_data = {"newid": vmid, "name": vm_name, "full": 1}
-        if node != template_node:
-            clone_data["target"]  = node
-            clone_data["storage"] = datastore
+        # Always set target explicitly — if omitted, Proxmox places the clone
+        # on the template's node regardless of which node the user selected.
+        clone_data = {
+            "newid":   vmid,
+            "name":    vm_name,
+            "full":    1,
+            "target":  node,
+            "storage": datastore,
+        }
         resp = requests.post(
             f"{PROXMOX_HOST}/api2/json/nodes/{template_node}/qemu/{template}/clone",
             headers=headers,
