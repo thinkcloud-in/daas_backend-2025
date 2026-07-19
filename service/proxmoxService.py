@@ -20,12 +20,8 @@ from models.proxmox_model import MetricServer
 from service.pollingStatus import update_workflow_status
 import logging, time
 
-# Set logging configuration
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger(__name__)
  
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

@@ -39,11 +39,8 @@ async def startup_event_client():
     await TemporalClientManager.get_temporal_client()
     logger.info("Temporal connection initialization started...")
 
-logging.basicConfig(
-    filename="guacamole_report.log",
-    level=logging.INFO,             
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"  
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("guacamole_login_logger")
 
 async def login_with_guacamole():

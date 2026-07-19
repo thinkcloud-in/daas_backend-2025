@@ -17,13 +17,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-
-
-
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("Guacamole LOGGER")
 
 def get_db_connection():
@@ -394,16 +389,16 @@ async def update_report_activity(company_name: str, company_logo_str: str, repor
 
 @activity.defn
 async def insert_report_activity(company_name: str, company_logo: bytes, report_type: str):
-    print(f"[insert_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
+    logger.info(f"[insert_report_activity] Called with company_name={company_name}, report_type={report_type}, logo_type={type(company_logo)}, logo_len={len(company_logo) if company_logo else 0}")
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
             insert_query = "INSERT INTO reporttemplate (company_name, company_logo, report_type) VALUES (%s, %s, %s);"
             cursor.execute(insert_query, (company_name, company_logo, report_type))
             db.commit()
-            print(f"[insert_report_activity] Committed successfully, rowcount={cursor.rowcount}")
+            logger.info(f"[insert_report_activity] Committed successfully, rowcount={cursor.rowcount}")
     except Exception as error:
-        print(f"[insert_report_activity] ERROR: {error}")
+        logger.error(f"[insert_report_activity] ERROR: {error}", exc_info=True)
         raise error
     finally:
         db.close()

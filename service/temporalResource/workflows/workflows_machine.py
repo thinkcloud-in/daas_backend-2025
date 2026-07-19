@@ -5,10 +5,8 @@ from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_machine, activities_proxmox
 from sqlalchemy.orm import Session
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("create_machine_workflow")
 
 @workflow.defn(sandboxed=False)

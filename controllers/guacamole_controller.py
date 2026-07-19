@@ -1,4 +1,5 @@
 import base64
+import logging
 from dto.machineDto import MachineDto
 import service.gucamoleService as service
 from datetime import datetime
@@ -8,6 +9,8 @@ from fastapi.encoders import jsonable_encoder
 from utils import response_format
 from db_configuration.config import SessionLocal
 from models.Rbac_models import RBAC
+
+logger = logging.getLogger(__name__)
 async def get_login():
     data = await service.login_with_guacamole()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)
@@ -315,7 +318,7 @@ async def get_client_roles(request):
                     and not role.get("name").startswith("default-roles-")
                 ]
         except Exception as e:
-            print(f"Warning: Failed to fetch roles from Keycloak: {e}")
+            logger.warning(f"Failed to fetch roles from Keycloak: {e}")
 
         # Fetch roles from the database
         db_roles = db.query(RBAC.role).all()
@@ -329,7 +332,7 @@ async def get_client_roles(request):
             role_list = list(set(role_list + keycloak_roles))
         except Exception as e:
             # If Keycloak is down or fails, we still have DB roles
-            print(f"Warning: Failed to fetch roles from Keycloak: {e}")
+            logger.warning(f"Failed to fetch roles from Keycloak: {e}")
         
         return response_format.success_response(200, "Role names retrieved successfully", role_list)
     except Exception as e:

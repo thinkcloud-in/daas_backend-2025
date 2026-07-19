@@ -31,11 +31,9 @@ def unique_id():
     logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger =  logging.getLogger("create_machine_activity")
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
+logger = logging.getLogger("clusterService")
 
 def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"

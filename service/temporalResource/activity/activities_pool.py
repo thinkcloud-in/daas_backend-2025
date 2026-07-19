@@ -10,7 +10,7 @@ from service import controllers
 from service.IPService import allocate_ips_across_pools
 from models.IPs_model import IPEntry 
 from service.proxmoxService import clone_vm
-from service.hyper_v_service import delete_hyperv_vm,clone_vm_hyper_v_service
+from service.hyper_v_service import delete_hyperv_vm, clone_vm_hyper_v
 import json
 import logging
 
@@ -159,7 +159,9 @@ async def create_pool_activity(request: dict) -> dict:
 
                 cluster_type = (cluster_data.type or "").strip().lower() if cluster_data else ""
                 if cluster_type in ("hyper-v", "hyperv"):
-                    response = await clone_vm_hyper_v_service(clone_payload_dict)
+                    response = await clone_vm_hyper_v(clone_payload_dict)
+                    if isinstance(response, dict) and "error" in response:
+                        raise Exception(response["error"])
                 elif cluster_type == "proxmox":
                     response = await clone_vm(clone_payload_dict)
                     if isinstance(response, dict) and "error" in response:
@@ -182,54 +184,14 @@ async def create_pool_activity(request: dict) -> dict:
                             ip_obj.vm_id = None
                 db.commit()
 
-                if cluster_type == "proxmox":
-                    # CloneVMWorkflow already created the Machine rows (and set
-                    # pool.pool_vmids) step-by-step as each VM was cloned/IP'd/
-                    # powered on — that happened in a separate DB session, so
-                    # refresh to see it, and just read back what it built.
-                    db.refresh(pool)
-                    machines_json = [
-                        jsonable_encoder(m) for m in response.get("machines", []) if m
-                    ]
-                else:
-                    # Hyper-V path is unchanged: it doesn't create machine rows
-                    # itself, so build them here exactly as before.
-                    pool.pool_vmids = [str(vm.get("vmid")) for vm in assigned_vms if vm.get("vmid")]
-                    db.commit()
-                    db.refresh(pool)
-
-                    for idx, vm in enumerate(assigned_vms):
-                        name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
-                        vmid = vm.get("vmid")
-                        vm_node = vm.get("node") or (nodes[0] if nodes else None)
-                        ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
-
-                        if ip:
-                            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                            if ip_entry:
-                                ip_entry.status = "used"
-                                ip_entry.vm_id = str(vmid)
-
-                        try:
-                            workflow_ids = [
-                                wid
-                                for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                                if wid
-                            ]
-                            machine_data = machinedata(
-                                email, None, pool,
-                                vm_id=str(vmid) if vmid is not None else None,
-                                name=name, hostname=ip or "",
-                                workflow_ids=workflow_ids,
-                            )
-                            machine_data_obj = CreateMachineBase(**machine_data)
-                            machine_result = await controllers.create_machine(machine_data_obj, db=db)
-                            machines_json.append(jsonable_encoder(machine_result))
-                        except Exception as e:
-                            logger.error(f"Error creating machine for vmid {vmid}: {e}")
-                            continue
-
-                    db.commit()
+                # Both Proxmox (CloneVMWorkflow) and Hyper-V (CloneVMHyperVWorkflow)
+                # now create the Machine rows (and update pool.pool_vmids)
+                # step-by-step themselves, in a separate DB session — refresh
+                # to see it, and just read back what the workflow built.
+                db.refresh(pool)
+                machines_json = [
+                    jsonable_encoder(m) for m in response.get("machines", []) if m
+                ]
 
                 msg = f"Pool and {num_allocated} VM(s) created successfully."
                 if num_missing > 0:
@@ -243,9 +205,9 @@ async def create_pool_activity(request: dict) -> dict:
                     "pool": jsonable_encoder(pool),
                     "machines": machines_json,
                 }
-                if cluster_type == "proxmox" and response.get("partial_failure"):
-                    # Don't let orphaned Proxmox VMs (cloned but not registered
-                    # due to e.g. a stale Guacamole name collision) go unnoticed.
+                if response.get("partial_failure"):
+                    # Don't let orphaned VMs (cloned but not registered/started)
+                    # go unnoticed, for either cluster type.
                     result["partial_failure"] = True
                     result["failed_vms"] = response.get("failed_vms", [])
                     result["msg"] = response.get("msg", msg)
@@ -382,12 +344,13 @@ def machinedata(email, machine, db_pool, *, vm_id=None, name=None, hostname=None
 @activity.defn
 async def finalize_cloned_machine_activity(payload: dict) -> dict:
     """
-    Runs right after a VM is cloned in Proxmox: marks its IP as used, records
-    the vmid on the pool, and creates the Machine DB row + Guacamole connection
-    by calling the raw create_machine_activity directly (not via
+    Runs right after a VM is cloned (Proxmox or Hyper-V): marks its IP as used,
+    records the vmid on the pool, and creates the Machine DB row + Guacamole
+    connection by calling the raw create_machine_activity directly (not via
     controllers.create_machine/CreateMachineWorkflow) so its automatic
     power-on trigger doesn't fire early — the clone workflow powers VMs on
-    itself, after IP + domain-join are configured.
+    itself, once registration (and, for Proxmox, IP + domain-join) is done.
+    Cluster-agnostic: takes plain pool_id/vmid/name/ip, no Proxmox-specific logic.
     """
     from service.temporalResource.activity import activities_machine
 
@@ -617,7 +580,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
             try:
                 if cluster_type in ("hyper-v", "hyperv"):
-                    response = await clone_vm_hyper_v_service(clone_payload_dict)
+                    response = await clone_vm_hyper_v(clone_payload_dict)
                 else:
                     response = await clone_vm(clone_payload_dict)
 
@@ -659,67 +622,24 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         if is_automated and added_count > 0 and vms:
             db_pool.pool_number_of_vms = old_vm_count + len(vms)
-            if cluster_type != "proxmox":
-                # For Proxmox, CloneVMWorkflow already appended each new vmid
-                # to pool.pool_vmids (in its own DB session) as part of
-                # finalize_cloned_machine_activity — recomputing it here from
-                # this function's stale pre-clone `db_pool` snapshot would
-                # race with / overwrite that. Hyper-V still needs it set here.
-                existing_vmids = db_pool.pool_vmids or []
-                new_vmids = [str(vm["vmid"]) for vm in vms if "vmid" in vm]
-                db_pool.pool_vmids = existing_vmids + new_vmids
+            # For both Proxmox and Hyper-V, their respective clone workflows
+            # already appended each new vmid to pool.pool_vmids (in a separate
+            # DB session) as part of finalize_cloned_machine_activity —
+            # recomputing it here from this function's stale pre-clone
+            # `db_pool` snapshot would race with / overwrite that.
 
         db.commit()
         db.refresh(db_pool)
 
         # ── Create machine records for each newly cloned VM ──────────────────
-        # For Proxmox, CloneVMWorkflow already created these rows (and set
-        # pool.pool_vmids) as part of its clone→IP→domain-join→power-on
-        # sequence — read them back from the workflow's response instead of
-        # creating them again here. Hyper-V keeps its own machine-creation
-        # loop since clone_vm_hyper_v_service doesn't create rows itself.
+        # Both CloneVMWorkflow (Proxmox) and CloneVMHyperVWorkflow (Hyper-V)
+        # now create these rows (and set pool.pool_vmids) themselves as part
+        # of their clone -> register -> power-on sequence — read them back
+        # from the workflow's response instead of creating them again here.
         if is_automated and added_count > 0 and vms:
-            if cluster_type == "proxmox":
-                machines_json.extend(
-                    jsonable_encoder(m) for m in response.get("machines", []) if m
-                )
-            else:
-                for idx, vm in enumerate(vms):
-                    name = vm.get("name") or f"vm-{vm.get('vmid', '')}"
-                    vmid = vm.get("vmid")
-                    ip = vm.get("ip") or (ip_list[idx] if idx < len(ip_list) else None)
-
-                    # Mark IP as used
-                    try:
-                        if ip:
-                            ip_entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
-                            if ip_entry:
-                                ip_entry.status = "used"
-                                ip_entry.vm_id = str(vmid)
-                    except Exception as e:
-                        print(f"Failed to mark IP {ip} as used: {e}")
-
-                    # Create machine record
-                    try:
-                        workflow_ids = [
-                            wid
-                            for wid in [vm.get("clone_workflow_id"), vm.get("wait_assign_workflow_id")]
-                            if wid
-                        ]
-                        machine_data = machinedata(
-                            email, None, db_pool,
-                            vm_id=str(vmid) if vmid is not None else None,
-                            name=name, hostname=ip or "",
-                            workflow_ids=workflow_ids,
-                        )
-                        machine_data["printer_name"] = pool_data.get("pool_printer_name", db_pool.pool_printer_name)
-                        machine_data_obj = CreateMachineBase(**machine_data)
-                        machine_result = await controllers.create_machine(machine_data_obj, db=db)
-                        machines_json.append(jsonable_encoder(machine_result))
-                    except Exception as e:
-                        logger.error(f"[update_pool] Warning: failed to create machine for vmid={vmid}: {e}")
-                        continue
-
+            machines_json.extend(
+                jsonable_encoder(m) for m in response.get("machines", []) if m
+            )
             db.commit()
             db.refresh(db_pool)
 
@@ -737,8 +657,7 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 await controllers.update_machine(machine.identifier, machine_update_data_obj)
             except Exception as e:
                 db.rollback()
-                # FIX: same swallowed-continue pattern — log so failures are visible
-                print(f"[update_pool] Warning: failed to update machine {machine.identifier}: {e}")
+                logger.error(f"[update_pool] Failed to update machine {machine.identifier}: {e}", exc_info=True)
                 continue
 
         # ── Build response ───────────────────────────────────────────────────
@@ -755,9 +674,9 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 msg += f", {vm_add_error}"
 
         result = {"msg": msg, "pool": db_pool_json, "machines": machines_in_pool}
-        if cluster_type == "proxmox" and response.get("partial_failure"):
-            # Don't let orphaned Proxmox VMs (cloned but not registered due to
-            # e.g. a stale Guacamole name collision) go unnoticed.
+        if response.get("partial_failure"):
+            # Don't let orphaned VMs (cloned but not registered/started) go
+            # unnoticed, for either cluster type.
             result["partial_failure"] = True
             result["failed_vms"] = response.get("failed_vms", [])
             result["msg"] = response.get("msg", msg)
@@ -1064,18 +983,17 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
                         out = stdout.read().decode()
                         err = stderr.read().decode()
     
-                        print("EXIT:", exit_status)
-                        print("OUT:", out)
-                        print("ERR:", err)
-    
+                        logger.debug(f"domain_join qm set for vm {vm_id}: EXIT={exit_status} OUT={out} ERR={err}")
+
                         if "can't lock file" in err:
-                            print(f"VM {vm_id} locked, waiting 5s...")
+                            logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
                             time.sleep(5)
                         else:
-                            print("Script attached successfully")
+                            logger.info(f"Domain-join snippet attached successfully for VM {vm_id}")
                             break
-    
+
             except Exception as e:
+                logger.error(f"domain_join_activity SSH/Proxmox error for pool {pool_id}: {e}", exc_info=True)
                 return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
             finally:
                 ssh.close()

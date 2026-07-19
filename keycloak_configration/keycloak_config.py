@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import uuid
 import json
 import requests
@@ -10,6 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import time as _time
+
+logger = logging.getLogger(__name__)
 
 # ── Keycloak OTP-only flow constants ────────────────────────────────────────
 _OTP_FLOW_ALIAS = "daas-otp-only-flow"
@@ -554,42 +557,42 @@ def reset_guac_totp(user_id: str):
         response = requests.get(cred_url, headers=headers)
         
         if response.status_code != 200:
-            print(f"Failed to fetch credentials: {response.text}")
+            logger.error(f"Failed to fetch credentials: {response.text}")
             return False
-            
+
         credentials = response.json()
         otp_credential_id = None
-        
+
         if isinstance(credentials, list):
             for cred in credentials:
                 if cred.get('type') == 'otp':
                     otp_credential_id = cred.get('id')
                     break
-        
+
         if otp_credential_id:
             delete_url = f"{root_url}/admin/realms/{realm}/users/{user_id}/credentials/{otp_credential_id}"
             del_response = requests.delete(delete_url, headers=headers)
-            
+
             if del_response.status_code not in [200, 204]:
-                print(f"Failed to delete OTP credential: {del_response.text}")
+                logger.error(f"Failed to delete OTP credential: {del_response.text}")
                 return False
-            print(f"Successfully deleted old OTP for user: {user_id}")
+            logger.info(f"Successfully deleted old OTP for user: {user_id}")
         else:
-            print("No active OTP credential found for this user. Proceeding to force setup.")
+            logger.info("No active OTP credential found for this user. Proceeding to force setup.")
 
         user_url = f"{root_url}/admin/realms/{realm}/users/{user_id}"
         payload = {
             "requiredActions": ["CONFIGURE_OTP"]
         }
-        
+
         put_response = requests.put(user_url, json=payload, headers=headers)
         if put_response.status_code not in [200, 204]:
-            print(f"Failed to set Required Action: {put_response.text}")
+            logger.error(f"Failed to set Required Action: {put_response.text}")
             return False
-            
-        print(f"Successfully set CONFIGURE_OTP required action for user: {user_id}")
+
+        logger.info(f"Successfully set CONFIGURE_OTP required action for user: {user_id}")
         return True
 
     except Exception as e:
-        print(f"Exception occurred while resetting TOTP: {str(e)}")
+        logger.error(f"Exception occurred while resetting TOTP: {str(e)}", exc_info=True)
         return False

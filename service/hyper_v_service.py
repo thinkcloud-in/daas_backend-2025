@@ -217,16 +217,18 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
                 vm_info = agent_data["VM"]
                 result_vms.append({
                     "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                    "vmid": vm_info.get("Id") or vm_info.get("VMId")
+                    "vmid": vm_info.get("Id") or vm_info.get("VMId"),
+                    "ip": ip,
                 })
             elif "Name" in agent_data or "VMId" in agent_data:
                 # Handle cases where Name/VMId are at the root of the data dict
                 result_vms.append({
                     "name": agent_data.get("Name") or agent_data.get("VMName") or vm_name,
-                    "vmid": agent_data.get("VMId") or agent_data.get("Id")
+                    "vmid": agent_data.get("VMId") or agent_data.get("Id"),
+                    "ip": ip,
                 })
             else:
-                result_vms.append({"name": vm_name})
+                result_vms.append({"name": vm_name, "ip": ip})
         elif isinstance(agent_data, list):
             for vm_item in agent_data:
                 if isinstance(vm_item, dict):
@@ -234,21 +236,50 @@ async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> di
                         vm_info = vm_item["VM"]
                         result_vms.append({
                             "name": vm_info.get("Name") or vm_info.get("VMName") or vm_name,
-                            "vmid": vm_info.get("Id") or vm_info.get("VMId")
+                            "vmid": vm_info.get("Id") or vm_info.get("VMId"),
+                            "ip": ip,
                         })
                     else:
                         result_vms.append({
                             "name": vm_item.get("Name") or vm_item.get("VMName") or vm_name,
-                            "vmid": vm_item.get("VMId") or vm_item.get("Id")
+                            "vmid": vm_item.get("VMId") or vm_item.get("Id"),
+                            "ip": ip,
                         })
         else:
-            result_vms.append({"name": vm_name})
+            result_vms.append({"name": vm_name, "ip": ip})
 
     return {
         "machines_created": len(result_vms),
         "created_names": new_names,
         "vms": result_vms,
     }
+
+
+async def clone_vm_hyper_v(clone_payload: dict) -> dict:
+    """
+    Orchestrating entry point for Hyper-V clones — parallel to
+    proxmoxService.clone_vm(). Starts CloneVMHyperVWorkflow (clone via agent
+    -> register machine -> power on, with provisioning_status tracked at each
+    step) and awaits the result, instead of calling clone_vm_hyper_v_service
+    directly and leaving registration/power-on untracked.
+    """
+    from service.temporalResource.workflows import workflows_hyper_v
+
+    uniqueId = unique_id()
+    client = await TemporalClientManager.get_temporal_client()
+    workflow_id = f"clonevm-hyperv-{uniqueId}"
+    try:
+        handle = await client.start_workflow(
+            workflows_hyper_v.CloneVMHyperVWorkflow.run,
+            clone_payload,
+            id=workflow_id,
+            task_queue="hyperv-task-queue",
+        )
+        return await handle.result()
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
 

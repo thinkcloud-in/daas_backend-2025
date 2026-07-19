@@ -14,6 +14,7 @@ from models import task_models
 from typing import Optional
 from service.temporalResource.workflows import workflows_cluster
 from db_configuration.config import SessionLocal
+from utils.logging_config import redact_secrets
 import uuid
 
 
@@ -22,11 +23,25 @@ def unique_id():
     logger.info(f"Generated unique ID - {u_id}")
     return u_id
 
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("create_machine_activity")
+
+
+def _is_proxmox_pool(db: Session, pool_id: int) -> bool:
+    """Resolves a pool's cluster type. Used to gate Proxmox-only workflows
+    (e.g. DomainJoinWorkflow) away from Hyper-V pools."""
+    try:
+        pool = db.query(Pool).filter(Pool.id == pool_id).first()
+        if not pool or not pool.cluster_id:
+            return False
+        raw_cluster_id = str(pool.cluster_id)
+        cluster_id = raw_cluster_id.split("_")[-1] if "_" in raw_cluster_id else raw_cluster_id
+        cluster = db.query(Cluster).filter(Cluster.id == int(cluster_id)).first()
+        return bool(cluster and (cluster.type or "").strip().lower() == "proxmox")
+    except Exception as e:
+        logger.warning(f"Could not resolve cluster type for pool {pool_id}, skipping DomainJoinWorkflow: {e}")
+        return False
 
 
 async def get_proxmox_storages(payload, db):
@@ -127,12 +142,19 @@ async def create_pool(pool_data: dict, db) -> dict:
     if isinstance(result, dict) and "pool" in result:
         pool_dict = result["pool"]
         pool_id = pool_dict.get("id") if isinstance(pool_dict, dict) else None
-        
+
         # Only start DomainJoinWorkflow if join_ad is explicitly true and AD info is provided
         join_ad = pool_data.get("join_ad", False)
         ad_domain = pool_data.get("pool_ad_domain")
-        
-        if pool_id and join_ad and ad_domain and ad_domain != "UnknownDomain":
+
+        # DomainJoinWorkflow does a Proxmox-specific SSH + `qm set` — it must
+        # never fire for Hyper-V pools, whose agent already joins the domain
+        # itself as part of cloning (see clone_vm_hyper_v_service). Without
+        # this check, a Hyper-V pool with join_ad checked would get a second,
+        # redundant domain-join attempt that SSHes into a host with no `qm`.
+        is_proxmox_pool = _is_proxmox_pool(db, pool_id) if pool_id else False
+
+        if pool_id and join_ad and ad_domain and ad_domain != "UnknownDomain" and is_proxmox_pool:
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -144,7 +166,7 @@ async def create_pool(pool_data: dict, db) -> dict:
                     "UserName": [userName]
                 },
             )
-    return result 
+    return result
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
     uniqueId = unique_id()
@@ -182,7 +204,12 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
         join_ad = pool_data.get("join_ad", False)
         ad_domain = pool_data.get("pool_ad_domain")
 
-        if pool_id_val and join_ad and ad_domain and ad_domain != "UnknownDomain":
+        # See create_pool: DomainJoinWorkflow is Proxmox-specific (SSH + `qm
+        # set`) and must not fire for Hyper-V pools, which already join the
+        # domain via the agent during cloning.
+        is_proxmox_pool = _is_proxmox_pool(db, pool_id_val) if pool_id_val else False
+
+        if pool_id_val and join_ad and ad_domain and ad_domain != "UnknownDomain" and is_proxmox_pool:
             await client.start_workflow(
                 workflows_pool.DomainJoinWorkflow.run,
                 args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
@@ -200,7 +227,7 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
  
 async def create_machine(machine_data: CreateMachineBase, db: Session = None):
-    logger.info(f"Received machine_data for creation: {machine_data}")
+    logger.info(f"Received machine_data for creation: {redact_secrets(machine_data.dict())}")
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -244,7 +271,7 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
         if workflow_status_map is not None:
             machine_data_dict["workflow_status"] = workflow_status_map
         try:
-            logger.info(f"Starting workflow for machine creation: {machine_data_dict}")
+            logger.info(f"Starting workflow for machine creation: {redact_secrets(machine_data_dict)}")
             handle = await client.start_workflow(
                 workflows_machine.CreateMachineWorkflow.run,
                 machine_data_dict,

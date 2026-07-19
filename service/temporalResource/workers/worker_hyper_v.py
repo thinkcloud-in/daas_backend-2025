@@ -2,6 +2,8 @@ from utils.temporal_client import TemporalClientManager
 from temporalio.worker import Worker
 from service.temporalResource.workflows import workflows_hyper_v
 from service.temporalResource.activity import activities_hyper_v
+from service.temporalResource.activity.activities_pool import finalize_cloned_machine_activity
+from service.temporalResource.activity.activities_proxmox import update_machine_provisioning_status_activity
 
 import logging
 
@@ -16,7 +18,7 @@ async def hyperv_worker():
         client,
         task_queue="hyperv-task-queue",
         workflows=[
-            # workflows_hyper_v.CloneVMHyperVWorkflow,
+            workflows_hyper_v.CloneVMHyperVWorkflow,
             # workflows_hyper_v.DeleteVMHyperVWorkflow,
             workflows_hyper_v.HandleActionHyperVWorkflow,
             # workflows_hyper_v.DeleteHyperVDiskWorkflow,
@@ -27,7 +29,7 @@ async def hyperv_worker():
             workflows_hyper_v.FetchClusterNodesWorkflow,
         ],
         activities=[
-            # activities_hyper_v.clone_vm_hyper_v_activity,
+            activities_hyper_v.clone_vm_hyper_v_activity,
             # activities_hyper_v.delete_vm_hyper_v_activity,
             activities_hyper_v.handle_action_activity,
             # activities_hyper_v.delete_hyperv_disk_activity,
@@ -38,6 +40,8 @@ async def hyperv_worker():
             activities_hyper_v.verify_hyper_v_activity,
             activities_hyper_v.fetch_cluster_nodes_activity,
             # activities_hyper_v.duplicate_parent_vm_activity,
+            finalize_cloned_machine_activity,
+            update_machine_provisioning_status_activity,
         ],
     )
 

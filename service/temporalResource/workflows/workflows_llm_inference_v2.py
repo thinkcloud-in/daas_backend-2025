@@ -10,7 +10,8 @@ from service.temporalResource.activity import activities_llm_inference  # reuse 
 
 _RETRY_ONCE = RetryPolicy(maximum_attempts=1)
 
-logging.basicConfig(level=logging.INFO)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger(__name__)
 
 _RETRY = RetryPolicy(

@@ -12,14 +12,11 @@ from service.pollingStatus import update_workflow_status, ensure_status_poller_r
 from db_configuration.config import SessionLocal, get_db
 from service import hyper_v_service
 
-logger = logging.getLogger("Machine_activity")
 from dotenv import load_dotenv
 load_dotenv()
 
-logging.basicConfig(
-    level=logging.ERROR,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("machine_activity_logger")
 
 async def get_machine_name(machine_data):

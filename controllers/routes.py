@@ -1,6 +1,7 @@
 from utils.temporal_client import TemporalClientManager
 import asyncio
 import json
+import logging
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from fastapi.encoders import jsonable_encoder
@@ -17,6 +18,8 @@ import pytz
 from models.API_Response_model import APIResponse
 from utils import response_format
 from controllers.llm_inference_v2_controller import _fetch_steps
+
+logger = logging.getLogger(__name__)
 
 _LLM_WF_TYPES = {
     "CreateMultiNodeLLMWorkflow", "PoolVMActionWorkflow", "DeleteLLMPoolWorkflow",
@@ -392,7 +395,7 @@ async def list_workflows():
                 "UserName": UserName
             })
     except Exception as e:
-        print(f"Error listing workflows with query: {e}")
+        logger.error(f"Error listing workflows with query: {e}", exc_info=True)
         # Fallback to listing all but with a strict limit to avoid hitting QPS again
         async for wf in client.list_workflows():
             if len(workflows) >= 50:

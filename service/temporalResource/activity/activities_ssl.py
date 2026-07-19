@@ -1,4 +1,5 @@
 import base64
+import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from temporalio import activity
@@ -16,6 +17,8 @@ from cryptography.hazmat.backends import default_backend
 # except config.config_exception.ConfigException:
 #     config.load_kube_config()
 
+logger = logging.getLogger(__name__)
+
 v1 = None # client.CoreV1Api()
 NAMESPACE = "thinkcloud"
 SECRET_NAME = "daas-tls-secret"
@@ -25,11 +28,11 @@ try:
         config.load_incluster_config()
     except config.config_exception.ConfigException:
         config.load_kube_config()
-    
+
     v1 = client.CoreV1Api()
 
 except Exception as kube_err:
-    print(f"⚠️ Warning: Kubernetes config not found. Running in Local Mode: {kube_err}")
+    logger.warning(f"Kubernetes config not found. Running in Local Mode: {kube_err}")
     v1 = None
 
 @activity.defn

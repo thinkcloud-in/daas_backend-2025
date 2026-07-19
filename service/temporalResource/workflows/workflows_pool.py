@@ -1,9 +1,12 @@
+import logging
 from datetime import timedelta
 from http.client import HTTPException
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_pool
 # Workflows should not raise FastAPI HTTPException; re-raise original exceptions
+
+logger = logging.getLogger(__name__)
 
 @workflow.defn(sandboxed=False)
 class PoolCreationWorkflow:
@@ -187,6 +190,6 @@ class DomainJoinWorkflow:
             )
             return result
         except Exception as e:
-            print("Error from Domain Join Workflow", e)
+            logger.error(f"Error from Domain Join Workflow: {e}", exc_info=True)
             raise
 

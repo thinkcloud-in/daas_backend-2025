@@ -11,13 +11,8 @@ from sqlalchemy.orm import Session
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 security = HTTPBearer()
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-
-
-
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("RBAC LOGGER")
 @activity.defn
 async def get_client_activity():
@@ -156,7 +151,7 @@ async def deleting_role_activity(role_name: str, authorization: str):
             logger.info(f"Sending DELETE request to Keycloak Realm: {url}")
             
             get_res = await client.delete(url, headers=auth_header)
-            print("Keycloak DELETE response status:", url, get_res.status_code)
+            logger.info(f"Keycloak DELETE response status: {url} -> {get_res.status_code}")
             
             # Keycloak delete karne par 204 (No Content) ya 200 deta hai
             if get_res.status_code in [200, 204]:

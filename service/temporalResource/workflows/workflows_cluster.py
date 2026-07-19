@@ -4,10 +4,8 @@ import logging
 from datetime import timedelta
 from service.temporalResource.activity import activities_cluster
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("create_cluster_workflow")
 
 

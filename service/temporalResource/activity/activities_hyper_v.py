@@ -208,6 +208,17 @@ logger = logging.getLogger(__name__)
 #     }
 
 @activity.defn
+async def clone_vm_hyper_v_activity(clone_payload: dict) -> dict:
+    """
+    Thin Temporal-activity wrapper around the already-working
+    hyper_v_service.clone_vm_hyper_v_service — no cloning/IP/domain-join logic
+    duplicated or changed here, just exposed so CloneVMHyperVWorkflow can call
+    it and track it as a step.
+    """
+    return await clone_vm_hyper_v_service(clone_payload)
+
+
+@activity.defn
 async def handle_action_activity(request: dict) -> dict:
     cluster_id = request.get("cluster_id")
     db: Session = SessionLocal()
@@ -371,7 +382,7 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
         if new_vm_id:
             logger.info(f"Updating machine {machine.id} vm_id from {vm_id} to {new_vm_id}")
             machine.vm_id = str(new_vm_id)
-            
+
             # Also update pool_vmids if necessary
             if pool.pool_vmids:
                 # Ensure we handle list correctly
@@ -382,13 +393,17 @@ async def vm_rebuild_hyper_v_activity(request: dict) -> dict:
                     else:
                         updated_vmids.append(str(v))
                 pool.pool_vmids = updated_vmids
-            
+
+            machine.provisioning_status = "cloned"
             db.commit()
             vm_id = str(new_vm_id)
         else:
             logger.error(f"Could not find new VM ID for {machine.name} after cloning")
 
-        return {"code": 200, "status": "success", "vm_id": vm_id, "machine_name": machine.name}
+        return {
+            "code": 200, "status": "success", "vm_id": vm_id,
+            "machine_name": machine.name, "pool_id": machine.pool_id,
+        }
     except Exception as e:
         db.rollback()
         logger.error(f"Error in vm_rebuild_hyper_v_activity: {e}")
@@ -504,8 +519,9 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
         
         # Update machine record
         machine.vm_id = str(new_vm_id)
-        machine.name = new_name 
+        machine.name = new_name
         machine.error_message = "power-off" # Set to off as clones are usually created off or needs state reset
+        machine.provisioning_status = "cloned"
         
         # Update Pool's vmids list to replace the old ID with the new one
         if pool.pool_vmids:
@@ -526,7 +542,8 @@ async def rebuild_machine_in_pool_activity(request: dict) -> dict:
             "machine": machine_name,
             "old_vm_id": str(old_vm_id),
             "new_vm_id": str(new_vm_id),
-            "new_name": new_name
+            "new_name": new_name,
+            "pool_id": pool_id,
         }
 
     except Exception as e:

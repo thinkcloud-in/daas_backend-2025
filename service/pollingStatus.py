@@ -72,27 +72,29 @@ async def get_workflow_failure_message_simple(workflow_id):
 _status_poller_workflow_id = None
 
 async def is_status_poller_cron_running():
+    # Routine/expected-path checks stay at DEBUG — this runs on every machine
+    # creation, not just once, and would otherwise flood app.log with noise
+    # that isn't business-logic-relevant. Only genuine failures are logged.
     try:
-        print("[Poller] Checking if status-poller is already running...")
+        logger.debug("[Poller] Checking if status-poller is already running...")
         client = await TemporalClientManager.get_temporal_client()
         handle = client.get_workflow_handle("status-poller")
         try:
             desc = await handle.describe()
             if desc.status == WorkflowExecutionStatus.RUNNING:
-                print(f"[Poller] Found running workflow: {handle.id}")
+                logger.debug(f"[Poller] Found running workflow: {handle.id}")
                 return True, handle.id
         except Exception:
             # Workflow doesn't exist or is not running
             pass
         return False, None
     except Exception as e:
-        print(f"[Poller] Error during check: {e}")
-        logger.error(f"Error checking status poller workflow: {e}")
+        logger.error(f"[Poller] Error checking status poller workflow: {e}", exc_info=True)
         return False, None
 
 async def start_status_poller_workflow(force=False):
     global _status_poller_workflow_id
-    
+
     is_running, existing_id = await is_status_poller_cron_running()
     if is_running and not force:
         _status_poller_workflow_id = existing_id
@@ -101,16 +103,16 @@ async def start_status_poller_workflow(force=False):
             "workflow_id": existing_id,
             "status": "already_running"
         }
-    
+
     client = await TemporalClientManager.get_temporal_client()
     if is_running and force:
         try:
-            print(f"[Poller] Terminating existing workflow {existing_id} for force restart...")
+            logger.debug(f"[Poller] Terminating existing workflow {existing_id} for force restart...")
             handle = client.get_workflow_handle(existing_id)
             await handle.terminate(reason="Force restart requested")
-            print("[Poller] Termination successful.")
+            logger.debug("[Poller] Termination successful.")
         except Exception as e:
-            print(f"[Poller] Termination failed (might already be closed): {e}")
+            logger.warning(f"[Poller] Termination failed (might already be closed): {e}")
 
     uniqueId = controllers.unique_id()
     

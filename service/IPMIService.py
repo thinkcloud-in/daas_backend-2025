@@ -15,11 +15,9 @@ def unique_id():
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
  
  
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
-logger = logging.getLogger("create_machine_activity")
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
+logger = logging.getLogger("IPMIService")
 
 async def create_ipmi_server(db: Session, ipmi_data: IPMIDeviceRequest):
     uniqueId = unique_id()

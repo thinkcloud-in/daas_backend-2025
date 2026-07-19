@@ -13,10 +13,8 @@ from temporalio.workflow import ParentClosePolicy
 # string name instead, which Temporal resolves against the worker's activity
 # registry at run time.
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger("create_machine_workflow")
  
 @workflow.defn(sandboxed=False)

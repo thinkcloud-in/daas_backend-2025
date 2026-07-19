@@ -13,13 +13,8 @@ from utils.temporal_client import TemporalClientManager
 import os, logging, sys
 from utils import response_format
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 
 logger = logging.getLogger(__name__)
 

@@ -1,0 +1,1 @@
+2026-07-19 15:54:10 | ERROR    | some.module | <string>:<module>:19 | test ERROR message reaches both app.log and errors.log

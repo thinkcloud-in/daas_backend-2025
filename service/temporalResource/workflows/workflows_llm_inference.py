@@ -7,7 +7,8 @@ from temporalio.workflow import ParentClosePolicy
 
 from service.temporalResource.activity import activities_llm_inference
 
-logging.basicConfig(level=logging.INFO)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger(__name__)
 
 _RETRY = RetryPolicy(

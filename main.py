@@ -1,6 +1,12 @@
+from utils.logging_config import setup_logging
+setup_logging()
+
 import asyncio
+import logging
 import threading
 from fastapi import FastAPI, Depends, Request
+
+logger = logging.getLogger(__name__)
 from middleware.Grafana_init import router as grafana_router
 from controllers.routes import router
 from router.guacamole_router import guacamole_router
@@ -106,23 +112,21 @@ def start_async_worker(target):
         try:
             loop.run_until_complete(target())
         except Exception as e:
-            print(f"[Worker Error] {target.__name__}: {e}")
+            logger.error(f"[Worker Error] {target.__name__}: {e}", exc_info=True)
         finally:
             loop.close()
     threading.Thread(target=run, daemon=True).start()
 
 async def run_worker_group(name, *worker_funcs):
     """Runs a group of workers in a specific event loop."""
-    print(f"Starting worker group: {name}")
-    
+    logger.info(f"Starting worker group: {name}")
+
     async def safe_run(func):
         try:
-            print(f"[Group {name}] Starting {func.__name__}...")
+            logger.info(f"[Group {name}] Starting {func.__name__}...")
             await func()
         except Exception as e:
-            print(f"[Group {name}] Error in {func.__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error(f"[Group {name}] Error in {func.__name__}: {e}", exc_info=True)
 
     await asyncio.gather(*(safe_run(func) for func in worker_funcs))
 
@@ -180,5 +184,5 @@ def start_workers():
     start_thread_manager("LXCRestore", workers_lxc_restore.run_all_lxc_workers)
     start_thread_manager("HarborImage", workers_harbor_image.run_harbor_image_worker)
     
-    print("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
+    logger.info("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import smtplib
 import aiohttp
 from temporalio import activity, workflow
@@ -18,6 +19,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 TEMPORAL_SERVER = os.getenv('TEMPORAL_SERVER')
+logger = logging.getLogger(__name__)
 
 
 def calculate_time_range(schedule_type: str) -> tuple[str, str]:
@@ -175,7 +177,7 @@ async def create_pdf_email_schedule(
             input_time = datetime.strptime(send_time, "%H:%M")
     except Exception as e:
         # Fallback to current time if parsing fails to avoid total crash
-        print(f"Error parsing time '{send_time}': {e}")
+        logger.error(f"Error parsing time '{send_time}': {e}", exc_info=True)
         input_time = datetime.now()
 
     total_minutes = input_time.hour * 60 + input_time.minute
@@ -275,10 +277,10 @@ async def delete_temporal_schedule(schedule_id: str) -> str:
         try:
             workflow_handle = client.get_workflow_handle(workflow_id)
             await workflow_handle.terminate(reason="Schedule being deleted")
-            print(f"Terminated workflow: {workflow_id}")
+            logger.info(f"Terminated workflow: {workflow_id}")
         except Exception as workflow_err:
             # Workflow might not be running, ignore errors here
-            print(f"Workflow termination skipped (might not be running): {workflow_err}")
+            logger.warning(f"Workflow termination skipped (might not be running): {workflow_err}")
 
         # 2. Delete the actual schedule
         handle = client.get_schedule_handle(schedule_id)

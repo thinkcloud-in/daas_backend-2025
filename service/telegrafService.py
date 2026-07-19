@@ -2,7 +2,8 @@ import os
 from dotenv import load_dotenv
 import logging
 
-logging.basicConfig(level=logging.ERROR)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger(__name__)
 
 load_dotenv()

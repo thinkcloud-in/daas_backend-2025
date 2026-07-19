@@ -12,10 +12,8 @@ from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 from service.gucamoleService import logout_from_guacamole
 
 logger = logging.getLogger("machine_listener")
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# Logging is configured centrally in utils/logging_config.py (called from
+# main.py at startup) — do not reconfigure it per-module.
 
 DATABASE_USER = os.getenv('USER_NAME')
 DATABASE_PASSWORD = os.getenv('PASSWORD')
