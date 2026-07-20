@@ -429,6 +429,13 @@ class VmRebuildWorkflow:
         if result.get("status") != "success":
             return result
 
+        missing = [k for k in ("upid", "node", "ip_address") if k not in result]
+        if missing:
+            return {
+                "status": "error",
+                "error": f"vm_rebuild_activity reported success but missing fields: {missing}",
+            }
+
         upid = result["upid"]
         node = result["node"]
         ip_address = result["ip_address"]
