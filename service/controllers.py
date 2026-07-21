@@ -115,10 +115,6 @@ async def create_pool(pool_data: dict, db) -> dict:
     client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get('email', "UnknownUser")
-    pool_ad_domain = pool_data.get('pool_ad_domain', "UnknownDomain")
-    pool_ad_password = pool_data.get('pool_ad_password', "UnknownPassword")
-    pool_ad_username = pool_data.get('pool_ad_username', "UnknownUsername")
-    pool_ad_path = pool_data.get('pool_ad_path', "")
     workflow_id = f"{pool_name} Creating-{uniqueId}"
     handle = await client.start_workflow(
         workflows_pool.PoolCreationWorkflow.run,
@@ -132,40 +128,18 @@ async def create_pool(pool_data: dict, db) -> dict:
         },
     )
     result =  await handle.result()
-    
+
     if isinstance(result, dict) and result.get("status") == "error":
         raise HTTPException(
             status_code=400,
             detail=result.get("error") or result.get("msg") or "Pool creation failed"
         )
 
-    if isinstance(result, dict) and "pool" in result:
-        pool_dict = result["pool"]
-        pool_id = pool_dict.get("id") if isinstance(pool_dict, dict) else None
-
-        # Only start DomainJoinWorkflow if join_ad is explicitly true and AD info is provided
-        join_ad = pool_data.get("join_ad", False)
-        ad_domain = pool_data.get("pool_ad_domain")
-
-        # DomainJoinWorkflow does a Proxmox-specific SSH + `qm set` — it must
-        # never fire for Hyper-V pools, whose agent already joins the domain
-        # itself as part of cloning (see clone_vm_hyper_v_service). Without
-        # this check, a Hyper-V pool with join_ad checked would get a second,
-        # redundant domain-join attempt that SSHes into a host with no `qm`.
-        is_proxmox_pool = _is_proxmox_pool(db, pool_id) if pool_id else False
-
-        if pool_id and join_ad and ad_domain and ad_domain != "UnknownDomain" and is_proxmox_pool:
-            await client.start_workflow(
-                workflows_pool.DomainJoinWorkflow.run,
-                args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
-                id=f"{pool_name} DomainJoin-{uniqueId}",
-                task_queue="domain-join-task-queue",
-                search_attributes={
-                    "Entity": [pool_name],
-                    "Action": ["Domain-Join"],
-                    "UserName": [userName]
-                },
-            )
+    # NOTE: Proxmox AD domain-join is NOT triggered here anymore. It runs as an
+    # integral step of CloneVMWorkflow (Step 4), BEFORE each VM is powered on,
+    # so the join snippet is guaranteed in place on first boot. Triggering a
+    # separate DomainJoinWorkflow here would be a redundant, post-boot second
+    # attempt. (Hyper-V pools join via their own agent during cloning.)
     return result
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
@@ -173,10 +147,6 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
     client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
     userName = pool_data.get("email", "UnknownUser")
-    pool_ad_domain = pool_data.get('pool_ad_domain', "UnknownDomain")
-    pool_ad_password = pool_data.get('pool_ad_password', "UnknownPassword")
-    pool_ad_username = pool_data.get('pool_ad_username', "UnknownUsername")
-    pool_ad_path = pool_data.get('pool_ad_path', "")
     workflow_id = f"{pool_name} Updating-{uniqueId}"
     handle = await client.start_workflow(
         workflows_pool.PoolUpdateWorkflow.run,
@@ -196,32 +166,12 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
             detail=result.get("error") or result.get("msg") or "Pool update failed"
         )
 
-    if isinstance(result, dict) and "pool" in result:
-        pool_dict = result["pool"]
-        pool_id_val = pool_dict.get("id") if isinstance(pool_dict, dict) else None
-
-        # Only start DomainJoinWorkflow if join_ad is explicitly true and AD info is provided
-        join_ad = pool_data.get("join_ad", False)
-        ad_domain = pool_data.get("pool_ad_domain")
-
-        # See create_pool: DomainJoinWorkflow is Proxmox-specific (SSH + `qm
-        # set`) and must not fire for Hyper-V pools, which already join the
-        # domain via the agent during cloning.
-        is_proxmox_pool = _is_proxmox_pool(db, pool_id_val) if pool_id_val else False
-
-        if pool_id_val and join_ad and ad_domain and ad_domain != "UnknownDomain" and is_proxmox_pool:
-            await client.start_workflow(
-                workflows_pool.DomainJoinWorkflow.run,
-                args=[pool_id, pool_ad_domain, pool_ad_password, pool_ad_username, pool_ad_path],
-                id=f"{pool_name} DomainJoin-{uniqueId}",
-                task_queue="domain-join-task-queue",
-                search_attributes={
-                    "Entity": [pool_name],
-                    "Action": ["Domain-Join"],
-                    "UserName": [userName]
-                },
-            )
-
+    # NOTE: As with create_pool, Proxmox AD domain-join is handled inside
+    # CloneVMWorkflow (Step 4) for any VMs newly cloned by this update, before
+    # they power on. A separate post-update DomainJoinWorkflow is intentionally
+    # NOT started: setting --cicustom on already-running existing VMs has no
+    # effect anyway (Cloudbase-Init reads user-data only once, on first boot),
+    # so it would only add a redundant attempt for the freshly-cloned VMs.
     return result
 
 

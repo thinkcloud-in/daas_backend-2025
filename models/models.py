@@ -181,8 +181,9 @@ class CreatePoolBase(BaseModel):
     pool_ad_password: Optional[str] = None
     pool_ad_username: Optional[str] = None
     pool_ad_path: Optional[str] = None
+    join_ad: Optional[bool] = False
     pool_name: Optional[str] = None
-    pool_machines: Optional[List[str]] = None  # <--- add this line!
+    pool_machines: Optional[List[str]] = None
     pool_os_type: Optional[str] = None
     pool_storage: Optional[str] = None
     pool_disable_audio:Optional[bool] = None

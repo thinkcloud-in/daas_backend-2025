@@ -425,7 +425,15 @@ async def assign_ip_to_vm_activity(args: dict):
                     if resp.status_code == 200:
                         config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/config"
                         payload = {
-                            "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
+                            "ipconfig0": f"ip={ip_with_cidr},gw={gateway}",
+                            # Force the OpenStack ConfigDrive format Cloudbase-Init
+                            # requires on Windows. Without this, Proxmox defaults to
+                            # citype=nocloud, which writes a Linux-style drive the
+                            # guest can't fully read — hostname and user-data
+                            # (domain join) silently don't apply on first boot. Set
+                            # here so every clone gets it before power-on, regardless
+                            # of how the source template was configured.
+                            "citype": "configdrive2",
                         }
                         config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
                         

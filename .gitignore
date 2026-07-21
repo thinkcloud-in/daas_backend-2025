@@ -15,3 +15,6 @@ email_scheduler.log
 scratch/
 alter_db2.py
 build/
+errors.log
+test.py
+alter_db2.py

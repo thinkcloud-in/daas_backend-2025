@@ -23,6 +23,10 @@ async def create_pool_activity(request: dict) -> dict:
     try:
         pool_data = {key: request[key] for key in CreatePoolBase.__annotations__.keys() if key in request}
         email = pool_data.pop("email", None)
+        # join_ad is a control flag that drives the domain-join step, not a
+        # Pool column — pop it before Pool(**pool_data) or the ORM constructor
+        # rejects it ("invalid keyword argument for Pool").
+        join_ad = pool_data.pop("join_ad", False)
         ip_pool_names = pool_data.get("pool_ip_pool_names")
 
         # Automated-pool pre-flight checks 
@@ -152,7 +156,7 @@ async def create_pool_activity(request: dict) -> dict:
                     "ou": pool_data.get("pool_ad_path"),
                     "username": pool_data.get("pool_ad_username"),
                     "domain_password": pool_data.get("pool_ad_password"),
-                    "join_ad": bool(pool_data.get("join_ad", False)),
+                    "join_ad": bool(join_ad),
                     "email": email,
                     "is_cluster": actual_is_cluster,
                 }
@@ -435,13 +439,17 @@ async def _cleanup_unregisterable_vm(pool_id: int, vmid, ip: str | None) -> None
 @activity.defn
 async def configure_domain_join_activity(payload: dict) -> dict:
     """Thin wrapper so the clone workflow can attach the AD-join cloud-init
-    snippet to already-cloned VMs before they're powered on."""
+    snippet to already-cloned VMs before they're powered on.
+
+    `vm_ids` (optional) scopes the join to just the current batch's VMs; when
+    omitted, domain_join_activity falls back to every vmid on the pool."""
     return await domain_join_activity(
         payload["pool_id"],
         payload["pool_ad_domain"],
         payload["pool_ad_password"],
         payload["pool_ad_username"],
         payload.get("pool_ad_path", ""),
+        payload.get("vm_ids"),
     )
 
 
@@ -613,9 +621,11 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             db.commit()
 
         # ── Apply field updates to the pool row ──────────────────────────────
-        # FIX: always exclude pool_number_of_vms and email from the blind setattr
-        #      loop — these are managed explicitly below / not a DB column.
-        EXCLUDED_FIELDS = {"pool_number_of_vms", "email"}
+        # FIX: always exclude pool_number_of_vms, email and join_ad from the
+        #      blind setattr loop — these are managed explicitly below / are
+        #      control flags, not DB columns (join_ad drives the clone-time
+        #      domain-join step and is already read into clone_payload_dict above).
+        EXCLUDED_FIELDS = {"pool_number_of_vms", "email", "join_ad"}
         for field, value in pool_data.items():
             if field not in EXCLUDED_FIELDS:
                 setattr(db_pool, field, value)
@@ -881,7 +891,7 @@ async def get_pool_details_id_activity(pool_id: int):
 
 
 @activity.defn()
-async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str) -> dict:
+async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str, target_vm_ids: list = None) -> dict:
     import paramiko
     db: Session = SessionLocal()
     try:
@@ -889,8 +899,10 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
             if not pool:
                 return {"msg": f"Pool not found with id {pool_id}"}
-            
-            vm_ids = pool.pool_vmids or []
+
+            # Scope to the caller-supplied vmids (current clone batch) when
+            # provided; otherwise fall back to every vmid on the pool.
+            vm_ids = target_vm_ids if target_vm_ids else (pool.pool_vmids or [])
             if not vm_ids:
                 return {"msg": "No VMs found in the pool to join domain."}
                 
@@ -907,7 +919,7 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
             domain = pool_ad_domain #"rcvdev.team"
             username = pool_ad_username #"rcvdev\\administrator"
             password = pool_ad_password #"Teamw0rk@1"
-            ou_path_input = pool_ad_path # "OU11/OU1"
+            ou_path_input = pool_ad_path # "OU1/OU11"
             
             ou_components = []
             if ou_path_input:
@@ -920,76 +932,126 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
                 ou_components.append(f"DC={part}")
     
             final_ou_path = ",".join(ou_components)
-            ou_args = f'-OUPath "{final_ou_path}" `' if final_ou_path else ""
-    
-            yaml_content = f"""#cloud-config
-            write_files:
-                - path: "C:\\\\join-domain.ps1"
-                  content: |
-                    $domain = "{domain}"
-                    $username = "{username}"
-                    $password = "{password}"
-    
-                    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-                    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    
-                    Write-Host "Waiting for network..."
-    
-                    do {{
-                        $net = Test-NetConnection -ComputerName "172.16.0.51" -InformationLevel Quiet
-                        Start-Sleep -Seconds 10
-                    }} until ($net -eq $true)
-    
-                    do {{
-                        nltest /dsgetdc:$domain
-                        Start-Sleep -Seconds 10
-                    }} until ($LASTEXITCODE -eq 0)
-    
-                    Add-Computer `
-                    -DomainName $domain `
-                    -Credential $credential `
-                    {ou_args}
-                    -Force
-                    
-                    Start-Sleep -Seconds 30
-                    Restart-Computer -Force
-    
-            runcmd:
-                - powershell.exe -ExecutionPolicy Bypass -File "C:\\\\join-domain.ps1"
-            """
-    
+
+            
+            def _build_join_script(new_name: str) -> str:
+                # new_name may be "" (join without renaming). Rename + join are
+                # done in ONE Add-Computer call via -NewName so the AD computer
+                # object is created with the correct hostname. This is necessary
+                # because Proxmox delivers the hostname only in user-data, and our
+                # --cicustom snippet replaces that user-data — so Cloudbase-Init's
+                # SetHostNamePlugin (which reads meta-data) never gets a hostname.
+                return f"""#ps1_sysnative
+$ErrorActionPreference = "Stop"
+$log = "C:\\cloudbase-domain-join.log"
+function Log($m) {{ "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }}
+
+$domain   = "{domain}"
+$username = "{username}"
+$password = "{password}"
+$ouPath   = "{final_ou_path}"
+$newName  = "{new_name}"
+
+Log "Domain-join started: domain='$domain' user='$username' ou='$ouPath' newName='$newName'"
+try {{
+    if ((Get-WmiObject Win32_ComputerSystem).PartOfDomain) {{
+        Log "Already domain-joined; nothing to do."
+        exit 0
+    }}
+
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+
+    # Bounded wait for a locatable domain controller (max ~5 min).
+    for ($i = 1; $i -le 30; $i++) {{
+        nltest /dsgetdc:$domain 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {{ Log "DC located (attempt $i)"; break }}
+        Log "DC not reachable yet (attempt $i); retrying"
+        Start-Sleep -Seconds 10
+    }}
+
+    # Rename-then-join in ONE reboot. Two earlier approaches failed:
+    #  - Add-Computer -NewName (rename+join in one call) failed the join itself;
+    #  - Add-Computer then Rename-Computer -DomainCredential failed the rename,
+    #    because a just-joined machine has no working domain secure channel until
+    #    its first post-join reboot.
+    # Reliable pattern: stage the rename locally while still in the WORKGROUP (no
+    # domain context needed), then join with -Options JoinWithNewName so the join
+    # uses the pending name. AD object + local host both become $newName after a
+    # single reboot.
+    $doRename = ($newName -and $newName -ne $env:COMPUTERNAME)
+    if ($doRename) {{
+        Log "Staging local (workgroup) rename to '$newName'"
+        Rename-Computer -NewName $newName -Force -ErrorAction Stop
+        Log "Local rename staged (applies on reboot)."
+    }} else {{
+        Log "No rename needed (newName empty or already current)."
+    }}
+
+    $joinParams = @{{
+        DomainName  = $domain
+        Credential  = $credential
+        Force       = $true
+        ErrorAction = "Stop"
+    }}
+    if ($ouPath)  {{ $joinParams["OUPath"]  = $ouPath }}
+    if ($doRename) {{ $joinParams["Options"] = "JoinWithNewName,AccountCreate" }}
+
+    Log "Joining domain (ou='$ouPath')"
+    Add-Computer @joinParams
+    Log "Domain join succeeded; rebooting to apply join + new name."
+
+    Start-Sleep -Seconds 10
+    Restart-Computer -Force
+}}
+catch {{
+    Log "Domain join FAILED: $($_.Exception.Message)"
+    exit 1
+}}
+"""
+
+            import re
             ssh = paramiko.SSHClient()
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             try:
                 ssh.connect(host, username=user, password=proxmox_password)
                 ssh.exec_command("mkdir -p /var/lib/vz/snippets")
-    
                 sftp = ssh.open_sftp()
-                file = sftp.file(f"/var/lib/vz/snippets/join-domain-pool-{pool_id}.yml", "w")
-                file.write(yaml_content)
-                file.close()
-    
+
                 for vm_id in vm_ids:
-    
-                    cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
-    
+                    # Resolve this VM's intended hostname (Machine.name) and
+                    # sanitize it to a valid NetBIOS computer name: only
+                    # letters/digits/hyphen, max 15 chars. Empty -> no rename.
+                    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+                    raw_name = (machine.name if machine and machine.name else "").strip()
+                    new_name = re.sub(r"[^A-Za-z0-9-]", "-", raw_name)[:15].strip("-")
+                    if raw_name and new_name != raw_name:
+                        logger.warning(
+                            f"VM {vm_id}: hostname '{raw_name}' sanitized/truncated to "
+                            f"NetBIOS name '{new_name}' for domain join."
+                        )
+
+                    snippet_name = f"join-domain-pool-{pool_id}-vm-{vm_id}.ps1"
+                    f = sftp.file(f"/var/lib/vz/snippets/{snippet_name}", "w")
+                    f.write(_build_join_script(new_name))
+                    f.close()
+
+                    cmd = f"qm set {vm_id} --cicustom user=local:snippets/{snippet_name}"
+
                     max_retry = 10
-    
                     for i in range(max_retry):
-    
                         stdin, stdout, stderr = ssh.exec_command(cmd)
-    
                         exit_status = stdout.channel.recv_exit_status()
                         out = stdout.read().decode()
                         err = stderr.read().decode()
-    
-                        logger.debug(f"domain_join qm set for vm {vm_id}: EXIT={exit_status} OUT={out} ERR={err}")
+
+                        logger.debug(f"domain_join qm set for vm {vm_id} (name={new_name}): EXIT={exit_status} OUT={out} ERR={err}")
 
                         if "can't lock file" in err:
                             logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
                             time.sleep(5)
                         else:
-                            logger.info(f"Domain-join snippet attached successfully for VM {vm_id}")
+                            logger.info(f"Domain-join snippet attached for VM {vm_id} (hostname={new_name})")
                             break
 
             except Exception as e:
