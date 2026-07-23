@@ -1164,6 +1164,18 @@ Start-ScheduledTask -TaskName $taskName
                             time.sleep(5)
                         else:
                             logger.info(f"Domain-join snippet attached for VM {vm_id} (hostname={new_name})")
+                            update_cmd = f"qm cloudinit update {vm_id}"
+                            _, update_stdout, update_stderr = ssh.exec_command(update_cmd)
+                            update_exit = update_stdout.channel.recv_exit_status()
+                            update_err = update_stderr.read().decode()
+                            if update_exit != 0:
+                                logger.warning(
+                                    f"qm cloudinit update failed for VM {vm_id} (exit={update_exit}): "
+                                    f"{update_err.strip()} - snippet is attached but the cloud-init drive "
+                                    f"may not reflect it until a later boot."
+                                )
+                            else:
+                                logger.info(f"Cloud-init drive regenerated for VM {vm_id}.")
                             break
 
             except Exception as e:
