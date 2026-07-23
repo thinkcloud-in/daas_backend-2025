@@ -581,7 +581,16 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "ou": pool_data.get("pool_ad_path", db_pool.pool_ad_path),
                 "username": pool_data.get("pool_ad_username", db_pool.pool_ad_username),
                 "domain_password": pool_data.get("pool_ad_password", db_pool.pool_ad_password),
-                "join_ad": bool(pool_data.get("join_ad", False)),
+                # join_ad is a control flag, not a persisted Pool column, so it
+                # is lost on the edit round-trip (the Edit form's checkbox is
+                # disabled and never re-sends it). Fall back to the pool's stored
+                # AD config as the source of truth — same rule the UI uses to
+                # display the flag (!!pool_ad_username) — so VMs added to an
+                # existing AD-joined pool still get the domain-join snippet.
+                "join_ad": bool(
+                    pool_data.get("join_ad")
+                    or (pool_data.get("pool_ad_username", db_pool.pool_ad_username))
+                ),
                 "email": email,
                 "is_cluster": actual_is_cluster,
             }
@@ -625,18 +634,22 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
         #      blind setattr loop — these are managed explicitly below / are
         #      control flags, not DB columns (join_ad drives the clone-time
         #      domain-join step and is already read into clone_payload_dict above).
-        EXCLUDED_FIELDS = {"pool_number_of_vms", "email", "join_ad"}
+        # FIX: also exclude pool_vmids and pool_machines — these are written
+        #      exclusively by finalize_cloned_machine_activity (in a separate
+        #      DB session, during cloning above) and must never be blindly
+        #      overwritten by whatever stale array the frontend's edit-pool
+        #      payload happens to carry (it spreads the whole poolDetails
+        #      object it loaded before this update, which can predate the
+        #      VMs just cloned) — that was wiping pool_vmids to empty on
+        #      every pool update that also added a machine.
+        EXCLUDED_FIELDS = {"pool_number_of_vms", "email", "join_ad", "pool_vmids", "pool_machines"}
         for field, value in pool_data.items():
             if field not in EXCLUDED_FIELDS:
                 setattr(db_pool, field, value)
 
-        if is_automated and added_count > 0 and vms:
-            db_pool.pool_number_of_vms = old_vm_count + len(vms)
-            # For both Proxmox and Hyper-V, their respective clone workflows
-            # already appended each new vmid to pool.pool_vmids (in a separate
-            # DB session) as part of finalize_cloned_machine_activity —
-            # recomputing it here from this function's stale pre-clone
-            # `db_pool` snapshot would race with / overwrite that.
+        success_count = len(response.get("machines", [])) if isinstance(response, dict) else 0
+        if is_automated and added_count > 0 and success_count:
+            db_pool.pool_number_of_vms = old_vm_count + success_count
 
         db.commit()
         db.refresh(db_pool)
@@ -678,8 +691,8 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         msg = "Pool updated successfully"
         if is_automated and added_count > 0:
-            if vms:
-                msg += f", {len(vms)} new VM(s) added."
+            if success_count:
+                msg += f", {success_count} new VM(s) added."
             elif vm_add_error:
                 msg += f", {vm_add_error}"
 
@@ -722,12 +735,13 @@ async def delete_pool_activity(pool_id: int) -> dict:
                 except Exception as e:
                     raise RuntimeError(str(e))
                 cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
+                failed_vmids = []
                 for vmid in pool_vmids:
                     machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
                     if vmid:
                         try:
                             if cluster_data.type.lower()=="proxmox":
-                                
+
                                 await delete_proxmox_vm(vmid, cluster_data)
                                 vmid_str = str(vmid)
                             elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
@@ -746,6 +760,29 @@ async def delete_pool_activity(pool_id: int) -> dict:
                                 db.refresh(ip_entry)
                         except Exception as e:
                             db.rollback()
+                            logger.error(
+                                f"[delete_pool] Failed to delete VM {vmid} in "
+                                f"Proxmox/Hyper-V for pool {pool_id}: {e}",
+                                exc_info=True,
+                            )
+                            failed_vmids.append(str(vmid))
+
+                # Don't delete the pool (and lose pool_vmids, our only pointer
+                # to these VMs) while any VM still exists on the hypervisor —
+                # that orphans it with no way left to find or retry cleanup.
+                if failed_vmids:
+                    return {
+                        "status": "error",
+                        "error_type": "vm_deletion_failed",
+                        "error": (
+                            f"Failed to delete VM(s) {failed_vmids} from the hypervisor; "
+                            "pool was NOT deleted so these can be retried."
+                        ),
+                        "msg": (
+                            f"Failed to delete VM(s) {failed_vmids} from the hypervisor; "
+                            "pool was NOT deleted so these can be retried."
+                        ),
+                    }
 
             for machine_item in pool_machines:
                 machine = db.query(Machine).filter(Machine.identifier == machine_item).first()
@@ -844,7 +881,24 @@ async def get_all_pools_activity():
                         pool_data["cluster"] = "NA"
                 else:
                     pool_data["cluster"] = "NA"
-                    
+
+                # Override the stored pool_machines with a live query instead of
+                # trusting the cached array on the Pool row. That cache is only
+                # written by one specific code path (fresh machine creation) and
+                # has repeatedly gone stale via other paths (rebuild reusing an
+                # existing row, and evidently the add-VM-to-pool path too) —
+                # the frontend's "N machines" / "No machines" list display
+                # reads this field directly, so a live count here can never
+                # drift from what's actually in the Machine table.
+                live_identifiers = [
+                    identifier for (identifier,) in
+                    db.query(Machine.identifier)
+                    .filter(Machine.pool_id == pool_data["id"])
+                    .all()
+                    if identifier
+                ]
+                pool_data["pool_machines"] = live_identifiers
+
             return {"msg": "listed all the Pools successfully", "pools": pools_json}
         except Exception as e:
             db.rollback()  
@@ -878,7 +932,19 @@ async def get_pool_details_id_activity(pool_id: int):
                         pool_json["cluster"] = "NA"
                 else:
                     pool_json["cluster"] = "NA"
-                    
+
+                # Same fix as get_all_pools_activity: override the cached
+                # pool_machines array with a live query so this single-pool
+                # detail view can't show a stale/wrong machine list either.
+                live_identifiers = [
+                    identifier for (identifier,) in
+                    db.query(Machine.identifier)
+                    .filter(Machine.pool_id == pool_json["id"])
+                    .all()
+                    if identifier
+                ]
+                pool_json["pool_machines"] = live_identifiers
+
                 return {"msg": f"Pool Retrived Successfully", "pool": pool_json}
             else:
                 return {"msg": f"Pool not found "}
@@ -935,14 +1001,7 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
 
             
             def _build_join_script(new_name: str) -> str:
-                # new_name may be "" (join without renaming). Rename + join are
-                # done in ONE Add-Computer call via -NewName so the AD computer
-                # object is created with the correct hostname. This is necessary
-                # because Proxmox delivers the hostname only in user-data, and our
-                # --cicustom snippet replaces that user-data — so Cloudbase-Init's
-                # SetHostNamePlugin (which reads meta-data) never gets a hostname.
-                return f"""#ps1_sysnative
-$ErrorActionPreference = "Stop"
+                worker_script = f"""$ErrorActionPreference = "Stop"
 $log = "C:\\cloudbase-domain-join.log"
 function Log($m) {{ "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }}
 
@@ -951,18 +1010,51 @@ $username = "{username}"
 $password = "{password}"
 $ouPath   = "{final_ou_path}"
 $newName  = "{new_name}"
+$taskName = "DomainJoinWorker"
 
-Log "Domain-join started: domain='$domain' user='$username' ou='$ouPath' newName='$newName'"
+Log "Worker run started-- domain='$domain' user='$username' ou='$ouPath' newName='$newName'"
+
 try {{
-    if ((Get-WmiObject Win32_ComputerSystem).PartOfDomain) {{
-        Log "Already domain-joined; nothing to do."
+    if ((Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain) {{
+        $confirmMarker = "C:\\cloudbase-domain-join-confirmed.marker"
+        if (-not (Test-Path $confirmMarker)) {{
+            Log "Already domain-joined but logon screen may not be refreshed yet; forcing one more reboot to confirm."
+            try {{ New-Item -Path $confirmMarker -ItemType File -Force -ErrorAction Stop | Out-Null }} catch {{ }}
+            Start-Sleep -Seconds 10
+            # shutdown.exe, not Restart-Computer - Restart-Computer goes through
+            # CIM/WMI and has been seen throwing "One or more errors occurred"
+            # when a Windows-initiated restart (post-sysprep specialize storm)
+            # is already pending at the same moment. shutdown.exe is a plain,
+            # lower-level call that doesn't hit that same conflict. Wrapped so
+            # a failure here can't cause this already-successful state to be
+            # misreported - worst case, an already-pending OS restart carries
+            # the machine forward anyway and this branch runs again next boot.
+            try {{ & "C:\\Windows\\System32\\shutdown.exe" /r /t 5 /f }} catch {{ Log "Confirmation reboot command failed (harmless, will retry next boot): $($_.Exception.Message)" }}
+            exit 0
+        }}
+
+        Log "Already domain-joined (confirmed after extra reboot); unregistering task and exiting."
+        # Wrapped so a cleanup failure here (e.g. task still finishing its own
+        # startup) can never get mislabeled as "domain join FAILED" below -
+        # the machine is already correctly joined at this point regardless.
+        try {{
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+        }} catch {{
+            Log "Could not unregister task (harmless, already joined): $($_.Exception.Message)"
+        }}
+
+        try {{ Remove-Item -Path $PSCommandPath -Force -ErrorAction Stop }} catch {{ }}
+        try {{ Remove-Item -Path $confirmMarker -Force -ErrorAction Stop }} catch {{ }}
+        # Delete the log LAST - nothing after this point may call Log again,
+        # or Out-File would just silently recreate the file.
+        try {{ Remove-Item -Path $log -Force -ErrorAction Stop }} catch {{ }}
         exit 0
     }}
 
     $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
     $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
 
-    # Bounded wait for a locatable domain controller (max ~5 min).
+    # Bounded wait for a locatable domain controller (max ~5 min per boot attempt).
     for ($i = 1; $i -le 30; $i++) {{
         nltest /dsgetdc:$domain 2>$null | Out-Null
         if ($LASTEXITCODE -eq 0) {{ Log "DC located (attempt $i)"; break }}
@@ -970,15 +1062,6 @@ try {{
         Start-Sleep -Seconds 10
     }}
 
-    # Rename-then-join in ONE reboot. Two earlier approaches failed:
-    #  - Add-Computer -NewName (rename+join in one call) failed the join itself;
-    #  - Add-Computer then Rename-Computer -DomainCredential failed the rename,
-    #    because a just-joined machine has no working domain secure channel until
-    #    its first post-join reboot.
-    # Reliable pattern: stage the rename locally while still in the WORKGROUP (no
-    # domain context needed), then join with -Options JoinWithNewName so the join
-    # uses the pending name. AD object + local host both become $newName after a
-    # single reboot.
     $doRename = ($newName -and $newName -ne $env:COMPUTERNAME)
     if ($doRename) {{
         Log "Staging local (workgroup) rename to '$newName'"
@@ -999,15 +1082,44 @@ try {{
 
     Log "Joining domain (ou='$ouPath')"
     Add-Computer @joinParams
-    Log "Domain join succeeded; rebooting to apply join + new name."
+    Log "Domain join succeeded; rebooting to apply join + new name (task and worker file left in place - a confirmation reboot cycle still needs them; cleanup happens in the already-joined branch above)."
 
     Start-Sleep -Seconds 10
-    Restart-Computer -Force
+    # shutdown.exe, not Restart-Computer - see the matching comment in the
+    # already-joined branch above for why. This is the critical spot: the
+    # join genuinely succeeded here, so a reboot-command failure must never
+    # fall through to the catch block below and get logged as a join failure.
+    try {{ & "C:\\Windows\\System32\\shutdown.exe" /r /t 5 /f }} catch {{ Log "Reboot command failed after successful join (harmless, will retry next boot): $($_.Exception.Message)" }}
 }}
 catch {{
-    Log "Domain join FAILED: $($_.Exception.Message)"
+
+    Log "Domain join attempt FAILED (will retry on next boot): $($_.Exception.Message)"
     exit 1
 }}
+"""
+                # Escape single quotes for embedding inside the here-string below.
+                worker_script_escaped = worker_script.replace("'", "''")
+
+                return f"""#ps1_sysnative
+$ErrorActionPreference = "Stop"
+$log = "C:\\cloudbase-domain-join.log"
+function Log($m) {{ "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }}
+
+Log "Installer run: writing worker script and registering AtStartup task."
+
+$workerPath = "C:\\cloudbase-domain-join-worker.ps1"
+@'
+{worker_script_escaped}
+'@ | Set-Content -Path $workerPath -Encoding UTF8
+
+$taskName = "DomainJoinWorker"
+$action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$workerPath`""
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+
+Log "Task registered. Starting first attempt immediately (not waiting for next reboot)."
+Start-ScheduledTask -TaskName $taskName
 """
 
             import re
