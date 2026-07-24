@@ -9,7 +9,7 @@ venv
 uvicorn.log
 session_reports.pdf
 temporal
-env
+.env
 email_scheduler.log
 scratch/
 alter_db2.py
@@ -17,3 +17,9 @@ build/
 test.py
 alter_db2.py
 *.log
+.vscode/
+Dockerfile.prod
+*.db
+*.sql
+./temp
+Jenkinsfile
