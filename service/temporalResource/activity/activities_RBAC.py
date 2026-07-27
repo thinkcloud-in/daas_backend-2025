@@ -290,7 +290,7 @@ async def assign_user_role_activity(request :dict):
     db: Session = SessionLocal()
     try:
         try:
-            users = await service.get_userList_from_keycloak()
+            users = await service.get_userList_from_keycloak(0, 100, request.get("username")[0])
             if not any(user["username"] == request.get("username")[0] for user in users):
                 logger.info("User not found in Keycloak")
                 return {"status_code":404, "detail":"User not found in Keycloak"}
@@ -377,7 +377,7 @@ async def get_user_permissions_activity(workflow_input: dict):
 async def delete_role_from_user_activity(request: dict):
     db: Session = SessionLocal()
     try:
-        users = await service.get_userList_from_keycloak()
+        users = await service.get_userList_from_keycloak(0, 100, request.get("username")[0])
         if not any(user["username"] == request.get("username")[0] for user in users):
             logger.info("User not found in Keyclock")  
             return {"code":404, "msg":"User not found"}

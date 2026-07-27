@@ -406,7 +406,7 @@ def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None)
         "id": cluster_data.name,
         "server": overrides.get("server") or defaults["server"],
         "port": int(overrides.get("port") or defaults["port"]),
-        "influxdbproto": overrides.get("influxdbproto") or defaults["influxdbproto"],
+        "protocol": overrides.get("influxdbproto") or defaults["influxdbproto"],
         "organization": overrides.get("organization") or defaults["organization"],
         "bucket": overrides.get("bucket") or defaults["bucket"],
         "token": overrides.get("token") or defaults["token"],
