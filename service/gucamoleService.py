@@ -1035,7 +1035,8 @@ async def assignning_user_role(request: RBACRequest):
         task_queue="assign_user_role_taskqueue",
     )
     logger.info(f"Workflow started successfully: {handle.id}")
-    return { "workflow_id": handle.id }
+    result = await handle.result()
+    return result
 
 
 async def get_user_permissions(request, username: str):

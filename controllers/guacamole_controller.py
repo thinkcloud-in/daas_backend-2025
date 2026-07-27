@@ -366,7 +366,12 @@ async def get_role_components(role: str):
 
 async def assign_user_role(request):
     try:
-        await service.assignning_user_role(request)
+        result = await service.assignning_user_role(request)
+        if result.get("status") == "Error" or result.get("status_code"):
+            return response_format.error_response(
+                result.get("status_code", 500),
+                result.get("detail") or result.get("message") or "Failed to assign role to user",
+            )
         return response_format.success_response(200, "Role assigned to user successfully")
     except Exception as e:
         return response_format.error_response(500, "Failed to assign role to user", str(e))
