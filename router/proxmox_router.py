@@ -41,6 +41,11 @@ async def get_cluster_nodes(cluster_id: str, db: Session = Depends(get_db)):
 async def get_node_gpus(payload: NodeGpusRequest, db: Session = Depends(get_db)):
     return await proxmox_controller.get_node_gpus_endpoint(payload, db)
 
+@proxmox_router.get("/get_influxdb_env_defaults", response_model=APIResponse[Any])
+async def get_influxdb_env_defaults():
+    res = proxmox_controller.get_influxdb_env_defaults_endpoint()
+    return response_format.success_response(200, "Fetched InfluxDB default configuration.", res)
+
 @proxmox_router.get("/get_influxdb_metric_server", response_model=APIResponse[Any])
 async def get_influxdb_metric_server(cluster_id: str, monitoring: bool = Query(False), db: Session = Depends(get_db)):
     res = await proxmox_controller.get_influxdb_metric_server_endpoint(cluster_id, monitoring, db)

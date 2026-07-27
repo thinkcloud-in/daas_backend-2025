@@ -387,20 +387,32 @@ def get_influxdb_metric_server(cluster_data):
     finally:
         db.close()
  
-def create_and_get_metric_server(cluster_data):   
+def get_influxdb_env_defaults():
     parsed_url = urlparse(INFLUXDB_URL)
-    influxdb_payload = {
-        "type": "influxdb",
-        "id": cluster_data.name,
+    return {
         "server": parsed_url.hostname,
         "port": int(INFLUXDB_PORT or (443 if parsed_url.scheme == "https" else 8086)),
         "influxdbproto": parsed_url.scheme,
         "organization": INFLUXDB_ORG,
         "bucket": INFLUXDB_BUCKET,
         "token": INFLUXDB_TOKEN,
+    }
+
+def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None):
+    defaults = get_influxdb_env_defaults()
+    overrides = overrides or {}
+    influxdb_payload = {
+        "type": "influxdb",
+        "id": cluster_data.name,
+        "server": overrides.get("server") or defaults["server"],
+        "port": int(overrides.get("port") or defaults["port"]),
+        "influxdbproto": overrides.get("influxdbproto") or defaults["influxdbproto"],
+        "organization": overrides.get("organization") or defaults["organization"],
+        "bucket": overrides.get("bucket") or defaults["bucket"],
+        "token": overrides.get("token") or defaults["token"],
         "verify-certificate": 0,
     }
-    
+
     add_influxdb_metric_server(cluster_data, influxdb_payload)
     metric_info = get_influxdb_metric_server(cluster_data)
     return metric_info
