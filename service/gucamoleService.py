@@ -949,6 +949,26 @@ async def assign_role(user_id, role_id, role_name):
     response.raise_for_status()
     return {"status": "assigned"}
 
+async def get_service_account_token():
+    """Token for devraq-backend's own Keycloak service account.
+
+    Used for internal/background calls (e.g. scheduled report generation)
+    that have no logged-in user attached to them at all.
+    """
+    root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    token_url = f"{root_url}/realms/{realm}/protocol/openid-connect/token"
+    resp = requests.post(
+        token_url,
+        data={
+            "grant_type": "client_credentials",
+            "client_id": "devraq-backend",
+            "client_secret": os.getenv("DEVRAQ_BACKEND_CLIENT_SECRET", "devraq-backend-secret"),
+        }
+    )
+    resp.raise_for_status()
+    return resp.json()["access_token"]
+
 async def get_role_by_name(role_name):
     headers = await get_auth_headers()
     realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
