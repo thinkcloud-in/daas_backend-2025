@@ -937,18 +937,37 @@ def get_user_roles(auth_headers, user_id):
     except requests.RequestException as e:
  
         return None
-def assign_role(user_id, role_id):
-    try:
-        headers = get_auth_headers()
-        realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
-        keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/roles/{role_id}"
-        realm_url = keycloak_url
-        realm_response = requests.put(realm_url, headers=headers)
-        realm_response.raise_for_status()
-        return realm_response.json()
-    except requests.RequestException as e:
+async def assign_role(user_id, role_id, role_name):
+    headers = await get_auth_headers()
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
+    response = requests.post(
+        keycloak_url,
+        headers=headers,
+        json=[{"id": role_id, "name": role_name}],
+    )
+    response.raise_for_status()
+    return {"status": "assigned"}
 
-        return None
+async def get_role_by_name(role_name):
+    headers = await get_auth_headers()
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles/{role_name}"
+    response = requests.get(keycloak_url, headers=headers, verify=False)
+    response.raise_for_status()
+    return response.json()
+
+async def remove_role(user_id, role_id, role_name):
+    headers = await get_auth_headers()
+    realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
+    keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
+    response = requests.delete(
+        keycloak_url,
+        headers=headers,
+        json=[{"id": role_id, "name": role_name}],
+    )
+    response.raise_for_status()
+    return {"status": "removed"}
     
 async def posting_role(role_name: str, authorization: str):
     uniqueId = unique_id()
