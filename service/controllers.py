@@ -491,9 +491,18 @@ async def get_all_pools(db: Session = None):
         db = SessionLocal()
         own_db = True
     try:
+        from models.models import Machine
+
         pools = db.query(Pool).all()
         pools_json = jsonable_encoder(pools)
-        
+
+        # Compute "entitled" live from actual machine assignments instead of
+        # trusting the stored counter, which drifts out of sync whenever a
+        # user gets added/removed via any path that doesn't update it.
+        for pool_data in pools_json:
+            machines = db.query(Machine).filter(Machine.pool_id == pool_data["id"]).all()
+            pool_data["entitled"] = sum(len(m.users_assigned or []) for m in machines)
+
         # Fetch cluster names for each pool
         for pool_data in pools_json:
             cluster_id_raw = pool_data.get("cluster_id")

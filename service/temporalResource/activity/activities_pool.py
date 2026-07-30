@@ -959,6 +959,7 @@ async def get_pool_details_id_activity(pool_id: int):
 @activity.defn()
 async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str, target_vm_ids: list = None) -> dict:
     import paramiko
+    from service import clusterService
     db: Session = SessionLocal()
     try:
         try:
@@ -1123,67 +1124,127 @@ Start-ScheduledTask -TaskName $taskName
 """
 
             import re
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            import requests as _requests
+
+            # Resolve each VM's ACTUAL owning node before doing anything else.
+            # Proxmox's "local:snippets" storage and per-node qemu-server config
+            # paths are node-local, not cluster-wide -- writing the snippet to
+            # whichever node happens to be first in the cluster's IP list (the
+            # old behavior) silently attaches nothing the VM's real node can
+            # ever see if that VM actually lives on a different node.
+            vm_to_host = {vid: host for vid in vm_ids}  # fallback: original first-IP host
             try:
-                ssh.connect(host, username=user, password=proxmox_password)
-                ssh.exec_command("mkdir -p /var/lib/vz/snippets")
-                sftp = ssh.open_sftp()
+                proxmox_api_token = clusterService.get_api_token(db, cluster.name)
+                proxmox_url = clusterService.getting_Proxmox_host(cluster)
+                api_headers = {"Authorization": f"PVEAPIToken={proxmox_api_token}"}
 
-                for vm_id in vm_ids:
-                    # Resolve this VM's intended hostname (Machine.name) and
-                    # sanitize it to a valid NetBIOS computer name: only
-                    # letters/digits/hyphen, max 15 chars. Empty -> no rename.
-                    machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
-                    raw_name = (machine.name if machine and machine.name else "").strip()
-                    new_name = re.sub(r"[^A-Za-z0-9-]", "-", raw_name)[:15].strip("-")
-                    if raw_name and new_name != raw_name:
+                res_resp = _requests.get(
+                    f"{proxmox_url}/api2/json/cluster/resources",
+                    headers=api_headers, params={"type": "vm"}, verify=False, timeout=10,
+                )
+                res_resp.raise_for_status()
+                vmid_to_node = {
+                    str(item["vmid"]): item["node"]
+                    for item in res_resp.json().get("data", [])
+                    if "vmid" in item and "node" in item
+                }
+
+                status_resp = _requests.get(
+                    f"{proxmox_url}/api2/json/cluster/status",
+                    headers=api_headers, verify=False, timeout=10,
+                )
+                status_resp.raise_for_status()
+                node_to_ip = {
+                    item["name"]: item["ip"]
+                    for item in status_resp.json().get("data", [])
+                    if item.get("type") == "node" and item.get("ip")
+                }
+
+                for vid in vm_ids:
+                    node_name = vmid_to_node.get(str(vid))
+                    node_ip = node_to_ip.get(node_name) if node_name else None
+                    if node_ip:
+                        vm_to_host[vid] = node_ip
+                    else:
                         logger.warning(
-                            f"VM {vm_id}: hostname '{raw_name}' sanitized/truncated to "
-                            f"NetBIOS name '{new_name}' for domain join."
+                            f"Could not resolve owning node/IP for VM {vid}; "
+                            f"falling back to {host} (may be the wrong node)."
                         )
+            except Exception as lookup_err:
+                logger.warning(
+                    f"Failed to resolve per-VM node ownership for pool {pool_id}, "
+                    f"falling back to {host} for all VMs: {lookup_err}"
+                )
 
-                    snippet_name = f"join-domain-pool-{pool_id}-vm-{vm_id}.ps1"
-                    f = sftp.file(f"/var/lib/vz/snippets/{snippet_name}", "w")
-                    f.write(_build_join_script(new_name))
-                    f.close()
+            # Group VMs by their resolved node IP so we open one SSH connection
+            # per node (instead of always the same possibly-wrong node).
+            host_to_vmids = {}
+            for vid in vm_ids:
+                host_to_vmids.setdefault(vm_to_host[vid], []).append(vid)
 
-                    cmd = f"qm set {vm_id} --cicustom user=local:snippets/{snippet_name}"
+            try:
+                for target_host, host_vm_ids in host_to_vmids.items():
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    try:
+                        ssh.connect(target_host, username=user, password=proxmox_password)
+                        ssh.exec_command("mkdir -p /var/lib/vz/snippets")
+                        sftp = ssh.open_sftp()
 
-                    max_retry = 10
-                    for i in range(max_retry):
-                        stdin, stdout, stderr = ssh.exec_command(cmd)
-                        exit_status = stdout.channel.recv_exit_status()
-                        out = stdout.read().decode()
-                        err = stderr.read().decode()
-
-                        logger.debug(f"domain_join qm set for vm {vm_id} (name={new_name}): EXIT={exit_status} OUT={out} ERR={err}")
-
-                        if "can't lock file" in err:
-                            logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
-                            time.sleep(5)
-                        else:
-                            logger.info(f"Domain-join snippet attached for VM {vm_id} (hostname={new_name})")
-                            update_cmd = f"qm cloudinit update {vm_id}"
-                            _, update_stdout, update_stderr = ssh.exec_command(update_cmd)
-                            update_exit = update_stdout.channel.recv_exit_status()
-                            update_err = update_stderr.read().decode()
-                            if update_exit != 0:
+                        for vm_id in host_vm_ids:
+                            # Resolve this VM's intended hostname (Machine.name) and
+                            # sanitize it to a valid NetBIOS computer name: only
+                            # letters/digits/hyphen, max 15 chars. Empty -> no rename.
+                            machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+                            raw_name = (machine.name if machine and machine.name else "").strip()
+                            new_name = re.sub(r"[^A-Za-z0-9-]", "-", raw_name)[:15].strip("-")
+                            if raw_name and new_name != raw_name:
                                 logger.warning(
-                                    f"qm cloudinit update failed for VM {vm_id} (exit={update_exit}): "
-                                    f"{update_err.strip()} - snippet is attached but the cloud-init drive "
-                                    f"may not reflect it until a later boot."
+                                    f"VM {vm_id}: hostname '{raw_name}' sanitized/truncated to "
+                                    f"NetBIOS name '{new_name}' for domain join."
                                 )
-                            else:
-                                logger.info(f"Cloud-init drive regenerated for VM {vm_id}.")
-                            break
+
+                            snippet_name = f"join-domain-pool-{pool_id}-vm-{vm_id}.ps1"
+                            f = sftp.file(f"/var/lib/vz/snippets/{snippet_name}", "w")
+                            f.write(_build_join_script(new_name))
+                            f.close()
+
+                            cmd = f"qm set {vm_id} --cicustom user=local:snippets/{snippet_name}"
+
+                            max_retry = 10
+                            for i in range(max_retry):
+                                stdin, stdout, stderr = ssh.exec_command(cmd)
+                                exit_status = stdout.channel.recv_exit_status()
+                                out = stdout.read().decode()
+                                err = stderr.read().decode()
+
+                                logger.debug(f"domain_join qm set for vm {vm_id} (name={new_name}) on {target_host}: EXIT={exit_status} OUT={out} ERR={err}")
+
+                                if "can't lock file" in err:
+                                    logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
+                                    time.sleep(5)
+                                else:
+                                    logger.info(f"Domain-join snippet attached for VM {vm_id} (hostname={new_name}) on {target_host}")
+                                    update_cmd = f"qm cloudinit update {vm_id}"
+                                    _, update_stdout, update_stderr = ssh.exec_command(update_cmd)
+                                    update_exit = update_stdout.channel.recv_exit_status()
+                                    update_err = update_stderr.read().decode()
+                                    if update_exit != 0:
+                                        logger.warning(
+                                            f"qm cloudinit update failed for VM {vm_id} (exit={update_exit}): "
+                                            f"{update_err.strip()} - snippet is attached but the cloud-init drive "
+                                            f"may not reflect it until a later boot."
+                                        )
+                                    else:
+                                        logger.info(f"Cloud-init drive regenerated for VM {vm_id}.")
+                                    break
+                    finally:
+                        ssh.close()
 
             except Exception as e:
                 logger.error(f"domain_join_activity SSH/Proxmox error for pool {pool_id}: {e}", exc_info=True)
                 return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
-            finally:
-                ssh.close()
-                
+
             return {"msg": "Domain join workflow executed successfully"}
         except Exception as e:
             db.rollback()

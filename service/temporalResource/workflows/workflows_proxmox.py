@@ -236,7 +236,7 @@ class CloneVMWorkflow:
                         start_to_close_timeout=timedelta(seconds=30),
                     )
                 try:
-                    await workflow.execute_activity(
+                    join_result = await workflow.execute_activity(
                         "configure_domain_join_activity",
                         args=[{
                             "pool_id": pool_id,
@@ -249,6 +249,8 @@ class CloneVMWorkflow:
                         retry_policy=short_retry_policy,
                         start_to_close_timeout=timedelta(minutes=2),
                     )
+                    if isinstance(join_result, dict) and join_result.get("status") == "error":
+                        raise Exception(join_result.get("error") or "configure_domain_join_activity reported an error")
                 except Exception as e:
                     # Log, flag the VMs, and continue to power-on regardless.
                     logger.error(
@@ -525,7 +527,7 @@ class VmRebuildWorkflow:
                 start_to_close_timeout=timedelta(seconds=30),
             )
             try:
-                await workflow.execute_activity(
+                join_result = await workflow.execute_activity(
                     "configure_domain_join_activity",
                     args=[{
                         "pool_id": pool_id,
@@ -538,6 +540,8 @@ class VmRebuildWorkflow:
                     retry_policy=short_retry_policy,
                     start_to_close_timeout=timedelta(minutes=2),
                 )
+                if isinstance(join_result, dict) and join_result.get("status") == "error":
+                    raise Exception(join_result.get("error") or "configure_domain_join_activity reported an error")
             except Exception as e:
                 # Same policy as CloneVMWorkflow: a domain-join snippet failure
                 # must never block power-on of an otherwise-healthy rebuilt VM.
