@@ -329,6 +329,15 @@ def delete_cluster_proxmox(cluster_data, db: Session):
     else:
         return f"Cluster '{cluster_data.name}' not found in the database."
 
+def get_devraq_metric_server_id(cluster_data):
+    """
+    ID used for the InfluxDB metric server DevRaQ manages on Proxmox. Kept
+    distinct from the bare cluster name so DevRaQ's own integration never
+    collides with, overwrites, or deletes a metric server a customer may
+    have configured themselves on the same cluster.
+    """
+    return f"{cluster_data.name}-devraq"
+
 def add_influxdb_metric_server(cluster_data, payload):
     db = next(get_db())
     try:
@@ -337,12 +346,13 @@ def add_influxdb_metric_server(cluster_data, payload):
             "Authorization": f"PVEAPIToken={api_token}",
         }
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
-        
+        server_id = get_devraq_metric_server_id(cluster_data)
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
+
         # Prepare payload: ensure it matches the API schema and remove redundant 'id'
         payload = {k: v for k, v in payload.items()}
         payload.pop("id", None)  # Already in URL
-        
+
         response = requests.post(url, headers=headers, data=payload, verify=False)
         if not response.ok:
             raise Exception(f"Proxmox metric server API error ({response.status_code}): {response.text}")
@@ -352,7 +362,9 @@ def add_influxdb_metric_server(cluster_data, payload):
 
 def get_influxdb_metric_server(cluster_data):
     """
-    Get InfluxDB metric server for the given cluster.
+    Get DevRaQ's own InfluxDB metric server for the given cluster (identified
+    by its distinct id) -- never a customer-configured one that may also
+    exist on the same cluster.
     """
     db = next(get_db())
     try:
@@ -362,29 +374,16 @@ def get_influxdb_metric_server(cluster_data):
             "Content-Type": "application/json"
         }
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
+        server_id = get_devraq_metric_server_id(cluster_data)
+        detail_url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
         try:
-            response = requests.get(url, headers=headers, verify=False)
-            response.raise_for_status()
-            data = response.json().get("data", [])
+            detail_resp = requests.get(detail_url, headers=headers, verify=False)
+            if detail_resp.status_code == 404:
+                return {"error": "No DevRaQ InfluxDB metric server found for the cluster."}
+            detail_resp.raise_for_status()
+            return detail_resp.json().get("data", {})
         except Exception as e:
-            return {"error": "Failed to fetch metric servers from Proxmox API."}
- 
-        if isinstance(data, list) and data:
-            for server in data:
-                if server.get("type") == "influxdb":
-                    server_id = server.get("id")
-                    if server_id:
-                        detail_url = f"{url}/{server_id}"
-                        try:
-                            detail_resp = requests.get(detail_url, headers=headers, verify=False)
-                            detail_resp.raise_for_status()
-                            return detail_resp.json().get("data", {})
-                        except Exception as e:
-                            return {"error": f"Failed to fetch details for metric server ID {server_id}."}
-            return {"error": "No InfluxDB metric server ID found in the cluster."}
-        else:
-            return {"error": "No InfluxDB metric server found for the cluster."}
+            return {"error": f"Failed to fetch DevRaQ metric server details: {e}"}
     finally:
         db.close()
  
@@ -408,7 +407,7 @@ def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None)
     # get the current schema before assuming the field name changed.
     influxdb_payload = {
         "type": "influxdb",
-        "id": cluster_data.name,
+        "id": get_devraq_metric_server_id(cluster_data),
         "server": overrides.get("server") or defaults["server"],
         "port": int(overrides.get("port") or defaults["port"]),
         "influxdbproto": overrides.get("influxdbproto") or defaults["influxdbproto"],
@@ -463,7 +462,7 @@ def delete_influxdb_metric_server(cluster_data):
         }
 
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        server_id = cluster_data.name
+        server_id = get_devraq_metric_server_id(cluster_data)
         url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
         try:
             response = requests.delete(url, headers=headers, verify=False)
