@@ -402,12 +402,16 @@ def get_influxdb_env_defaults():
 def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None):
     defaults = get_influxdb_env_defaults()
     overrides = overrides or {}
+    # Field name "influxdbproto" confirmed against Proxmox VE 9.2.2's own schema
+    # (`pvesh usage cluster/metrics/server/{id} --verbose`). If this ever starts
+    # rejecting requests again after a Proxmox upgrade, re-run that command to
+    # get the current schema before assuming the field name changed.
     influxdb_payload = {
         "type": "influxdb",
         "id": cluster_data.name,
         "server": overrides.get("server") or defaults["server"],
         "port": int(overrides.get("port") or defaults["port"]),
-        "protocol": overrides.get("influxdbproto") or defaults["influxdbproto"],
+        "influxdbproto": overrides.get("influxdbproto") or defaults["influxdbproto"],
         "organization": overrides.get("organization") or defaults["organization"],
         "bucket": overrides.get("bucket") or defaults["bucket"],
         "token": overrides.get("token") or defaults["token"],
