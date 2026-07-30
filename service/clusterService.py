@@ -344,11 +344,12 @@ def add_influxdb_metric_server(cluster_data, payload):
         payload.pop("id", None)  # Already in URL
         
         response = requests.post(url, headers=headers, data=payload, verify=False)
-        response.raise_for_status()
+        if not response.ok:
+            raise Exception(f"Proxmox metric server API error ({response.status_code}): {response.text}")
         return response.json()
     finally:
         db.close()
- 
+
 def get_influxdb_metric_server(cluster_data):
     """
     Get InfluxDB metric server for the given cluster.
