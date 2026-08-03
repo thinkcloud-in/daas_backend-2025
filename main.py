@@ -38,6 +38,10 @@ from service.temporalResource.workers import workers_llm_inference_v2
 from service.temporalResource.workers import workers_library
 from service.temporalResource.workers import workers_lxc_restore
 from service.temporalResource.workers import workers_harbor_image
+from service.temporalResource.workers import workers_kubernetes_deploy
+from service.temporalResource.workers import workers_harbor_push
+from service.temporalResource.workers import workers_app_deploy
+from service.temporalResource.workers import workers_llm_push
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
@@ -46,8 +50,8 @@ from router.llm_inference_router import llm_inference_router
 from router.llm_inference_v2_router import llm_inference_v2_router
 from router.library_router import library_router
 from router.pod_storage_router import pod_storage_router
-from router.harbor_router import harbor_router
-from router.harbor_image_router import harbor_image_router
+from router.kubernetes_router import kubernetes_router
+from router.app_deploy_router import app_deploy_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -100,9 +104,9 @@ app.include_router(ssl_router)
 app.include_router(llm_inference_router)
 app.include_router(llm_inference_v2_router)
 app.include_router(library_router)
+app.include_router(kubernetes_router)
+app.include_router(app_deploy_router)
 app.include_router(pod_storage_router)
-app.include_router(harbor_router)
-app.include_router(harbor_image_router)
 
 
 def start_async_worker(target):
@@ -183,6 +187,10 @@ def start_workers():
     start_thread_manager("LibraryUpload", workers_library.run_all_library_workers)
     start_thread_manager("LXCRestore", workers_lxc_restore.run_all_lxc_workers)
     start_thread_manager("HarborImage", workers_harbor_image.run_harbor_image_worker)
-    
+    start_thread_manager("K8sDeploy", workers_kubernetes_deploy.run_k8s_deploy_worker)
+    start_thread_manager("HarborPush", workers_harbor_push.run_harbor_push_worker)
+    start_thread_manager("AppDeploy", workers_app_deploy.run_app_deploy_worker)
+    start_thread_manager("LLMPush",   workers_llm_push.run_llm_push_worker)
+
     logger.info("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

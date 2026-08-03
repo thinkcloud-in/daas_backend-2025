@@ -90,9 +90,25 @@ except Exception as e:
     logger.error(f"Failed to create library table: {str(e)}")
 
 for _col_sql in [
-    "ALTER TABLE library ADD COLUMN IF NOT EXISTS status       VARCHAR  NOT NULL DEFAULT 'uploading'",
-    "ALTER TABLE library ADD COLUMN IF NOT EXISTS workflow_id  VARCHAR",
-    "ALTER TABLE library ADD COLUMN IF NOT EXISTS progress_pct INTEGER  NOT NULL DEFAULT 0",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS status              VARCHAR  NOT NULL DEFAULT 'uploading'",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS workflow_id         VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS progress_pct        INTEGER  NOT NULL DEFAULT 0",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS k8s_cluster_id      INTEGER",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_registry_id  INTEGER",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_url          VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_project       VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_owner         VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_user          VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_pass          VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS harbor_image         TEXT",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS push_status          VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS push_error           TEXT",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS push_workflow_id     VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS display_name         VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS description          TEXT",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS category             VARCHAR",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS tags                 TEXT",
+    "ALTER TABLE library ADD COLUMN IF NOT EXISTS metadata_json        TEXT",
 ]:
     try:
         with engine.begin() as connection:
@@ -154,6 +170,107 @@ try:
         """))
 except Exception as e:
     logger.error(f"Failed to create harbor_images table: {str(e)}")
+
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS kubernetes_clusters (
+                id          SERIAL PRIMARY KEY,
+                name        VARCHAR   NOT NULL UNIQUE,
+                control_ip  VARCHAR   NOT NULL,
+                port        INTEGER   NOT NULL DEFAULT 6443,
+                username    VARCHAR,
+                password    VARCHAR,
+                auth_token  TEXT,
+                kubeconfig  TEXT,
+                status      VARCHAR   NOT NULL DEFAULT 'pending',
+                last_tested TIMESTAMP,
+                workflow_id VARCHAR,
+                created_at  TIMESTAMP DEFAULT NOW(),
+                updated_at  TIMESTAMP DEFAULT NOW()
+            )
+        """))
+except Exception as e:
+    logger.error(f"Failed to create kubernetes_clusters table: {str(e)}")
+
+for _k8s_dep_col in [
+    "ALTER TABLE kubernetes_deployments ADD COLUMN IF NOT EXISTS steps_log  TEXT",
+    "ALTER TABLE kubernetes_deployments ADD COLUMN IF NOT EXISTS harbor_user VARCHAR",
+    "ALTER TABLE kubernetes_deployments ADD COLUMN IF NOT EXISTS harbor_pass VARCHAR",
+]:
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(_k8s_dep_col))
+    except Exception as e:
+        logger.error(f"Failed to apply kubernetes_deployments migration: {str(e)}")
+
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS kubernetes_deployments (
+                id              SERIAL PRIMARY KEY,
+                cluster_id      INTEGER   NOT NULL,
+                library_item_id INTEGER   NOT NULL,
+                name            VARCHAR   NOT NULL,
+                namespace       VARCHAR   NOT NULL DEFAULT 'harbor',
+                node_name       VARCHAR,
+                node_ip         VARCHAR   NOT NULL,
+                ssh_port        INTEGER   NOT NULL DEFAULT 22,
+                ssh_username    VARCHAR,
+                deployment_type VARCHAR   NOT NULL DEFAULT 'kubernetes',
+                deploy_dir      VARCHAR,
+                harbor_url      VARCHAR,
+                status          VARCHAR   NOT NULL DEFAULT 'pending',
+                workflow_id     VARCHAR,
+                error_message   TEXT,
+                created_at      TIMESTAMP DEFAULT NOW(),
+                updated_at      TIMESTAMP DEFAULT NOW()
+            )
+        """))
+except Exception as e:
+    logger.error(f"Failed to create kubernetes_deployments table: {str(e)}")
+
+try:
+    with engine.begin() as connection:
+        connection.execute(text("""
+            CREATE TABLE IF NOT EXISTS app_deployments (
+                id                  SERIAL PRIMARY KEY,
+                name                VARCHAR   NOT NULL,
+                deployment_type     VARCHAR   NOT NULL DEFAULT 'openwebui',
+                k8s_cluster_id      INTEGER   NOT NULL,
+                harbor_registry_id  INTEGER,
+                library_item_id     INTEGER,
+                namespace           VARCHAR   NOT NULL DEFAULT 'default',
+                harbor_url          VARCHAR,
+                image               VARCHAR,
+                external_ip         VARCHAR,
+                node_port           VARCHAR,
+                service_url         VARCHAR,
+                status              VARCHAR   NOT NULL DEFAULT 'pending',
+                workflow_id         VARCHAR,
+                steps_log           TEXT,
+                error_message       TEXT,
+                created_at          TIMESTAMP DEFAULT NOW(),
+                updated_at          TIMESTAMP DEFAULT NOW()
+            )
+        """))
+except Exception as e:
+    logger.error(f"Failed to create app_deployments table: {str(e)}")
+
+for _app_col in [
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS deployment_type   VARCHAR NOT NULL DEFAULT 'openwebui'",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS library_item_id   INTEGER",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS image             VARCHAR",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS external_ip       VARCHAR",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS node_port         VARCHAR",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS service_url       VARCHAR",
+    "ALTER TABLE app_deployments ADD COLUMN IF NOT EXISTS linked_vectordb_id INTEGER",
+]:
+    try:
+        with engine.begin() as connection:
+            connection.execute(text(_app_col))
+    except Exception as e:
+        logger.error(f"Failed to apply app_deployments migration [{_app_col[:60]}]: {str(e)}")
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=True, bind=engine)
 Base = declarative_base()

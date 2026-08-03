@@ -16,12 +16,16 @@ from models.IPs_model import IPEntry, IPSModel
 from models.models import Cluster
 from service.temporalResource.workers.workers_library import TASK_QUEUE as LIBRARY_TASK_QUEUE
 from service.temporalResource.workers.workers_lxc_restore import TASK_QUEUE as LXC_TASK_QUEUE
+from service.temporalResource.workers.workers_harbor_push import TASK_QUEUE as HARBOR_PUSH_TASK_QUEUE
+from service.temporalResource.workers.workers_llm_push import TASK_QUEUE as LLM_PUSH_TASK_QUEUE
+from service.temporalResource.workflows.workflows_llm_push import LLMPushWorkflow
 from service.temporalResource.workflows.workflows_library import (
     LibraryUploadWorkflow,
     LibraryDeleteWorkflow,
     LibraryUpdateWorkflow,
 )
 from service.temporalResource.workflows.workflows_lxc_restore import LXCRestoreWorkflow
+from service.temporalResource.workflows.workflows_harbor_push import HarborPushWorkflow
 from utils.temporal_client import TemporalClientManager
 from utils import response_format
 
@@ -39,8 +43,9 @@ def _make_search_attrs(entity: str, action: str, username: str) -> TypedSearchAt
 
 logger = logging.getLogger(__name__)
 
-LIBRARY_BASE_PATH = os.getenv("LIBRARY_BASE_PATH", "/data/library")
-LIBRARY_TEMP_PATH = os.getenv("LIBRARY_TEMP_PATH", "/tmp/library_uploads")
+LIBRARY_BASE_PATH  = os.getenv("LIBRARY_BASE_PATH", "/data/library")
+LIBRARY_TEMP_PATH  = os.getenv("LIBRARY_TEMP_PATH", "/tmp/library_uploads")
+_HARBOR_PUSH_TYPES = {"container", "llm_model", "llm_template"}  # Harbor push types
 
 
 def _extract_username(request: Request) -> str:
@@ -58,63 +63,142 @@ def _extract_username(request: Request) -> str:
 def _item_to_dict(item: LibraryItem) -> dict:
     directory = TYPE_SUBDIR.get(item.type, "general")
     return {
-        "id":           item.id,
-        "name":         item.name,
-        "type":         item.type,
-        "directory":    directory,
-        "version":      item.version,
-        "file_name":    item.file_name,
-        "file_path":    item.file_path,
-        "file_size":    item.file_size,
-        "progress_pct": item.progress_pct,
-        "status":       item.status,
-        "workflow_id":  item.workflow_id,
-        "created_at":   item.created_at.isoformat() if item.created_at else None,
-        "updated_at":   item.updated_at.isoformat() if item.updated_at else None,
+        "id":              item.id,
+        "name":            item.name,
+        "display_name":    getattr(item, "display_name", None),
+        "type":            item.type,
+        "directory":       directory,
+        "version":         item.version,
+        "description":     getattr(item, "description", None),
+        "category":        getattr(item, "category", None),
+        "tags":            getattr(item, "tags", None),
+        "file_name":       item.file_name,
+        "file_path":       item.file_path,
+        "file_size":       item.file_size,
+        "progress_pct":    item.progress_pct,
+        "status":          item.status,
+        "workflow_id":     item.workflow_id,
+        # Harbor push fields
+        "k8s_cluster_id":  item.k8s_cluster_id,
+        "harbor_url":      item.harbor_url,
+        "harbor_project":  item.harbor_project,
+        "harbor_owner":    item.harbor_owner,
+        "harbor_registry_id": item.harbor_registry_id,
+        "harbor_image":       item.harbor_image,
+        "push_status":        item.push_status,
+        "push_error":         item.push_error,
+        "push_workflow_id":   item.push_workflow_id,
+        "created_at":         item.created_at.isoformat() if item.created_at else None,
+        "updated_at":         item.updated_at.isoformat() if item.updated_at else None,
     }
 
 
 async def create_library_item(
-    name:      str,
-    type:      str | None,
-    version:   str | None,
-    file_name: str,
-    file_size: int | None,
-    db:        Session,
-    request:   Request,
+    name:               str | None,
+    type:               str | None,
+    version:            str | None,
+    file_name:          str,
+    file_size:          int | None,
+    db:                 Session,
+    request:            Request,
+    harbor_registry_id: int | None = None,
+    harbor_owner:       str | None = None,
+    metadata:           dict | None = None,
 ):
     """
-    Step 1 — create DB record immediately (no file, returns in milliseconds).
-    Frontend gets item_id and then starts streaming file via PUT /{item_id}/file.
+    Step 1 — DB record create karo, milliseconds mein item_id milta hai.
+    Frontend PUT /{item_id}/file se file stream karta hai.
+
+    container / llm_model / llm_template ke liye:
+      harbor_registry_id = kubernetes_deployments.id (Harbor instance)
+      Backend K8s cluster automatically derive karta hai.
+      name = optional — container type ke liye Docker image metadata se auto-set hoga.
     """
+    from models.kubernetes_deploy_model import KubernetesDeployment
+
     effective_type = (type or "general").strip()
     if effective_type not in LIBRARY_TYPES:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid type '{effective_type}'. Must be one of: {', '.join(sorted(LIBRARY_TYPES))}",
+            detail=f"Invalid type '{effective_type}'. Valid: {', '.join(sorted(LIBRARY_TYPES))}",
         )
+
+    # container type ke liye name optional hai — placeholder use karo, activity update karega
+    # Types jahan name ZIP version_metadata.json se auto-set hoga
+    _AUTO_NAME_TYPES = _HARBOR_PUSH_TYPES | {"harbor_template", "general", "base_os"}
+
+    effective_name = (name or "").strip()
+    if not effective_name:
+        if effective_type in _AUTO_NAME_TYPES:
+            # name ZIP/metadata se upload ke baad set hoga — file stem placeholder
+            effective_name = os.path.splitext(file_name)[0]
+        else:
+            raise HTTPException(status_code=400, detail="'name' field required for this type")
 
     subdir    = TYPE_SUBDIR[effective_type]
     dest_path = f"{LIBRARY_BASE_PATH}/{subdir}/{file_name}"
+    temp_path = os.path.join(LIBRARY_TEMP_PATH, f"{uuid.uuid4().hex}_{file_name}")
 
-    temp_name = f"{uuid.uuid4().hex}_{file_name}"
-    temp_path = os.path.join(LIBRARY_TEMP_PATH, temp_name)
+    # Harbor push types ke liye harbor_registry_id required hai
+    k8s_cluster_id = None
+    if effective_type in _HARBOR_PUSH_TYPES:
+        if not harbor_registry_id:
+            raise HTTPException(
+                status_code=400,
+                detail=f"'harbor_registry_id' required for type '{effective_type}' — Harbor instance select karo",
+            )
+    if effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id:
+        harbor_dep = db.query(KubernetesDeployment).filter(
+            KubernetesDeployment.id == harbor_registry_id
+        ).first()
+        if not harbor_dep:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Harbor instance id={harbor_registry_id} nahi mila kubernetes_deployments mein"
+            )
+        if not harbor_dep.harbor_url:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Harbor id={harbor_registry_id} ka harbor_url set nahi — deploy hone do pehle"
+            )
+        k8s_cluster_id = harbor_dep.cluster_id   # backend derive karta hai
+        logger.info(f"[Library] harbor_registry={harbor_registry_id} → k8s_cluster={k8s_cluster_id} derived")
+
+    # Harbor push types ke liye version image inspect se aayega
+    effective_version = None if (effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id) else (version or None)
+
+    import json as _json
+    _meta_json = None
+    if metadata:
+        try:
+            _meta_json = _json.dumps(metadata, ensure_ascii=False)
+        except Exception:
+            pass
 
     record = LibraryItem(
-        name=name,
-        type=effective_type,
-        version=version or None,
-        file_name=file_name,
-        file_path=dest_path,
-        file_size=file_size,
-        progress_pct=0,
-        status="uploading",
+        name               = effective_name,
+        type               = effective_type,
+        version            = effective_version,
+        file_name          = file_name,
+        file_path          = dest_path,
+        file_size          = file_size,
+        progress_pct       = 0,
+        status             = "uploading",
+        harbor_registry_id = harbor_registry_id,
+        k8s_cluster_id     = k8s_cluster_id,
+        harbor_owner       = harbor_owner,
+        push_status        = "pending" if harbor_registry_id else None,
+        # metadata_json: upload API se pass hua JSON — push activity mein use hoga annotations ke liye
+        display_name       = str(metadata.get("display_name", "")).strip() or None if metadata else None,
+        description        = str(metadata.get("description", "")).strip() or None if metadata else None,
+        category           = str(metadata.get("category", "")).strip() or None if metadata else None,
+        metadata_json      = _meta_json,
     )
     db.add(record)
     db.commit()
     db.refresh(record)
 
-    logger.info(f"[Library] item={record.id} created — waiting for file stream")
+    logger.info(f"[Library] item={record.id} created type={effective_type} harbor_reg={harbor_registry_id}")
     return response_format.success_response(
         202,
         "Library item created — stream file to PUT /v1/library/{item_id}/file",
@@ -135,21 +219,12 @@ def _update_progress_in_db(item_id: int, pct: int, db_session):
 
 
 async def upload_library_file(
-    item_id:   int,
-    request:   Request,
-    db:        Session,
+    item_id: int,
+    request: Request,
+    db:      Session,
 ):
-    """
-    Two-phase upload:
-      Phase 1 — browser stream → temp file on disk  (decoupled from WebDAV)
-      Phase 2 — temp file → WebDAV PUT via requests  (stable internal LAN, no browser timeout)
-
-    Direct streaming (browser→FastAPI→WebDAV) fail hota hai kyunki nginx client_body_timeout
-    browser chunks ke beech trigger ho jaata hai. Temp file se dono operations decouple hote hain.
-    """
-    import asyncio
-    import requests as _req
     import tempfile
+    import requests as _req
 
     record = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not record:
@@ -157,19 +232,12 @@ async def upload_library_file(
     if record.status != "uploading":
         raise HTTPException(status_code=409, detail=f"Item is not in uploading state (status={record.status})")
 
-    username     = _extract_username(request)
-    total_size   = int(request.headers.get("content-length") or record.file_size or 0)
-    subdir       = TYPE_SUBDIR.get(record.type, "general")
-    storage_base = os.getenv("STORAGE_BASE_URL",     "https://devraq.dev.team/library").rstrip("/")
-    public_url   = f"{storage_base}/{subdir}/{record.file_name}"
-    # Phase 2 (disk→WebDAV) ke liye hamesha external URL use karo —
-    # internal nginx pe client_max_body_size limit hoti hai, APISIX pe nahi.
-    # Disk se upload hai isliye browser-streaming ka ReadError issue nahi hoga.
-    webdav_url   = public_url
-    _td = os.getenv("STORAGE_TEMP_DIR", "")
-    temp_dir = _td if (_td and os.path.isdir(_td)) else None  # None = OS default
+    username   = _extract_username(request)
+    total_size = int(request.headers.get("content-length") or record.file_size or 0)
+    _td        = os.getenv("STORAGE_TEMP_DIR", "")
+    temp_dir   = _td if (_td and os.path.isdir(_td)) else None
 
-    # ── Phase 1: Browser → temp file ─────────────────────────────────────────
+    # ── Phase 1 (common): browser stream → backend temp file ─────────────────
     temp_fd, temp_path = tempfile.mkstemp(
         prefix=f"lib_{item_id}_", suffix=f"_{record.file_name}", dir=temp_dir
     )
@@ -182,7 +250,7 @@ async def upload_library_file(
                 f.write(chunk)
                 bytes_written += len(chunk)
                 if total_size > 0:
-                    pct    = min(int(bytes_written / total_size * 100), 49)  # 0–49% = disk phase
+                    pct    = min(int(bytes_written / total_size * 100), 49)
                     bucket = (pct // 5) * 5
                     if bucket > last_bucket:
                         last_bucket         = bucket
@@ -198,22 +266,101 @@ async def upload_library_file(
         db.commit()
         raise HTTPException(status_code=500, detail=f"Upload failed during receive: {exc}")
 
-    logger.info(f"[Library] Phase 1 done: {bytes_written:,} bytes → {temp_path}")
+    logger.info(f"[Library] received {bytes_written:,} bytes → {temp_path}")
     record.progress_pct = 50
     db.commit()
 
-    # ── Phase 2: Temp file → WebDAV (requests, blocking — run in thread) ────
+    # ── ZIP: version_metadata.json se name + version DB mein update karo ────────
+    # Sab types ke liye — container, llm_model, llm_template, harbor_template
+    try:
+        import zipfile as _zf, json as _zjson
+        if _zf.is_zipfile(temp_path):
+            with _zf.ZipFile(temp_path, "r") as _z:
+                _mf = next(
+                    (n for n in _z.namelist() if os.path.basename(n) == "version_metadata.json"),
+                    None,
+                )
+                if _mf:
+                    _zmeta = _zjson.loads(_z.open(_mf).read().decode("utf-8"))
+                    if _zmeta.get("artifact_name"):
+                        record.name = _zmeta["artifact_name"]
+                    if _zmeta.get("version"):
+                        record.version = _zmeta["version"]
+                    _owner = _zmeta.get("owner") or _zmeta.get("owner_name")
+                    if _owner and not record.harbor_owner:
+                        record.harbor_owner = _owner
+                    db.commit()
+                    logger.info(
+                        f"[Library] ZIP metadata → name={record.name} "
+                        f"version={record.version} owner={record.harbor_owner}"
+                    )
+    except Exception as _ze:
+        logger.warning(f"[Library] ZIP metadata read (non-fatal): {_ze}")
+
+    # ── container / llm_model / llm_template: WebDAV nahi, Harbor push ─────────
+    if record.type in _HARBOR_PUSH_TYPES:
+        record.file_path    = temp_path
+        record.file_size    = bytes_written
+        record.progress_pct = 100
+        record.status       = "ready"
+        db.commit()
+
+        # llm_model + llm_template → LLMPushWorkflow (ORAS)
+        # container → HarborPushWorkflow (skopeo, Docker image)
+        is_llm = record.type in ("llm_model", "llm_template")
+        if is_llm:
+            push_workflow_id = f"llm-push-{item_id}-{uuid.uuid4().hex[:8]}"
+            wf_class         = LLMPushWorkflow
+            task_queue       = LLM_PUSH_TASK_QUEUE
+            action_label     = "LLM-Push"
+        else:
+            push_workflow_id = f"harbor-push-{item_id}-{uuid.uuid4().hex[:8]}"
+            wf_class         = HarborPushWorkflow
+            task_queue       = HARBOR_PUSH_TASK_QUEUE
+            action_label     = "Harbor-Push"
+
+        try:
+            temporal_client = await TemporalClientManager.get_temporal_client()
+            await temporal_client.start_workflow(
+                wf_class.run,
+                args=[{"item_id": item_id, "temp_path": temp_path}],
+                id=push_workflow_id,
+                task_queue=task_queue,
+                search_attributes=_make_search_attrs(record.name, action_label, username),
+            )
+            record.push_workflow_id = push_workflow_id
+            record.push_status      = "pushing"
+            db.commit()
+            logger.info(f"[Library] {action_label} triggered: wf={push_workflow_id}")
+        except Exception as exc:
+            logger.error(f"[Library] {action_label} workflow start failed: {exc}")
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+            record.push_status = "failed"
+            record.push_error  = str(exc)
+            db.commit()
+            raise HTTPException(status_code=500, detail=f"{action_label} workflow start failed: {exc}")
+
+        return response_format.success_response(200, f"File received — {action_label} started", {
+            **_item_to_dict(record),
+            "push_workflow_id": push_workflow_id,
+        })
+
+    # ── Baki sab types: temp file → WebDAV → PV ──────────────────────────────
+    subdir       = TYPE_SUBDIR.get(record.type, "general")
+    storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+    public_url   = f"{storage_base}/{subdir}/{record.file_name}"
+
     def _put_to_webdav():
         with open(temp_path, "rb") as f:
             return _req.put(
-                webdav_url,
+                public_url,
                 data=f,
-                headers={
-                    "Content-Length":   str(bytes_written),
-                    "Content-Type":     "application/octet-stream",
-                },
+                headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
                 verify=False,
-                timeout=None,   # badi file ke liye koi timeout nahi
+                timeout=None,
             )
 
     try:
@@ -221,13 +368,7 @@ async def upload_library_file(
         if resp.status_code not in (200, 201, 204):
             raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
     except Exception as exc:
-        logger.error(f"[Library] WebDAV PUT failed item={item_id} url={webdav_url}: {exc}")
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-        db.delete(record)
-        db.commit()
+        logger.error(f"[Library] WebDAV PUT failed item={item_id}: {exc}")
         raise HTTPException(status_code=500, detail=f"Upload failed — WebDAV error: {exc}")
     finally:
         try:
@@ -235,10 +376,10 @@ async def upload_library_file(
         except OSError:
             pass
 
-    logger.info(f"[Library] Phase 2 done: {webdav_url} ({bytes_written:,} bytes)")
+    logger.info(f"[Library] Phase 2 done: {public_url} ({bytes_written:,} bytes)")
 
     workflow_id         = f"library-upload-{item_id}-{uuid.uuid4().hex[:8]}"
-    record.file_path    = public_url   # external URL store karo — deploy activity isi se download karega
+    record.file_path    = public_url
     record.file_size    = bytes_written
     record.progress_pct = 100
     record.status       = "ready"
@@ -257,7 +398,6 @@ async def upload_library_file(
     except Exception as exc:
         logger.warning(f"[Library] Temporal workflow failed (upload done): {exc}")
 
-    logger.info(f"[Library] item={item_id} → {webdav_url} ({bytes_written:,} bytes)")
     return response_format.success_response(200, "File uploaded successfully", {
         **_item_to_dict(record),
         "workflow_id": workflow_id,
@@ -300,15 +440,89 @@ def _attach_deployments(items: list, db: Session) -> list:
     return items
 
 
-def list_library_items(type_filter: str | None, page: int, page_size: int, db: Session):
+_TYPE_LABELS = {
+    "harbor_template": "Harbor",
+    "lxc_backup":      "LXC Backup",
+    "base_os":         "Base OS",
+    "container":       "Container",
+    "llm_model":       "LLM Model",
+    "llm_template":    "LLM Proxmox Template",
+    "podman":          "Podman",
+    "devraq_agent":    "Devraq Agent",
+    "general":         "General",
+    "openwebui":       "Open WebUI",
+    "vectordb":        "Vector DB",
+}
+
+# Virtual types — DB mein stored nahi, query-time filter hain
+# name ya harbor_owner mein in keywords mein se koi bhi match hona chahiye
+_VIRTUAL_TYPE_MAP = {
+    "openwebui": {
+        "db_type":  "container",
+        "keywords": ["openwebui", "open-webui", "open_webui"],
+    },
+    "vectordb": {
+        "db_type":  "container",
+        "keywords": ["vectordb", "vector-db", "vector_db", "pgvector", "chroma", "qdrant", "weaviate"],
+    },
+}
+
+
+def _build_filters(db: Session) -> list:
+    """DB se distinct types + count nikalo, frontend ke liye filter list banao."""
+    from sqlalchemy import func
+    rows = (
+        db.query(LibraryItem.type, func.count(LibraryItem.id).label("count"))
+        .group_by(LibraryItem.type)
+        .order_by(LibraryItem.type)
+        .all()
+    )
+    return [
+        {
+            "type":  row.type,
+            "label": _TYPE_LABELS.get(row.type, row.type.replace("_", " ").title()),
+            "count": row.count,
+        }
+        for row in rows
+    ]
+
+
+def list_library_items(
+    type_filter:  str | None,
+    page:         int,
+    page_size:    int,
+    db:           Session,
+    owner_filter: str | None = None,
+):
+    from sqlalchemy import func
+
     query = db.query(LibraryItem)
+
     if type_filter:
-        if type_filter not in LIBRARY_TYPES:
+        if type_filter in _VIRTUAL_TYPE_MAP:
+            from sqlalchemy import or_
+            vt = _VIRTUAL_TYPE_MAP[type_filter]
+            query = query.filter(LibraryItem.type == vt["db_type"])
+            # name ya harbor_owner mein se koi bhi keyword match kare
+            keyword_conditions = []
+            for kw in vt["keywords"]:
+                keyword_conditions.append(LibraryItem.name.ilike(f"%{kw}%"))
+                keyword_conditions.append(LibraryItem.harbor_owner.ilike(f"%{kw}%"))
+            query = query.filter(or_(*keyword_conditions))
+        elif type_filter in LIBRARY_TYPES:
+            query = query.filter(LibraryItem.type == type_filter)
+        else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid type '{type_filter}'. Must be one of: {', '.join(sorted(LIBRARY_TYPES))}",
+                detail=(
+                    f"Invalid type '{type_filter}'. "
+                    f"Valid: {', '.join(sorted(LIBRARY_TYPES | set(_VIRTUAL_TYPE_MAP)))}"
+                ),
             )
-        query = query.filter(LibraryItem.type == type_filter)
+
+    # owner_filter — harbor_owner se partial case-insensitive match
+    if owner_filter:
+        query = query.filter(LibraryItem.harbor_owner.ilike(f"%{owner_filter}%"))
 
     total  = query.count()
     offset = (page - 1) * page_size
@@ -316,14 +530,17 @@ def list_library_items(type_filter: str | None, page: int, page_size: int, db: S
 
     enriched = _attach_deployments([_item_to_dict(i) for i in items], db)
 
-    # Group by directory — saari directories dikhao, chahe empty ho
+    # Group by directory
     grouped: dict = {d: [] for d in sorted(POD_DIRS)}
     for item in enriched:
         d = item.get("directory", "general")
         grouped.setdefault(d, []).append(item)
 
+    filters = _build_filters(db)
+
     total_pages = (total + page_size - 1) // page_size if page_size else 1
     return response_format.success_response(200, "Library items fetched", {
+        "filters":     filters,
         "directories": grouped,
         "total":       total,
         "pagination": {
@@ -433,6 +650,46 @@ _LXC_SSH_PASS = os.getenv("LXC_SSH_PASS", "")
 
 
 async def deploy_library_item(
+    item_id: int,
+    body:    dict,
+    db:      Session,
+    request: Request,
+):
+    deployment_type = body.get("deployment_type", "lxc").lower()
+
+    if deployment_type == "kubernetes":
+        return await _deploy_library_k8s(item_id, body, db)
+
+    # ── LXC path (original flow) ──────────────────────────────────────────────
+    return await _deploy_library_lxc(
+        item_id    = item_id,
+        name       = body["name"],
+        cluster_id = body["cluster_id"],
+        ip_pools   = body.get("ip_pools") or [],
+        storage    = body.get("storage", "local-lvm"),
+        db         = db,
+        request    = request,
+    )
+
+
+async def _deploy_library_k8s(item_id: int, body: dict, db: Session):
+    """Library item ko K8s cluster pe Harbor ke roop me deploy karo."""
+    from controllers.kubernetes_controller import deploy_harbor_to_k8s
+
+    cluster_id = body["cluster_id"]
+    return await deploy_harbor_to_k8s(
+        cluster_id = cluster_id,
+        body       = {
+            "library_item_id": item_id,
+            "name":            body["name"],
+            "namespace":       body.get("namespace", "harbor"),
+            "http_port":       body.get("http_port", 80),
+        },
+        db = db,
+    )
+
+
+async def _deploy_library_lxc(
     item_id:    int,
     name:       str,
     cluster_id: int,

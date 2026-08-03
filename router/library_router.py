@@ -12,11 +12,17 @@ library_router = APIRouter(prefix="/v1/library", tags=["library"])
 
 
 class LibraryUploadInit(BaseModel):
-    name:      str
+    name:      Optional[str] = None   # container type: metadata se auto-set hoga; baaki ke liye required
     file_name: str
     file_size: Optional[int] = None
-    type:      Optional[str] = None
+    type:      Optional[str] = None   # container | llm_model | llm_template | base_os | ...
     version:   Optional[str] = None
+    # Harbor push — container / llm_model / llm_template ke liye
+    harbor_registry_id: Optional[int] = None  # kubernetes_deployments.id (Harbor instance)
+    harbor_owner:       Optional[str] = None  # fallback owner segment (optional)
+    # Optional metadata JSON — yahan pass karo to ZIP ke andar rakhne ki zaroorat nahi
+    # Saare fields Harbor Overview mein annotations ke roop mein jayenge
+    metadata: Optional[dict] = None
 
 
 @library_router.post("/upload", response_model=APIResponse[Any])
@@ -26,11 +32,20 @@ async def create_library_item(
     db:      Session = Depends(get_db),
 ):
     """
-    Step 1 — send metadata as JSON, returns item_id within milliseconds.
-    Then stream the actual file via PUT /v1/library/{item_id}/file.
+    Step 1 — metadata JSON bhejo, milliseconds mein item_id milta hai.
+    Phir file stream karo: PUT /v1/library/{item_id}/file
+
+    container / llm_model / llm_template ke liye:
+      harbor_registry_id = kubernetes_deployments.id (Harbor instance)
+      Backend automatically K8s cluster derive karega Harbor record se.
+      name optional hai — Docker image metadata se auto-set hoga.
     """
     return await library_controller.create_library_item(
-        body.name, body.type, body.version, body.file_name, body.file_size, db, request
+        body.name, body.type, body.version, body.file_name, body.file_size,
+        db, request,
+        harbor_registry_id=body.harbor_registry_id,
+        harbor_owner=body.harbor_owner,
+        metadata=body.metadata,
     )
 
 
@@ -50,12 +65,13 @@ async def upload_library_file(
 
 @library_router.get("/list", response_model=APIResponse[Any])
 def list_library_items(
-    type:      Optional[str] = Query(None, description="Filter: base_os | devraq_agent | open_web_ui | lxc_backup | harbor_template | general"),
+    type:      Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | ..."),
+    owner:     Optional[str] = Query(None, description="Filter by harbor_owner (partial match, case-insensitive)"),
     page:      int           = Query(1,  ge=1),
     page_size: int           = Query(10, ge=1, le=100),
     db:        Session       = Depends(get_db),
 ):
-    return library_controller.list_library_items(type, page, page_size, db)
+    return library_controller.list_library_items(type, page, page_size, db, owner_filter=owner)
 
 
 # ── Deployment list/detail — static routes BEFORE /{item_id} so FastAPI
@@ -71,8 +87,17 @@ def list_deployments(
 
 
 @library_router.get("/deployments/{job_id}", response_model=APIResponse[Any])
-def get_deployment(job_id: int, db: Session = Depends(get_db)):
-    return lxc_restore_controller.get_lxc_restore_job(job_id, db)
+def get_deployment(
+    job_id: int,
+    type:   Optional[str] = Query(None, description="lxc | kubernetes — dono tables mein same ID ho to disambiguate karo"),
+    db:     Session = Depends(get_db),
+):
+    return lxc_restore_controller.get_lxc_restore_job(job_id, db, deployment_type=type)
+
+
+@library_router.delete("/deployments/{job_id}", response_model=APIResponse[Any])
+def delete_deployment(job_id: int, db: Session = Depends(get_db)):
+    return lxc_restore_controller.delete_deployment(job_id, db)
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -110,10 +135,17 @@ async def delete_library_item(item_id: int, request: Request, db: Session = Depe
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 class LibraryDeployBody(BaseModel):
-    name:       str
-    cluster_id: int
-    ip_pools:   List[str]
-    storage:    Optional[str] = "local-lvm"
+    deployment_type: str               # "lxc" ya "kubernetes"
+    name:            str               # Deployment ka naam
+    cluster_id:      int               # LXC: Proxmox cluster ID | K8s: kubernetes_clusters ID
+
+    # LXC ke liye (deployment_type="lxc" me required)
+    ip_pools:        Optional[List[str]] = None
+    storage:         Optional[str]       = "local-lvm"
+
+    # K8s ke liye (optional, defaults hain)
+    namespace:       Optional[str] = "harbor"
+    http_port:       Optional[int] = 80
 
 
 @library_router.post("/{item_id}/deploy", response_model=APIResponse[Any])
@@ -123,9 +155,16 @@ async def deploy_library_item(
     request: Request,
     db:      Session = Depends(get_db),
 ):
-    """Deploy a library item (LXC backup) as a container on Proxmox."""
+    """
+    Library item deploy karo:
+    - deployment_type="lxc"        → Proxmox LXC machine deploy (existing)
+    - deployment_type="kubernetes" → K8s cluster pe Harbor deploy (new)
+    """
     return await library_controller.deploy_library_item(
-        item_id, body.name, body.cluster_id, body.ip_pools, body.storage, db, request
+        item_id  = item_id,
+        body     = body.model_dump(),
+        db       = db,
+        request  = request,
     )
 
 

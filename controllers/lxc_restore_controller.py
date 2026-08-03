@@ -141,32 +141,51 @@ async def create_lxc_restore_job(data: LXCRestoreCreate, db: Session):
 
 def list_lxc_restore_jobs(db: Session, page: int = 1, page_size: int = 10):
     try:
+        from models.kubernetes_deploy_model import KubernetesDeployment
+        from controllers.kubernetes_controller import _deploy_to_dict
+
         page      = max(1, page)
         page_size = max(1, min(page_size, 100))
         offset    = (page - 1) * page_size
 
-        total   = db.query(LXCRestoreJob).count()
-        records = (
-            db.query(LXCRestoreJob)
-            .order_by(LXCRestoreJob.created_at.desc())
-            .offset(offset).limit(page_size).all()
-        )
+        # ── LXC jobs ──────────────────────────────────────────────────────────
+        lxc_records = db.query(LXCRestoreJob).all()
+        lxc_lib_ids = list({r.library_item_id for r in lxc_records if r.library_item_id})
+        lxc_lib_map: dict = {}
+        if lxc_lib_ids:
+            lxc_items   = db.query(LibraryItem).filter(LibraryItem.id.in_(lxc_lib_ids)).all()
+            lxc_lib_map = {i.id: i.name for i in lxc_items}
 
-        # Enrich with library item name
-        lib_ids  = list({r.library_item_id for r in records if r.library_item_id})
-        lib_map  = {}
-        if lib_ids:
-            items   = db.query(LibraryItem).filter(LibraryItem.id.in_(lib_ids)).all()
-            lib_map = {i.id: i.name for i in items}
-
-        data = [
-            {**_job_to_dict(r), "template_name": lib_map.get(r.library_item_id)}
-            for r in records
+        lxc_data = [
+            {**_job_to_dict(r), "deployment_type": "lxc",
+             "template_name": lxc_lib_map.get(r.library_item_id)}
+            for r in lxc_records
         ]
 
-        total_pages = (total + page_size - 1) // page_size
-        return response_format.success_response(200, "LXC restore jobs fetched", {
-            "items": data,
+        # ── Kubernetes / Harbor deployments ───────────────────────────────────
+        k8s_records = db.query(KubernetesDeployment).all()
+        k8s_lib_ids = list({r.library_item_id for r in k8s_records if r.library_item_id})
+        k8s_lib_map: dict = {}
+        if k8s_lib_ids:
+            k8s_items   = db.query(LibraryItem).filter(LibraryItem.id.in_(k8s_lib_ids)).all()
+            k8s_lib_map = {i.id: i.name for i in k8s_items}
+
+        k8s_data = [
+            {**_deploy_to_dict(r), "deployment_type": "kubernetes",
+             "template_name": k8s_lib_map.get(r.library_item_id)}
+            for r in k8s_records
+        ]
+
+        # ── Merge + sort by created_at DESC + paginate ────────────────────────
+        all_items = lxc_data + k8s_data
+        all_items.sort(key=lambda x: x.get("created_at") or "", reverse=True)
+
+        total      = len(all_items)
+        paginated  = all_items[offset: offset + page_size]
+        total_pages = (total + page_size - 1) // page_size if page_size else 1
+
+        return response_format.success_response(200, "Deployments fetched", {
+            "items": paginated,
             "pagination": {
                 "page":        page,
                 "page_size":   page_size,
@@ -177,21 +196,87 @@ def list_lxc_restore_jobs(db: Session, page: int = 1, page_size: int = 10):
             },
         })
     except Exception as e:
-        return response_format.error_response(500, "Failed to list LXC restore jobs", str(e))
+        logger.error(f"list_lxc_restore_jobs error: {e}", exc_info=True)
+        return response_format.error_response(500, "Failed to list deployments", str(e))
 
 
-def get_lxc_restore_job(job_id: int, db: Session):
+def get_lxc_restore_job(job_id: int, db: Session, deployment_type: str | None = None):
+    """
+    LXC ya Kubernetes deployment detail fetch karo.
+    deployment_type='lxc' ya 'kubernetes' — dono nahi diya to LXC pehle check hoga.
+    """
     try:
-        record = db.query(LXCRestoreJob).filter(LXCRestoreJob.id == job_id).first()
-        if not record:
-            raise HTTPException(status_code=404, detail=f"LXC restore job {job_id} not found")
+        # ── LXC ──────────────────────────────────────────────────────────────
+        if deployment_type != "kubernetes":
+            record = db.query(LXCRestoreJob).filter(LXCRestoreJob.id == job_id).first()
+            if record:
+                item    = db.query(LibraryItem).filter(LibraryItem.id == record.library_item_id).first()
+                cluster = db.query(Cluster).filter(Cluster.id == record.cluster_id).first()
+                return response_format.success_response(200, "Deployment fetched", {
+                    **_job_to_dict(record),
+                    "deployment_type":   "lxc",
+                    "template_name":     item.name    if item    else None,
+                    "template_version":  item.version if item    else None,
+                    "template_type":     item.type    if item    else None,
+                    "cluster_name":      cluster.name if cluster else None,
+                })
 
-        item = db.query(LibraryItem).filter(LibraryItem.id == record.library_item_id).first()
-        return response_format.success_response(200, "LXC restore job fetched", {
-            **_job_to_dict(record),
-            "template_name": item.name if item else None,
-        })
+        # ── Kubernetes / Harbor ───────────────────────────────────────────────
+        if deployment_type != "lxc":
+            from models.kubernetes_deploy_model import KubernetesDeployment
+            from models.kubernetes_model import KubernetesCluster
+            from controllers.kubernetes_controller import _deploy_to_dict
+
+            k8s = db.query(KubernetesDeployment).filter(KubernetesDeployment.id == job_id).first()
+            if k8s:
+                item    = db.query(LibraryItem).filter(LibraryItem.id == k8s.library_item_id).first()
+                cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == k8s.cluster_id).first()
+                return response_format.success_response(200, "Deployment fetched", {
+                    **_deploy_to_dict(k8s),
+                    "deployment_type":  "kubernetes",
+                    "template_name":    item.name    if item    else None,
+                    "template_version": item.version if item    else None,
+                    "template_type":    item.type    if item    else None,
+                    "cluster_name":     cluster.name if cluster else None,
+                    "cluster_ip":       cluster.control_ip if cluster else None,
+                })
+
+        raise HTTPException(status_code=404, detail=f"Deployment {job_id} not found")
+
     except HTTPException:
         raise
     except Exception as e:
-        return response_format.error_response(500, "Failed to get LXC restore job", str(e))
+        return response_format.error_response(500, "Failed to get deployment", str(e))
+
+
+def delete_deployment(job_id: int, db: Session):
+    """
+    LXC ya Kubernetes deployment DB se delete karo.
+    Pehle lxc_restore_jobs check karo, nahi mila to kubernetes_deployments.
+    """
+    try:
+        from models.kubernetes_deploy_model import KubernetesDeployment
+
+        # LXC check
+        lxc = db.query(LXCRestoreJob).filter(LXCRestoreJob.id == job_id).first()
+        if lxc:
+            db.delete(lxc)
+            db.commit()
+            logger.info(f"[Deploy] LXC job id={job_id} deleted from DB")
+            return response_format.success_response(200, "LXC deployment deleted", {"id": job_id, "type": "lxc"})
+
+        # Kubernetes check
+        k8s = db.query(KubernetesDeployment).filter(KubernetesDeployment.id == job_id).first()
+        if k8s:
+            db.delete(k8s)
+            db.commit()
+            logger.info(f"[Deploy] K8s deployment id={job_id} deleted from DB")
+            return response_format.success_response(200, "Kubernetes deployment deleted", {"id": job_id, "type": "kubernetes"})
+
+        raise HTTPException(status_code=404, detail=f"Deployment id={job_id} not found in LXC or Kubernetes records")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"delete_deployment error: {e}", exc_info=True)
+        return response_format.error_response(500, "Failed to delete deployment", str(e))
