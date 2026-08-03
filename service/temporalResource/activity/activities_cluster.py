@@ -19,9 +19,13 @@ def model_to_dict(obj):
     return data
 
 @activity.defn
-async def create_user_activity(cluster_data: dict, root_username: str, root_password: str):
+async def create_user_activity(cluster_data: dict, root_username: str, root_password: str, creds: dict):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-    creds = init_proxmox_context()
+    # `creds` is generated once by the caller and passed through explicitly --
+    # this activity runs in a separate Temporal worker process, so calling
+    # init_proxmox_context() here would independently generate a DIFFERENT
+    # username than the one the caller uses later to log in / create a token,
+    # since the module-level cache is per-process, not shared across processes.
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST, root_username, root_password)
     
@@ -85,10 +89,9 @@ async def create_user_activity(cluster_data: dict, root_username: str, root_pass
 
 
 @activity.defn
-async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
+async def Assign_role_to_user_activity(cluster_data: dict, role: str, path: str, root_username: str, root_password: str, creds: dict):
     from service.clusterService import getting_Proxmox_host, root_proxmox_login
-    
-    creds = init_proxmox_context()
+
     PROXMOX_HOST = getting_Proxmox_host(cluster_data)
     headers, cookies = root_proxmox_login(PROXMOX_HOST,root_username,root_password)
     # create_api_token_newUser()

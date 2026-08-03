@@ -425,7 +425,15 @@ async def assign_ip_to_vm_activity(args: dict):
                     if resp.status_code == 200:
                         config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node_name}/qemu/{vmid}/config"
                         payload = {
-                            "ipconfig0": f"ip={ip_with_cidr},gw={gateway}"
+                            "ipconfig0": f"ip={ip_with_cidr},gw={gateway}",
+                            # Force the OpenStack ConfigDrive format Cloudbase-Init
+                            # requires on Windows. Without this, Proxmox defaults to
+                            # citype=nocloud, which writes a Linux-style drive the
+                            # guest can't fully read — hostname and user-data
+                            # (domain join) silently don't apply on first boot. Set
+                            # here so every clone gets it before power-on, regardless
+                            # of how the source template was configured.
+                            "citype": "configdrive2",
                         }
                         config_response = requests.put(config_url, headers=headers, data=payload, verify=False, timeout=10)
                         
@@ -883,6 +891,32 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None):
             
             machine.error_message = "cloning..."
             machine.provisioning_status = "cloned"
+
+            # Self-heal pool_vmids: this vmid's Machine row already exists and
+            # is being reused (rebuild never creates a new row), but its entry
+            # in pool.pool_vmids may be missing from an earlier, unrelated
+            # issue (e.g. name-collision cleanup during original creation) —
+            # that desyncs the pool's reported VM count from its actual
+            # machines even though nothing is otherwise wrong. Ensure it's
+            # present and keep pool_number_of_vms consistent with it.
+            existing_vmids = pool.pool_vmids or []
+            if str(vmid) not in existing_vmids:
+                pool.pool_vmids = existing_vmids + [str(vmid)]
+                pool.pool_number_of_vms = len(pool.pool_vmids)
+
+            # Same self-heal for pool_machines — the frontend's pool-list
+            # "Machines" count (ShowPools.js) reads len(pool.pool_machines),
+            # a DIFFERENT list (of machine.identifier, not vmid) normally
+            # populated only by the fresh-creation path in activities_machine.py.
+            # Rebuild reuses this Machine row directly and never goes through
+            # that path, so if this machine's identifier was ever missing from
+            # pool_machines (same root cause as the pool_vmids gap), rebuild
+            # had no way to notice or fix it either — leaving the pool list
+            # showing "No machines" even with a perfectly healthy VM inside.
+            existing_machine_ids = pool.pool_machines or []
+            if machine.identifier and machine.identifier not in existing_machine_ids:
+                pool.pool_machines = existing_machine_ids + [machine.identifier]
+
             db.commit()
 
             return {
@@ -893,6 +927,17 @@ async def vm_rebuild_activity(vmid: int, pool_id: str = None):
                 "cluster_id": str(cluster_id),
                 "machine_name": machine.name,
                 "ip_address": machine.hostname,
+                # AD-join config was previously not returned at all here, so
+                # VmRebuildWorkflow had no way to know whether to attach the
+                # domain-join snippet — rebuilt VMs silently skipped domain
+                # join even when the pool had it configured. join_ad mirrors
+                # the same derivation used in update_pool_activity: a pool has
+                # AD join configured if it has an AD username set.
+                "join_ad": bool(pool.pool_ad_username),
+                "pool_ad_domain": pool.pool_ad_domain,
+                "pool_ad_path": pool.pool_ad_path,
+                "pool_ad_username": pool.pool_ad_username,
+                "pool_ad_password": pool.pool_ad_password,
             }
 
         except Exception as e:

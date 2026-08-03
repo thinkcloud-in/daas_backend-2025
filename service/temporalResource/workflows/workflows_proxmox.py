@@ -217,8 +217,17 @@ class CloneVMWorkflow:
                 )
 
             # ── Step 4: attach the AD-join cloud-init snippet BEFORE power-on,
-            # so it's picked up on first boot (only if the pool requested it). ──
+            # so it's picked up on first boot (only if the pool requested it).
+            #
+            # Isolated in try/except and scoped to THIS batch's vmids:
+            #  - A domain-join failure must never block power-on of VMs that
+            #    were already cloned and IP-assigned successfully — otherwise a
+            #    transient SSH/`qm` hiccup would leave healthy VMs powered off.
+            #  - Passing this batch's vmids explicitly stops the activity from
+            #    re-processing every vmid accumulated on the pool so far (which
+            #    would redundantly re-attach the snippet to earlier batches). ──
             if join_ad and ready_vms:
+                batch_vmids = [vm_record["vmid"] for vm_record in ready_vms]
                 for vm_record in ready_vms:
                     await workflow.execute_activity(
                         activities_proxmox.update_machine_provisioning_status_activity,
@@ -226,21 +235,47 @@ class CloneVMWorkflow:
                         retry_policy=short_retry_policy,
                         start_to_close_timeout=timedelta(seconds=30),
                     )
-                await workflow.execute_activity(
-                    "configure_domain_join_activity",
-                    args=[{
-                        "pool_id": pool_id,
-                        "pool_ad_domain": clone_payload.get("domain"),
-                        "pool_ad_password": clone_payload.get("domain_password"),
-                        "pool_ad_username": clone_payload.get("username"),
-                        "pool_ad_path": clone_payload.get("ou"),
-                    }],
-                    retry_policy=short_retry_policy,
-                    start_to_close_timeout=timedelta(minutes=2),
-                )
+                try:
+                    join_result = await workflow.execute_activity(
+                        "configure_domain_join_activity",
+                        args=[{
+                            "pool_id": pool_id,
+                            "pool_ad_domain": clone_payload.get("domain"),
+                            "pool_ad_password": clone_payload.get("domain_password"),
+                            "pool_ad_username": clone_payload.get("username"),
+                            "pool_ad_path": clone_payload.get("ou"),
+                            "vm_ids": batch_vmids,
+                        }],
+                        retry_policy=short_retry_policy,
+                        start_to_close_timeout=timedelta(minutes=2),
+                    )
+                    if isinstance(join_result, dict) and join_result.get("status") == "error":
+                        raise Exception(join_result.get("error") or "configure_domain_join_activity reported an error")
+                except Exception as e:
+                    # Log, flag the VMs, and continue to power-on regardless.
+                    logger.error(
+                        f"Domain-join configuration failed for batch "
+                        f"{batch_start // BATCH_SIZE + 1} (vmids={batch_vmids}); "
+                        f"VMs will still be powered on. Error: {e}"
+                    )
+                    for vm_record in ready_vms:
+                        await workflow.execute_activity(
+                            activities_proxmox.update_machine_provisioning_status_activity,
+                            args=[{"vmid": vm_record["vmid"], "step": "domain_join_failed"}],
+                            retry_policy=short_retry_policy,
+                            start_to_close_timeout=timedelta(seconds=30),
+                        )
 
             # ── Step 5: power on every VM that made it this far ──
-            for vm_record in ready_vms:
+            # Staggered on purpose: starting several clones' first boot at the
+            # exact same moment starves each guest's early-boot WMI/networking
+            # init under shared host CPU/disk contention — this is what caused
+            # only the first VM in a batch to reliably domain-join while later
+            # ones raced Cloudbase-Init's UserDataPlugin and lost. A short gap
+            # between power-ons spreads that boot load out instead of just
+            # hoping the in-guest retry budget (see domain-join script) covers it.
+            POWER_ON_STAGGER_SECONDS = 20
+            for idx, vm_record in enumerate(ready_vms):
                 vmid = vm_record["vmid"]
                 await workflow.execute_activity(
                     activities_proxmox.update_machine_provisioning_status_activity,
@@ -261,6 +296,8 @@ class CloneVMWorkflow:
                     retry_policy=short_retry_policy,
                     start_to_close_timeout=timedelta(seconds=30),
                 )
+                if idx < len(ready_vms) - 1:
+                    await asyncio.sleep(POWER_ON_STAGGER_SECONDS)
 
             logger.info(
                 f"Batch {batch_start // BATCH_SIZE + 1} cloned VMs: {[v['name'] for v in ready_vms]}"
@@ -478,6 +515,46 @@ class VmRebuildWorkflow:
             retry_policy=retry_policy,
             start_to_close_timeout=timedelta(minutes=5),
         )
+
+        # ── Attach the AD-join snippet BEFORE power-on, same as CloneVMWorkflow —
+        # this step was missing entirely on the rebuild path, so a rebuilt VM
+        # silently skipped domain join even when the pool had it configured.
+        if result.get("join_ad"):
+            await workflow.execute_activity(
+                activities_proxmox.update_machine_provisioning_status_activity,
+                args=[{"vmid": vmid, "step": "configuring_domain_join"}],
+                retry_policy=short_retry_policy,
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+            try:
+                join_result = await workflow.execute_activity(
+                    "configure_domain_join_activity",
+                    args=[{
+                        "pool_id": pool_id,
+                        "pool_ad_domain": result.get("pool_ad_domain"),
+                        "pool_ad_password": result.get("pool_ad_password"),
+                        "pool_ad_username": result.get("pool_ad_username"),
+                        "pool_ad_path": result.get("pool_ad_path"),
+                        "vm_ids": [vmid],
+                    }],
+                    retry_policy=short_retry_policy,
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+                if isinstance(join_result, dict) and join_result.get("status") == "error":
+                    raise Exception(join_result.get("error") or "configure_domain_join_activity reported an error")
+            except Exception as e:
+                # Same policy as CloneVMWorkflow: a domain-join snippet failure
+                # must never block power-on of an otherwise-healthy rebuilt VM.
+                logger.error(
+                    f"Domain-join configuration failed for rebuilt vmid={vmid}; "
+                    f"VM will still be powered on. Error: {e}"
+                )
+                await workflow.execute_activity(
+                    activities_proxmox.update_machine_provisioning_status_activity,
+                    args=[{"vmid": vmid, "step": "domain_join_failed"}],
+                    retry_policy=short_retry_policy,
+                    start_to_close_timeout=timedelta(seconds=30),
+                )
 
         await workflow.execute_activity(
             activities_proxmox.update_machine_provisioning_status_activity,

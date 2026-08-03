@@ -8,7 +8,10 @@ my-venv
 uvicorn.log
 session_reports.pdf
 temporal
-env
+.env
 app.log
 email_scheduler.log
 .gitignore
+*.sql
+*.db
+Dockerfile.prod

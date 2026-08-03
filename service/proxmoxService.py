@@ -587,94 +587,50 @@ async def vm_rebuild(vmid: int, pool_id: str):
                 task_queue="vm-rebuild-task-queue",
             )
 
-            # Set status to RUNNING as soon as workflow is started
+            # Set status to RUNNING as soon as workflow is started.
+            #
+            # NOTE: VmRebuildWorkflow runs wait-ready/assign-ip/power-on all
+            # INLINE now (see workflows_proxmox.VmRebuildWorkflow.run) — it no
+            # longer spawns a separate child "assign IP" workflow. The old
+            # code below still tried to track that nonexistent child workflow
+            # via result.get("wait_and_assign_result"), which no longer
+            # exists in the result dict, so it was always None. Passing that
+            # None through update_workflow_status_dict inserted a phantom
+            # `None`-keyed entry into machine.workflow_status on every single
+            # rebuild — and since pollingStatus.update_workflow_status treats
+            # any non-"COMPLETED" entry (including that phantom None) as
+            # blocking overall completion, machine.status came out blank
+            # (None) after every rebuild, success or failure. Track only the
+            # one real workflow — the rebuild itself — to fix this.
             machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
             if machine_data:
                 current_ids = machine_data.workflowId or []
-                new_rebuild_id = workflow_id
-                new_assign_ip_id = None
-                updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
-                machine_data.workflowId = updated_ids
-
-                current_status = machine_data.workflow_status or {}
-                updated_status = update_workflow_status_dict(
-                    current_status,
-                    new_rebuild_id,
-                    new_assign_ip_id,
-                    "RUNNING",
-                    "",
-                    "RUNNING",
-                    ""
-                )
-                machine_data.workflow_status = updated_status
+                while len(current_ids) < 2:
+                    current_ids.append(None)
+                current_ids[1] = workflow_id
+                machine_data.workflowId = current_ids
                 db.commit()
                 db.refresh(machine_data)
 
-                # Also call update_workflow_status for rebuild workflow RUNNING
-                update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status="RUNNING", error="")
+                update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status="RUNNING", error="")
 
-            result = await handle.result()  # Should contain child workflow id
+            result = await handle.result()
             logger.info(f"VM Rebuild workflow completed with result: {result}")
 
-            # Update with child workflow id after result
             if machine_data:
-                new_assign_ip_id = result.get("wait_and_assign_result")
-
-                # Update workflowId with child workflow
-                current_ids = machine_data.workflowId or []
-                updated_ids = update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id)
-                machine_data.workflowId = updated_ids
-
-                # Determine statuses
                 if isinstance(result, dict) and "error" in result:
                     rebuild_status = "FAILED"
                     rebuild_error = result["error"]
-                    assign_ip_status = machine_data.workflow_status.get(new_assign_ip_id, {}).get("status", "RUNNING")
-                    assign_ip_error = machine_data.workflow_status.get(new_assign_ip_id, {}).get("error", "")
                 else:
                     rebuild_status = "COMPLETED"
                     rebuild_error = ""
-                    assign_ip_status = "RUNNING" if new_assign_ip_id else None
-                    assign_ip_error = ""
 
-                # Update workflow_status dict for 2nd and 3rd entries
-                current_status = machine_data.workflow_status or {}
-                updated_status = update_workflow_status_dict(
-                    current_status,
-                    new_rebuild_id,
-                    new_assign_ip_id,
-                    rebuild_status,
-                    rebuild_error,
-                    assign_ip_status,
-                    assign_ip_error
-                )
-                machine_data.workflow_status = updated_status
-                db.commit()
-                db.refresh(machine_data)
-
-                # Now call update_workflow_status for both main and child workflows
-                update_workflow_status(db, machine_id=machine_data.id, wfid=new_rebuild_id, status=rebuild_status, error=rebuild_error, vm_status="")
-                if new_assign_ip_id and assign_ip_status:
-                    update_workflow_status(db, machine_id=machine_data.id, wfid=new_assign_ip_id, status=assign_ip_status, error=assign_ip_error)
+                update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status=rebuild_status, error=rebuild_error)
             return result
         except Exception as e:
             db.rollback()
             machine_data = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
             if machine_data:
-                # On error, update workflow_status for rebuild workflow
-                current_status = machine_data.workflow_status or {}
-                updated_status = update_workflow_status_dict(
-                    current_status,
-                    workflow_id,
-                    None,
-                    "FAILED",
-                    str(e),
-                    None,
-                    None
-                )
-                machine_data.workflow_status = updated_status
-                db.commit()
-                db.refresh(machine_data)
                 update_workflow_status(db, machine_id=machine_data.id, wfid=workflow_id, status="FAILED", error=str(e))
             return {"error": str(e)}
     finally:

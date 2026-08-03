@@ -23,6 +23,10 @@ async def create_pool_activity(request: dict) -> dict:
     try:
         pool_data = {key: request[key] for key in CreatePoolBase.__annotations__.keys() if key in request}
         email = pool_data.pop("email", None)
+        # join_ad is a control flag that drives the domain-join step, not a
+        # Pool column — pop it before Pool(**pool_data) or the ORM constructor
+        # rejects it ("invalid keyword argument for Pool").
+        join_ad = pool_data.pop("join_ad", False)
         ip_pool_names = pool_data.get("pool_ip_pool_names")
 
         # Automated-pool pre-flight checks 
@@ -152,7 +156,7 @@ async def create_pool_activity(request: dict) -> dict:
                     "ou": pool_data.get("pool_ad_path"),
                     "username": pool_data.get("pool_ad_username"),
                     "domain_password": pool_data.get("pool_ad_password"),
-                    "join_ad": bool(pool_data.get("join_ad", False)),
+                    "join_ad": bool(join_ad),
                     "email": email,
                     "is_cluster": actual_is_cluster,
                 }
@@ -435,13 +439,17 @@ async def _cleanup_unregisterable_vm(pool_id: int, vmid, ip: str | None) -> None
 @activity.defn
 async def configure_domain_join_activity(payload: dict) -> dict:
     """Thin wrapper so the clone workflow can attach the AD-join cloud-init
-    snippet to already-cloned VMs before they're powered on."""
+    snippet to already-cloned VMs before they're powered on.
+
+    `vm_ids` (optional) scopes the join to just the current batch's VMs; when
+    omitted, domain_join_activity falls back to every vmid on the pool."""
     return await domain_join_activity(
         payload["pool_id"],
         payload["pool_ad_domain"],
         payload["pool_ad_password"],
         payload["pool_ad_username"],
         payload.get("pool_ad_path", ""),
+        payload.get("vm_ids"),
     )
 
 
@@ -573,7 +581,16 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
                 "ou": pool_data.get("pool_ad_path", db_pool.pool_ad_path),
                 "username": pool_data.get("pool_ad_username", db_pool.pool_ad_username),
                 "domain_password": pool_data.get("pool_ad_password", db_pool.pool_ad_password),
-                "join_ad": bool(pool_data.get("join_ad", False)),
+                # join_ad is a control flag, not a persisted Pool column, so it
+                # is lost on the edit round-trip (the Edit form's checkbox is
+                # disabled and never re-sends it). Fall back to the pool's stored
+                # AD config as the source of truth — same rule the UI uses to
+                # display the flag (!!pool_ad_username) — so VMs added to an
+                # existing AD-joined pool still get the domain-join snippet.
+                "join_ad": bool(
+                    pool_data.get("join_ad")
+                    or (pool_data.get("pool_ad_username", db_pool.pool_ad_username))
+                ),
                 "email": email,
                 "is_cluster": actual_is_cluster,
             }
@@ -613,20 +630,26 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
             db.commit()
 
         # ── Apply field updates to the pool row ──────────────────────────────
-        # FIX: always exclude pool_number_of_vms and email from the blind setattr
-        #      loop — these are managed explicitly below / not a DB column.
-        EXCLUDED_FIELDS = {"pool_number_of_vms", "email"}
+        # FIX: always exclude pool_number_of_vms, email and join_ad from the
+        #      blind setattr loop — these are managed explicitly below / are
+        #      control flags, not DB columns (join_ad drives the clone-time
+        #      domain-join step and is already read into clone_payload_dict above).
+        # FIX: also exclude pool_vmids and pool_machines — these are written
+        #      exclusively by finalize_cloned_machine_activity (in a separate
+        #      DB session, during cloning above) and must never be blindly
+        #      overwritten by whatever stale array the frontend's edit-pool
+        #      payload happens to carry (it spreads the whole poolDetails
+        #      object it loaded before this update, which can predate the
+        #      VMs just cloned) — that was wiping pool_vmids to empty on
+        #      every pool update that also added a machine.
+        EXCLUDED_FIELDS = {"pool_number_of_vms", "email", "join_ad", "pool_vmids", "pool_machines"}
         for field, value in pool_data.items():
             if field not in EXCLUDED_FIELDS:
                 setattr(db_pool, field, value)
 
-        if is_automated and added_count > 0 and vms:
-            db_pool.pool_number_of_vms = old_vm_count + len(vms)
-            # For both Proxmox and Hyper-V, their respective clone workflows
-            # already appended each new vmid to pool.pool_vmids (in a separate
-            # DB session) as part of finalize_cloned_machine_activity —
-            # recomputing it here from this function's stale pre-clone
-            # `db_pool` snapshot would race with / overwrite that.
+        success_count = len(response.get("machines", [])) if isinstance(response, dict) else 0
+        if is_automated and added_count > 0 and success_count:
+            db_pool.pool_number_of_vms = old_vm_count + success_count
 
         db.commit()
         db.refresh(db_pool)
@@ -668,8 +691,8 @@ async def update_pool_activity(pool_id: int, pool_data: dict) -> dict:
 
         msg = "Pool updated successfully"
         if is_automated and added_count > 0:
-            if vms:
-                msg += f", {len(vms)} new VM(s) added."
+            if success_count:
+                msg += f", {success_count} new VM(s) added."
             elif vm_add_error:
                 msg += f", {vm_add_error}"
 
@@ -712,12 +735,13 @@ async def delete_pool_activity(pool_id: int) -> dict:
                 except Exception as e:
                     raise RuntimeError(str(e))
                 cluster_data = db.query(Cluster).filter(Cluster.id == id_cluster).first()
+                failed_vmids = []
                 for vmid in pool_vmids:
                     machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).first()
                     if vmid:
                         try:
                             if cluster_data.type.lower()=="proxmox":
-                                
+
                                 await delete_proxmox_vm(vmid, cluster_data)
                                 vmid_str = str(vmid)
                             elif cluster_data.type.lower() in ("hyper-v", "hyperv"):
@@ -736,6 +760,29 @@ async def delete_pool_activity(pool_id: int) -> dict:
                                 db.refresh(ip_entry)
                         except Exception as e:
                             db.rollback()
+                            logger.error(
+                                f"[delete_pool] Failed to delete VM {vmid} in "
+                                f"Proxmox/Hyper-V for pool {pool_id}: {e}",
+                                exc_info=True,
+                            )
+                            failed_vmids.append(str(vmid))
+
+                # Don't delete the pool (and lose pool_vmids, our only pointer
+                # to these VMs) while any VM still exists on the hypervisor —
+                # that orphans it with no way left to find or retry cleanup.
+                if failed_vmids:
+                    return {
+                        "status": "error",
+                        "error_type": "vm_deletion_failed",
+                        "error": (
+                            f"Failed to delete VM(s) {failed_vmids} from the hypervisor; "
+                            "pool was NOT deleted so these can be retried."
+                        ),
+                        "msg": (
+                            f"Failed to delete VM(s) {failed_vmids} from the hypervisor; "
+                            "pool was NOT deleted so these can be retried."
+                        ),
+                    }
 
             for machine_item in pool_machines:
                 machine = db.query(Machine).filter(Machine.identifier == machine_item).first()
@@ -834,7 +881,24 @@ async def get_all_pools_activity():
                         pool_data["cluster"] = "NA"
                 else:
                     pool_data["cluster"] = "NA"
-                    
+
+                # Override the stored pool_machines with a live query instead of
+                # trusting the cached array on the Pool row. That cache is only
+                # written by one specific code path (fresh machine creation) and
+                # has repeatedly gone stale via other paths (rebuild reusing an
+                # existing row, and evidently the add-VM-to-pool path too) —
+                # the frontend's "N machines" / "No machines" list display
+                # reads this field directly, so a live count here can never
+                # drift from what's actually in the Machine table.
+                live_identifiers = [
+                    identifier for (identifier,) in
+                    db.query(Machine.identifier)
+                    .filter(Machine.pool_id == pool_data["id"])
+                    .all()
+                    if identifier
+                ]
+                pool_data["pool_machines"] = live_identifiers
+
             return {"msg": "listed all the Pools successfully", "pools": pools_json}
         except Exception as e:
             db.rollback()  
@@ -868,7 +932,19 @@ async def get_pool_details_id_activity(pool_id: int):
                         pool_json["cluster"] = "NA"
                 else:
                     pool_json["cluster"] = "NA"
-                    
+
+                # Same fix as get_all_pools_activity: override the cached
+                # pool_machines array with a live query so this single-pool
+                # detail view can't show a stale/wrong machine list either.
+                live_identifiers = [
+                    identifier for (identifier,) in
+                    db.query(Machine.identifier)
+                    .filter(Machine.pool_id == pool_json["id"])
+                    .all()
+                    if identifier
+                ]
+                pool_json["pool_machines"] = live_identifiers
+
                 return {"msg": f"Pool Retrived Successfully", "pool": pool_json}
             else:
                 return {"msg": f"Pool not found "}
@@ -881,16 +957,19 @@ async def get_pool_details_id_activity(pool_id: int):
 
 
 @activity.defn()
-async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str) -> dict:
+async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_password: str, pool_ad_username: str, pool_ad_path: str, target_vm_ids: list = None) -> dict:
     import paramiko
+    from service import clusterService
     db: Session = SessionLocal()
     try:
         try:
             pool = db.query(Pool).filter(Pool.id == pool_id).first()
             if not pool:
                 return {"msg": f"Pool not found with id {pool_id}"}
-            
-            vm_ids = pool.pool_vmids or []
+
+            # Scope to the caller-supplied vmids (current clone batch) when
+            # provided; otherwise fall back to every vmid on the pool.
+            vm_ids = target_vm_ids if target_vm_ids else (pool.pool_vmids or [])
             if not vm_ids:
                 return {"msg": "No VMs found in the pool to join domain."}
                 
@@ -907,7 +986,7 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
             domain = pool_ad_domain #"rcvdev.team"
             username = pool_ad_username #"rcvdev\\administrator"
             password = pool_ad_password #"Teamw0rk@1"
-            ou_path_input = pool_ad_path # "OU11/OU1"
+            ou_path_input = pool_ad_path # "OU1/OU11"
             
             ou_components = []
             if ou_path_input:
@@ -920,84 +999,252 @@ async def domain_join_activity(pool_id: int, pool_ad_domain: str, pool_ad_passwo
                 ou_components.append(f"DC={part}")
     
             final_ou_path = ",".join(ou_components)
-            ou_args = f'-OUPath "{final_ou_path}" `' if final_ou_path else ""
-    
-            yaml_content = f"""#cloud-config
-            write_files:
-                - path: "C:\\\\join-domain.ps1"
-                  content: |
-                    $domain = "{domain}"
-                    $username = "{username}"
-                    $password = "{password}"
-    
-                    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
-                    $credential = New-Object System.Management.Automation.PSCredential ($username, $securePassword)
-    
-                    Write-Host "Waiting for network..."
-    
-                    do {{
-                        $net = Test-NetConnection -ComputerName "172.16.0.51" -InformationLevel Quiet
-                        Start-Sleep -Seconds 10
-                    }} until ($net -eq $true)
-    
-                    do {{
-                        nltest /dsgetdc:$domain
-                        Start-Sleep -Seconds 10
-                    }} until ($LASTEXITCODE -eq 0)
-    
-                    Add-Computer `
-                    -DomainName $domain `
-                    -Credential $credential `
-                    {ou_args}
-                    -Force
-                    
-                    Start-Sleep -Seconds 30
-                    Restart-Computer -Force
-    
-            runcmd:
-                - powershell.exe -ExecutionPolicy Bypass -File "C:\\\\join-domain.ps1"
-            """
-    
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            try:
-                ssh.connect(host, username=user, password=proxmox_password)
-                ssh.exec_command("mkdir -p /var/lib/vz/snippets")
-    
-                sftp = ssh.open_sftp()
-                file = sftp.file(f"/var/lib/vz/snippets/join-domain-pool-{pool_id}.yml", "w")
-                file.write(yaml_content)
-                file.close()
-    
-                for vm_id in vm_ids:
-    
-                    cmd = f"qm set {vm_id} --cicustom user=local:snippets/join-domain-pool-{pool_id}.yml"
-    
-                    max_retry = 10
-    
-                    for i in range(max_retry):
-    
-                        stdin, stdout, stderr = ssh.exec_command(cmd)
-    
-                        exit_status = stdout.channel.recv_exit_status()
-                        out = stdout.read().decode()
-                        err = stderr.read().decode()
-    
-                        logger.debug(f"domain_join qm set for vm {vm_id}: EXIT={exit_status} OUT={out} ERR={err}")
 
-                        if "can't lock file" in err:
-                            logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
-                            time.sleep(5)
-                        else:
-                            logger.info(f"Domain-join snippet attached successfully for VM {vm_id}")
-                            break
+            
+            def _build_join_script(new_name: str) -> str:
+                worker_script = f"""$ErrorActionPreference = "Stop"
+$log = "C:\\cloudbase-domain-join.log"
+function Log($m) {{ "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }}
+
+$domain   = "{domain}"
+$username = "{username}"
+$password = "{password}"
+$ouPath   = "{final_ou_path}"
+$newName  = "{new_name}"
+$taskName = "DomainJoinWorker"
+
+Log "Worker run started-- domain='$domain' user='$username' ou='$ouPath' newName='$newName'"
+
+try {{
+    if ((Get-CimInstance -ClassName Win32_ComputerSystem).PartOfDomain) {{
+        $confirmMarker = "C:\\cloudbase-domain-join-confirmed.marker"
+        if (-not (Test-Path $confirmMarker)) {{
+            Log "Already domain-joined but logon screen may not be refreshed yet; forcing one more reboot to confirm."
+            try {{ New-Item -Path $confirmMarker -ItemType File -Force -ErrorAction Stop | Out-Null }} catch {{ }}
+            Start-Sleep -Seconds 10
+            # shutdown.exe, not Restart-Computer - Restart-Computer goes through
+            # CIM/WMI and has been seen throwing "One or more errors occurred"
+            # when a Windows-initiated restart (post-sysprep specialize storm)
+            # is already pending at the same moment. shutdown.exe is a plain,
+            # lower-level call that doesn't hit that same conflict. Wrapped so
+            # a failure here can't cause this already-successful state to be
+            # misreported - worst case, an already-pending OS restart carries
+            # the machine forward anyway and this branch runs again next boot.
+            try {{ & "C:\\Windows\\System32\\shutdown.exe" /r /t 5 /f }} catch {{ Log "Confirmation reboot command failed (harmless, will retry next boot): $($_.Exception.Message)" }}
+            exit 0
+        }}
+
+        Log "Already domain-joined (confirmed after extra reboot); unregistering task and exiting."
+        # Wrapped so a cleanup failure here (e.g. task still finishing its own
+        # startup) can never get mislabeled as "domain join FAILED" below -
+        # the machine is already correctly joined at this point regardless.
+        try {{
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+        }} catch {{
+            Log "Could not unregister task (harmless, already joined): $($_.Exception.Message)"
+        }}
+
+        try {{ Remove-Item -Path $PSCommandPath -Force -ErrorAction Stop }} catch {{ }}
+        try {{ Remove-Item -Path $confirmMarker -Force -ErrorAction Stop }} catch {{ }}
+        # Delete the log LAST - nothing after this point may call Log again,
+        # or Out-File would just silently recreate the file.
+        try {{ Remove-Item -Path $log -Force -ErrorAction Stop }} catch {{ }}
+        exit 0
+    }}
+
+    $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
+    $credential = New-Object System.Management.Automation.PSCredential($username, $securePassword)
+
+    # Bounded wait for a locatable domain controller (max ~5 min per boot attempt).
+    for ($i = 1; $i -le 30; $i++) {{
+        nltest /dsgetdc:$domain 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {{ Log "DC located (attempt $i)"; break }}
+        Log "DC not reachable yet (attempt $i); retrying"
+        Start-Sleep -Seconds 10
+    }}
+
+    $doRename = ($newName -and $newName -ne $env:COMPUTERNAME)
+    if ($doRename) {{
+        Log "Staging local (workgroup) rename to '$newName'"
+        Rename-Computer -NewName $newName -Force -ErrorAction Stop
+        Log "Local rename staged (applies on reboot)."
+    }} else {{
+        Log "No rename needed (newName empty or already current)."
+    }}
+
+    $joinParams = @{{
+        DomainName  = $domain
+        Credential  = $credential
+        Force       = $true
+        ErrorAction = "Stop"
+    }}
+    if ($ouPath)  {{ $joinParams["OUPath"]  = $ouPath }}
+    if ($doRename) {{ $joinParams["Options"] = "JoinWithNewName,AccountCreate" }}
+
+    Log "Joining domain (ou='$ouPath')"
+    Add-Computer @joinParams
+    Log "Domain join succeeded; rebooting to apply join + new name (task and worker file left in place - a confirmation reboot cycle still needs them; cleanup happens in the already-joined branch above)."
+
+    Start-Sleep -Seconds 10
+    # shutdown.exe, not Restart-Computer - see the matching comment in the
+    # already-joined branch above for why. This is the critical spot: the
+    # join genuinely succeeded here, so a reboot-command failure must never
+    # fall through to the catch block below and get logged as a join failure.
+    try {{ & "C:\\Windows\\System32\\shutdown.exe" /r /t 5 /f }} catch {{ Log "Reboot command failed after successful join (harmless, will retry next boot): $($_.Exception.Message)" }}
+}}
+catch {{
+
+    Log "Domain join attempt FAILED (will retry on next boot): $($_.Exception.Message)"
+    exit 1
+}}
+"""
+                # Escape single quotes for embedding inside the here-string below.
+                worker_script_escaped = worker_script.replace("'", "''")
+
+                return f"""#ps1_sysnative
+$ErrorActionPreference = "Stop"
+$log = "C:\\cloudbase-domain-join.log"
+function Log($m) {{ "$(Get-Date -Format o)  $m" | Out-File -FilePath $log -Append -Encoding utf8 }}
+
+Log "Installer run: writing worker script and registering AtStartup task."
+
+$workerPath = "C:\\cloudbase-domain-join-worker.ps1"
+@'
+{worker_script_escaped}
+'@ | Set-Content -Path $workerPath -Encoding UTF8
+
+$taskName = "DomainJoinWorker"
+$action  = New-ScheduledTaskAction -Execute "powershell.exe" -Argument "-ExecutionPolicy Bypass -NoProfile -File `"$workerPath`""
+$trigger = New-ScheduledTaskTrigger -AtStartup
+$principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Force | Out-Null
+
+Log "Task registered. Starting first attempt immediately (not waiting for next reboot)."
+Start-ScheduledTask -TaskName $taskName
+"""
+
+            import re
+            import requests as _requests
+
+            # Resolve each VM's ACTUAL owning node before doing anything else.
+            # Proxmox's "local:snippets" storage and per-node qemu-server config
+            # paths are node-local, not cluster-wide -- writing the snippet to
+            # whichever node happens to be first in the cluster's IP list (the
+            # old behavior) silently attaches nothing the VM's real node can
+            # ever see if that VM actually lives on a different node.
+            vm_to_host = {vid: host for vid in vm_ids}  # fallback: original first-IP host
+            try:
+                proxmox_api_token = clusterService.get_api_token(db, cluster.name)
+                proxmox_url = clusterService.getting_Proxmox_host(cluster)
+                api_headers = {"Authorization": f"PVEAPIToken={proxmox_api_token}"}
+
+                res_resp = _requests.get(
+                    f"{proxmox_url}/api2/json/cluster/resources",
+                    headers=api_headers, params={"type": "vm"}, verify=False, timeout=10,
+                )
+                res_resp.raise_for_status()
+                vmid_to_node = {
+                    str(item["vmid"]): item["node"]
+                    for item in res_resp.json().get("data", [])
+                    if "vmid" in item and "node" in item
+                }
+
+                status_resp = _requests.get(
+                    f"{proxmox_url}/api2/json/cluster/status",
+                    headers=api_headers, verify=False, timeout=10,
+                )
+                status_resp.raise_for_status()
+                node_to_ip = {
+                    item["name"]: item["ip"]
+                    for item in status_resp.json().get("data", [])
+                    if item.get("type") == "node" and item.get("ip")
+                }
+
+                for vid in vm_ids:
+                    node_name = vmid_to_node.get(str(vid))
+                    node_ip = node_to_ip.get(node_name) if node_name else None
+                    if node_ip:
+                        vm_to_host[vid] = node_ip
+                    else:
+                        logger.warning(
+                            f"Could not resolve owning node/IP for VM {vid}; "
+                            f"falling back to {host} (may be the wrong node)."
+                        )
+            except Exception as lookup_err:
+                logger.warning(
+                    f"Failed to resolve per-VM node ownership for pool {pool_id}, "
+                    f"falling back to {host} for all VMs: {lookup_err}"
+                )
+
+            # Group VMs by their resolved node IP so we open one SSH connection
+            # per node (instead of always the same possibly-wrong node).
+            host_to_vmids = {}
+            for vid in vm_ids:
+                host_to_vmids.setdefault(vm_to_host[vid], []).append(vid)
+
+            try:
+                for target_host, host_vm_ids in host_to_vmids.items():
+                    ssh = paramiko.SSHClient()
+                    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                    try:
+                        ssh.connect(target_host, username=user, password=proxmox_password)
+                        ssh.exec_command("mkdir -p /var/lib/vz/snippets")
+                        sftp = ssh.open_sftp()
+
+                        for vm_id in host_vm_ids:
+                            # Resolve this VM's intended hostname (Machine.name) and
+                            # sanitize it to a valid NetBIOS computer name: only
+                            # letters/digits/hyphen, max 15 chars. Empty -> no rename.
+                            machine = db.query(Machine).filter(Machine.vm_id == str(vm_id)).first()
+                            raw_name = (machine.name if machine and machine.name else "").strip()
+                            new_name = re.sub(r"[^A-Za-z0-9-]", "-", raw_name)[:15].strip("-")
+                            if raw_name and new_name != raw_name:
+                                logger.warning(
+                                    f"VM {vm_id}: hostname '{raw_name}' sanitized/truncated to "
+                                    f"NetBIOS name '{new_name}' for domain join."
+                                )
+
+                            snippet_name = f"join-domain-pool-{pool_id}-vm-{vm_id}.ps1"
+                            f = sftp.file(f"/var/lib/vz/snippets/{snippet_name}", "w")
+                            f.write(_build_join_script(new_name))
+                            f.close()
+
+                            cmd = f"qm set {vm_id} --cicustom user=local:snippets/{snippet_name}"
+
+                            max_retry = 10
+                            for i in range(max_retry):
+                                stdin, stdout, stderr = ssh.exec_command(cmd)
+                                exit_status = stdout.channel.recv_exit_status()
+                                out = stdout.read().decode()
+                                err = stderr.read().decode()
+
+                                logger.debug(f"domain_join qm set for vm {vm_id} (name={new_name}) on {target_host}: EXIT={exit_status} OUT={out} ERR={err}")
+
+                                if "can't lock file" in err:
+                                    logger.warning(f"VM {vm_id} locked, waiting 5s before retrying domain-join snippet attach...")
+                                    time.sleep(5)
+                                else:
+                                    logger.info(f"Domain-join snippet attached for VM {vm_id} (hostname={new_name}) on {target_host}")
+                                    update_cmd = f"qm cloudinit update {vm_id}"
+                                    _, update_stdout, update_stderr = ssh.exec_command(update_cmd)
+                                    update_exit = update_stdout.channel.recv_exit_status()
+                                    update_err = update_stderr.read().decode()
+                                    if update_exit != 0:
+                                        logger.warning(
+                                            f"qm cloudinit update failed for VM {vm_id} (exit={update_exit}): "
+                                            f"{update_err.strip()} - snippet is attached but the cloud-init drive "
+                                            f"may not reflect it until a later boot."
+                                        )
+                                    else:
+                                        logger.info(f"Cloud-init drive regenerated for VM {vm_id}.")
+                                    break
+                    finally:
+                        ssh.close()
 
             except Exception as e:
                 logger.error(f"domain_join_activity SSH/Proxmox error for pool {pool_id}: {e}", exc_info=True)
                 return {"status": "error", "error": f"SSH/Proxmox error: {str(e)}"}
-            finally:
-                ssh.close()
-                
+
             return {"msg": "Domain join workflow executed successfully"}
         except Exception as e:
             db.rollback()

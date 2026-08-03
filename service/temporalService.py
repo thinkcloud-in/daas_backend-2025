@@ -54,12 +54,15 @@ def calculate_time_range(schedule_type: str) -> tuple[str, str]:
 @activity.defn
 async def fetch_pdf_report(base_url: str, start_time: str, end_time: str, report_type: str) -> bytes:
     try:
+        import service.gucamoleService as service
         encoded_report_type = quote(report_type)
         encoded_start = quote(start_time)
         encoded_end = quote(end_time)
-        formatted_url = f"{base_url}/{encoded_start}/{encoded_end}/{encoded_report_type}"       
+        formatted_url = f"{base_url}/{encoded_start}/{encoded_end}/{encoded_report_type}"
+        service_token = await service.get_service_account_token()
+        headers = {"Authorization": f"Bearer {service_token}"}
         async with aiohttp.ClientSession() as session:
-            async with session.post(formatted_url) as response:
+            async with session.post(formatted_url, headers=headers) as response:
                 if response.status == 200:
                     data = await response.json()
                     # Validate the response structure before accessing nested keys

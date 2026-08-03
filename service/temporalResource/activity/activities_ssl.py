@@ -115,6 +115,8 @@ async def upload_certificate_activity(payload: dict) -> dict:
             if kube_ex.status == 404:
                 v1.create_namespaced_secret(namespace=NAMESPACE, body=secret_body)
                 msg = "SSL Certificate created and applied successfully!"
+            elif kube_ex.status == 403:
+                raise ApplicationError(f"Kubernetes RBAC permission denied: {kube_ex.reason}", non_retryable=True)
             else:
                 raise ApplicationError(f"Kubernetes API Error: {kube_ex.reason}")
 
@@ -215,6 +217,8 @@ async def renew_certificate_activity(payload: dict) -> dict:
             if kube_ex.status == 404:
                 v1.create_namespaced_secret(namespace=NAMESPACE, body=secret_body)
                 msg = f"SSL Certificate successfully created for domain: {domain_name}"
+            elif kube_ex.status == 403:
+                raise ApplicationError(f"Kubernetes RBAC permission denied: {kube_ex.reason}", non_retryable=True)
             else:
                 raise ApplicationError(f"Kubernetes API Error: {kube_ex.reason}")
 
@@ -235,6 +239,8 @@ async def delete_certificate_activity() -> dict:
     except ApiException as kube_ex:
         if kube_ex.status == 404:
             raise ApplicationError("SSL Certificate not found. It might have been already deleted.", non_retryable=True)
+        if kube_ex.status == 403:
+            raise ApplicationError(f"Kubernetes RBAC permission denied: {kube_ex.reason}", non_retryable=True)
         raise ApplicationError(f"Kubernetes API Error: {kube_ex.reason}")
     except Exception as e:
         raise ApplicationError(f"Internal Deletion Activity Error: {str(e)}")
@@ -247,6 +253,8 @@ async def get_certificate_status_activity() -> dict:
         except ApiException as kube_ex:
             if kube_ex.status == 404:
                 raise ApplicationError("No SSL Certificate found in the cluster. Please upload or renew one first.", non_retryable=True)
+            if kube_ex.status == 403:
+                raise ApplicationError(f"Kubernetes RBAC permission denied: {kube_ex.reason}", non_retryable=True)
             raise ApplicationError(f"Kubernetes API Error: {kube_ex.reason}")
 
         if not secret.data or "tls.crt" not in secret.data:

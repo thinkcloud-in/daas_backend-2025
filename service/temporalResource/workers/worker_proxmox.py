@@ -103,12 +103,13 @@ async def vm_rebuild_worker():
             wait_for_vm_ready_activity,
             assign_ip_to_vm_activity,
             update_machine_provisioning_status_activity,
+            configure_domain_join_activity,
         ],
     )
-    
+
     try:
         await worker.run()
-        
+
     except Exception as e:
         raise Exception(f"Error in VM rebuild worker: {e}")
 

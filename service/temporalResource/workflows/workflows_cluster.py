@@ -12,7 +12,7 @@ logger = logging.getLogger("create_cluster_workflow")
 @workflow.defn(sandboxed=False)
 class CreateUserWorkflow:
     @workflow.run
-    async def run(self, cluster_data: dict, root_username: str, root_password: str):
+    async def run(self, cluster_data: dict, root_username: str, root_password: str, creds: dict):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -23,7 +23,7 @@ class CreateUserWorkflow:
             logger.info("Running workflow to create user...")
             result = await workflow.execute_activity(
                 activities_cluster.create_user_activity,
-                args=[cluster_data, root_username, root_password],
+                args=[cluster_data, root_username, root_password, creds],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )
@@ -36,7 +36,7 @@ class CreateUserWorkflow:
 @workflow.defn(sandboxed=False)
 class AssignRoleToUserWorkflow:
     @workflow.run
-    async def run(self, cluster_data: dict,role: str, path: str, root_username: str, root_password: str):
+    async def run(self, cluster_data: dict,role: str, path: str, root_username: str, root_password: str, creds: dict):
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -47,7 +47,7 @@ class AssignRoleToUserWorkflow:
             logger.info("Running workflow to create user...")
             result = await workflow.execute_activity(
                 activities_cluster.Assign_role_to_user_activity,
-                args=[cluster_data, role,path,root_username, root_password],
+                args=[cluster_data, role,path,root_username, root_password, creds],
                 retry_policy=retry_policy,
                 start_to_close_timeout=timedelta(seconds=60),
             )

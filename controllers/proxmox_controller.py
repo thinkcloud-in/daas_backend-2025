@@ -168,6 +168,9 @@ async def get_influxdb_metric_server_endpoints(
     except Exception as e:
         raise HTTPException(status_code=500, detail= f"{str(e)}")
 
+def get_influxdb_env_defaults_endpoint():
+    return clusterService.get_influxdb_env_defaults()
+
 async def add_influxdb_metric_server_endpoint(cluster_id: str, request: Request, db: Session = Depends(get_db)):
     cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster_data:
@@ -177,14 +180,16 @@ async def add_influxdb_metric_server_endpoint(cluster_id: str, request: Request,
         monitoring = body.get("monitoring", True)
         is_custom_integration = body.get("is_custom_integration", True)
         metric_info = clusterService.create_and_get_metric_server(cluster_data)
-        if not metric_info.get("error"):
-            clusterService.save_metric_server_to_db(
-                db,
-                cluster_data.id,
-                metric_info,
-                monitoring=monitoring,
-                is_custom_integration=is_custom_integration
-            )
+        if metric_info.get("error"):
+            raise HTTPException(status_code=500, detail=metric_info["error"])
+
+        clusterService.save_metric_server_to_db(
+            db,
+            cluster_data.id,
+            metric_info,
+            monitoring=monitoring,
+            is_custom_integration=is_custom_integration
+        )
         return response_format.success_response(200, "InfluxDB metric server added successfully")
     except Exception as e:
         raise HTTPException(500, detail= f"{str(e)}")

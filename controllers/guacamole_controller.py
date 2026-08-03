@@ -257,13 +257,10 @@ async def generate_pdf_report(start_date: str, end_date: str, report_type: str):
             "PDF report generated successfully",
             {"pdf_data": encoded_pdf}
         )
-        # return FileResponse(pdf_file, media_type="application/pdf", filename=f"{report_type}{start_date}.pdf")
-        # return response_format.success_response(200, "PDF report generated successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to generate PDF report", str(e))
 
 
-# @guacarouter.post("/generate_report/{start_date}/{end_date}/{report_type}/{username}")
 async def generate_pdf_report_by_username(start_date: str, end_date: str, report_type: str,username: str):
     """
     API Endpoint to generate a PDF session report.
@@ -282,15 +279,11 @@ async def generate_pdf_report_by_username(start_date: str, end_date: str, report
             "PDF report generated successfully",
             {"pdf_data": encoded_pdf}
         )
-        # pdf_file = await service.generate_userbased_report(start_date_dt, end_date_dt, report_type,username)
-        # data= FileResponse(pdf_file, media_type="application/pdf", filename=f"{report_type}{username}.pdf")
-        # return response_format.success_response(200, "PDF report generated successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to generate PDF report", str(e)) 
 
     
 
-# @guacarouter.get("/get_client_id")
 async def  get_client_id():
     try:
         data = await service.get_client() 
@@ -300,7 +293,6 @@ async def  get_client_id():
         raise response_format.error_response(500, "Failed to retrieve client ID", str(e))
 
 
-# @guacarouter.get("/get_client_roles",response_model=APIResponse[List[str]])
 async def get_client_roles(request):
     db = SessionLocal()
     try:
@@ -320,18 +312,14 @@ async def get_client_roles(request):
         except Exception as e:
             logger.warning(f"Failed to fetch roles from Keycloak: {e}")
 
-        # Fetch roles from the database
         db_roles = db.query(RBAC.role).all()
         role_list = [role[0] for role in db_roles]
         
-        # Also fetch roles from Keycloak to ensure parity
         try:
             keycloak_data = await service.get_client_roles()
             keycloak_roles = [role["name"] for role in keycloak_data]
-            # Combine unique roles
             role_list = list(set(role_list + keycloak_roles))
         except Exception as e:
-            # If Keycloak is down or fails, we still have DB roles
             logger.warning(f"Failed to fetch roles from Keycloak: {e}")
         
         return response_format.success_response(200, "Role names retrieved successfully", role_list)
@@ -341,28 +329,23 @@ async def get_client_roles(request):
         db.close()
 
 
-# @guacarouter.post("/post_role/{role_name}")
 async def post_role(role_name: str, authorization: str):
     try:
         data = await service.posting_role(role_name, authorization)
-        # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(201, "Role created successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to create role", str(e))
     
 
-# @guacarouter.delete('/delete_role/{role_name}')
 async def delete_role(role_name: str, authorization: str):
     try:
         data = await service.deleting_role(role_name, authorization)
-        # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(200, "Role deleted successfully", data)
 
     except Exception as e:
         return response_format.error_response(500, "Failed to delete role", str(e))
 
 
-# @guacarouter.post("/submit_role_components")
 async def submit_role_components(request, authorization):
     try:
         data = await service.updating_role_component(request, authorization)
@@ -372,27 +355,28 @@ async def submit_role_components(request, authorization):
         return response_format.error_response(500, "Failed to submit role components", str(e))
 
 
-# @guacarouter.get("/get_role_components/{role}")
 async def get_role_components(role: str):
     try:
         data = await service.getting_role_component(role)
-        # return {"status": "Ok", "code": 201, "msg": "Role created successfully", "role_id": result.get("id")}
         return response_format.success_response(200, "Role components retrieved successfully", data)
 
     except Exception as e:
         return response_format.error_response(500, "Failed to retrieve role components", str(e))
 
 
-# @guacarouter.post("/assign_user_role")
 async def assign_user_role(request):
     try:
-        await service.assignning_user_role(request)
+        result = await service.assignning_user_role(request)
+        if result.get("status") == "Error" or result.get("status_code"):
+            return response_format.error_response(
+                result.get("status_code", 500),
+                result.get("detail") or result.get("message") or "Failed to assign role to user",
+            )
         return response_format.success_response(200, "Role assigned to user successfully")
     except Exception as e:
         return response_format.error_response(500, "Failed to assign role to user", str(e))
 
 
-# @guacarouter.get("/get_user_permissions/{username}")
 async def get_user_permissions(request, username: str):
     try:
         data = await service.get_user_permissions(request, username)
@@ -406,14 +390,12 @@ async def get_user_permissions(request, username: str):
         return response_format.error_response(500, "Failed to retrieve user permissions", str(e))
 
 
-# @guacarouter.delete("/remove_role_from_user")
 async def remove_role_from_user(request):
     data = await service.delete_role_from_user(request)
     return response_format.success_response(200, data['msg'])
 
 
 
-# @guacarouter.get("/guacamole_history")
 async def get_guacamole_history():
     try:
         data = await service.get_guacamole_history()
@@ -422,7 +404,6 @@ async def get_guacamole_history():
         return response_format.error_response(500, "Failed to retrieve guacamole history", str(e))
 
 
-# @guacarouter.get("/guacamole_ActiveSessions")
 async def get_guacamole_active_sessions():
     try:
         data = await service.get_guacamole_ActiveSessions()
@@ -431,7 +412,6 @@ async def get_guacamole_active_sessions():
         return response_format.error_response(500, "Failed to retrieve guacamole active sessions", str(e))
 
 
-# @guacarouter.get("/guacamole_join_session")
 async def guacamole_join_session(
     session_id: str = Query(...),
     datasource: str = Query(None)
@@ -443,7 +423,6 @@ async def guacamole_join_session(
         return response_format.error_response(500, "Failed to generate guacamole session URL", str(e))
 
 
-# @guacarouter.get("/api/recording/{identifier}/{logUuid}")
 async def get_recording_log(identifier: str, logUuid: str):
     try:
         data = await service.get_recording_log(identifier, logUuid)

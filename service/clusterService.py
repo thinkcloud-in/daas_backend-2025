@@ -50,14 +50,14 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
 # Step 2: Create a new user
 
 
-async def create_user(cluster_data: dict, root_username: str, root_password: str):
+async def create_user(cluster_data: dict, root_username: str, root_password: str, cred: dict = None):
     uniqueId = unique_id()
-    cred = init_proxmox_context()
+    cred = cred or init_proxmox_context()
     client = await TemporalClientManager.get_temporal_client()
-    userName = cluster_data.get('email', "UnknownUser")
+    userName = cluster_data.get('email') or "UnknownUser"
     handle = await client.start_workflow(
         workflows_cluster.CreateUserWorkflow.run,
-        args=[cluster_data, root_username, root_password],
+        args=[cluster_data, root_username, root_password, cred],
         id=f'create-user-{uniqueId}',
         task_queue="cluster-task-queue",
         search_attributes={
@@ -75,14 +75,14 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
 
 
 
-async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_username: str, root_password: str):
+async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_username: str, root_password: str, cred: dict = None):
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
-    userName = cluster_data.get('email', "UnknownUser")
-    cred = init_proxmox_context()
+    userName = cluster_data.get('email') or "UnknownUser"
+    cred = cred or init_proxmox_context()
     handle = await client.start_workflow(
         workflows_cluster.AssignRoleToUserWorkflow.run,
-        args=[cluster_data, role, path, root_username, root_password],
+        args=[cluster_data, role, path, root_username, root_password, cred],
         id=f'assign-role-{uniqueId}',
         task_queue="cluster-task-queue",
         search_attributes={
@@ -94,23 +94,23 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     
     result = await handle.result()
     return result
-def new_user_proxmox_login(PROXMOX_HOST):
-    cred = init_proxmox_context()
+def new_user_proxmox_login(PROXMOX_HOST, cred: dict = None):
+    cred = cred or init_proxmox_context()
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": cred['username'], "password": cred['password']}
 
     response = requests.post(url, data=payload, verify=VERIFY_SSL)
-    
+
     response.raise_for_status()
     data = response.json()["data"]
     headers = {"CSRFPreventionToken": data["CSRFPreventionToken"]}
     cookies = {"PVEAuthCookie": data["ticket"]}
     return headers, cookies
- 
+
 # Step 5: Create API token as the new user
-def create_api_token_newUser(PROXMOX_HOST):
-    cred = init_proxmox_context()
-    headers, cookies = new_user_proxmox_login(PROXMOX_HOST)
+def create_api_token_newUser(PROXMOX_HOST, cred: dict = None):
+    cred = cred or init_proxmox_context()
+    headers, cookies = new_user_proxmox_login(PROXMOX_HOST, cred)
     payload = {
         "privsep": 0,
         "comment": "automation token"
@@ -140,15 +140,17 @@ def get_api_token(db: Session, cluster_name: str):
     
     return data.get("api_token", "")
  
-def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name):
-    cred = init_proxmox_context()
+def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name, cred: dict = None):
+    cred = cred or init_proxmox_context()
     existing_user = db.query(Proxmox).filter(
         Proxmox.cluster_name == cluster_name
     ).first()
-    
- 
+
     if existing_user:
-        # Update existing fields
+        # Update existing fields. `user` is included here (the original
+        # version left it stale on update) since delete_cluster_proxmox now
+        # relies on this field being accurate to target the right identity.
+        existing_user.user = cred['username']
         existing_user.new_password = cred['password']
         existing_user.token_id = cred['token']
         existing_user.full_token = full_token
@@ -156,10 +158,10 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
         existing_user.api_token = api_token
         existing_user.role = role
         existing_user.path = path
- 
+
         db.commit()
         db.refresh(existing_user)
-        
+
         return existing_user
     else:
         try:
@@ -174,56 +176,74 @@ def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, c
                 role=role,
                 path=path
             )
-            
+
             db.add(proxmox_user)
             db.commit()
             db.refresh(proxmox_user)
-            
+
             return proxmox_user
         except Exception as e:
-            
+
             db.rollback()
             raise
 
 async def create_cluster_proxmox(cluster_data):
+    """
+    Original design (commit a94d798 replaced this with a root-owned token
+    for every cluster, which is what caused the recurring cross-cluster
+    token-invalidation issue): root is used only to *provision* a dedicated,
+    cluster-specific Proxmox user, which then gets its own token that the
+    app actually authenticates with going forward -- root's own credentials
+    are never stored or used for ongoing API calls.
+
+    cleanup_proxmox_context() brackets this call so each cluster gets a
+    freshly generated dedicated identity instead of the module-level cached
+    one being silently reused (and overwritten) across different clusters.
+    """
+    from utils.proxmox_helper import cleanup_proxmox_context
+
+    cleanup_proxmox_context()  # ensure a fresh identity for THIS cluster
     db = SessionLocal()
     try:
         PROXMOX_HOST = getting_Proxmox_host(cluster_data, timeout=5.0)
         ROOT_USERNAME = cluster_data.username   # e.g. "root@pam"
         ROOT_PASSWORD = cluster_data.password
+        cluster_data_dict = cluster_data.dict()
 
-        # Login as root to get session ticket
-        headers, cookies = root_proxmox_login(PROXMOX_HOST, ROOT_USERNAME, ROOT_PASSWORD)
+        # Generate the dedicated identity ONCE here and pass it explicitly
+        # through every step below. create_user()/assign_role_to_user() start
+        # Temporal workflows that run in a separate WORKER process -- if each
+        # step called init_proxmox_context() independently, the worker process
+        # and this process would each generate their own (different) username,
+        # so the user actually created on Proxmox would never match the one
+        # this process later logs in as to create the token.
+        raw_cred = init_proxmox_context()
+        # init_proxmox_context() also carries contextvars.Token objects
+        # (used internally by cleanup_proxmox_context()) which aren't
+        # JSON-serializable and can't be passed as Temporal workflow args --
+        # only the plain string fields are needed downstream.
+        cred = {
+            "username": raw_cred["username"],
+            "password": raw_cred["password"],
+            "token": raw_cred["token"],
+        }
 
-        # Create API token directly for root@pam (no separate user needed)
-        token_id = "devraq-token"
-        token_url = f"{PROXMOX_HOST}/api2/json/access/users/{ROOT_USERNAME}/token/{token_id}"
-
-        # Check if token already exists
-        check = requests.get(token_url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
-        if check.status_code == 200:
-            # Token exists — delete and recreate to get the secret
-            requests.delete(token_url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
-
-        resp = requests.post(
-            token_url,
-            headers=headers,
-            cookies=cookies,
-            data={"privsep": 0, "comment": "devraq automation token"},
-            verify=VERIFY_SSL
-        )
-        resp.raise_for_status()
-        data = resp.json()["data"]
-        full_token = data["full-tokenid"]          # e.g. "root@pam!devraq-token"
-        secret     = data["value"]
-        api_token  = f"{full_token}={secret}"      # e.g. "root@pam!devraq-token=xxxx"
-
-        store_proxmox_user(db, "Administrator", "/", api_token, full_token, secret, cluster_data.name)
+        # These start CreateUserWorkflow / AssignRoleToUserWorkflow via Temporal
+        # (same as the original design) rather than invoking the underlying
+        # @activity.defn functions directly, which is not a supported call path
+        # outside Temporal's own activity execution context.
+        await create_user(cluster_data_dict, ROOT_USERNAME, ROOT_PASSWORD, cred)
+        role = "Administrator"
+        path = "/"
+        await assign_role_to_user(cluster_data_dict, role, path, ROOT_USERNAME, ROOT_PASSWORD, cred)
+        api_token, full_token, secret = create_api_token_newUser(PROXMOX_HOST, cred)
+        store_proxmox_user(db, role, path, api_token, full_token, secret, cluster_data.name, cred)
     except Exception as e:
         db.rollback()
         raise Exception(str(e))
     finally:
         db.close()
+        cleanup_proxmox_context()  # don't leak this cluster's identity into the next one
     
  
 def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
@@ -293,24 +313,31 @@ def get_all_nodes(cluster_data):
         db.close()
  
 def delete_cluster_proxmox(cluster_data, db: Session):
-    cred = init_proxmox_context()
-
     ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if ip.strip()]
     any_ip = random.choice(ip_list) if ip_list else None
     if not any_ip:
         raise Exception("No valid IP found for Proxmox cluster.")
- 
+
+    proxmox_cluster = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_data.name).first()
+    if not proxmox_cluster:
+        return f"Cluster '{cluster_data.name}' not found in the database."
+
     PROXMOX_HOST = f"https://{any_ip}:{cluster_data.port}"
-    api_token = get_api_token(db, cluster_data.name)
-    headers = {
-        "Authorization": f"PVEAPIToken={api_token}",
-        "Content-Type": "application/json"
-    }
-    url = f"{PROXMOX_HOST}/api2/json/access/users/{cred['username']}"
+    # Use root (same as provisioning) to delete the dedicated user, rather
+    # than having the dedicated user delete itself with its own token --
+    # matches how it was created, and doesn't depend on that token still
+    # being valid at delete time.
+    headers, cookies = root_proxmox_login(PROXMOX_HOST, cluster_data.username, cluster_data.password)
+    # Delete the ACTUAL dedicated user this cluster's token belongs to
+    # (stored in our own DB row), not a stale/unrelated cached identity.
+    # Deleting the user also revokes every token that belongs to it.
+    url = f"{PROXMOX_HOST}/api2/json/access/users/{proxmox_cluster.user}"
 
     try:
-        response = requests.delete(url, headers=headers, verify=VERIFY_SSL)
-        # Accept 401/404 errors or "no such user" in the error text
+        response = requests.delete(url, headers=headers, cookies=cookies, verify=VERIFY_SSL)
+        # Accept 401/404 errors or "no such user" in the error text -- the
+        # user may already be gone (e.g. deleted manually on Proxmox), which
+        # shouldn't block cleaning up our own DB record.
         try:
             response.raise_for_status()
         except requests.HTTPError as e:
@@ -320,14 +347,19 @@ def delete_cluster_proxmox(cluster_data, db: Session):
                 raise Exception("Failed to delete user from Proxmox API")
     except Exception as e:
         raise Exception(f"Failed to delete user from Proxmox API: {str(e)}")
- 
-    proxmox_cluster = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_data.name).first()
-    if proxmox_cluster:
-        db.delete(proxmox_cluster)
-        db.commit()
-        return f"Cluster '{cluster_data.name}' deleted successfully."
-    else:
-        return f"Cluster '{cluster_data.name}' not found in the database."
+
+    db.delete(proxmox_cluster)
+    db.commit()
+    return f"Cluster '{cluster_data.name}' deleted successfully."
+
+def get_devraq_metric_server_id(cluster_data):
+    """
+    ID used for the InfluxDB metric server DevRaQ manages on Proxmox. Kept
+    distinct from the bare cluster name so DevRaQ's own integration never
+    collides with, overwrites, or deletes a metric server a customer may
+    have configured themselves on the same cluster.
+    """
+    return f"{cluster_data.name}-devraq"
 
 def add_influxdb_metric_server(cluster_data, payload):
     db = next(get_db())
@@ -337,21 +369,25 @@ def add_influxdb_metric_server(cluster_data, payload):
             "Authorization": f"PVEAPIToken={api_token}",
         }
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{cluster_data.name}"
-        
+        server_id = get_devraq_metric_server_id(cluster_data)
+        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
+
         # Prepare payload: ensure it matches the API schema and remove redundant 'id'
         payload = {k: v for k, v in payload.items()}
         payload.pop("id", None)  # Already in URL
-        
+
         response = requests.post(url, headers=headers, data=payload, verify=False)
-        response.raise_for_status()
+        if not response.ok:
+            raise Exception(f"Proxmox metric server API error ({response.status_code}): {response.text}")
         return response.json()
     finally:
         db.close()
- 
+
 def get_influxdb_metric_server(cluster_data):
     """
-    Get InfluxDB metric server for the given cluster.
+    Get DevRaQ's own InfluxDB metric server for the given cluster (identified
+    by its distinct id) -- never a customer-configured one that may also
+    exist on the same cluster.
     """
     db = next(get_db())
     try:
@@ -361,46 +397,49 @@ def get_influxdb_metric_server(cluster_data):
             "Content-Type": "application/json"
         }
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server"
+        server_id = get_devraq_metric_server_id(cluster_data)
+        detail_url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
         try:
-            response = requests.get(url, headers=headers, verify=False)
-            response.raise_for_status()
-            data = response.json().get("data", [])
+            detail_resp = requests.get(detail_url, headers=headers, verify=False)
+            if detail_resp.status_code == 404:
+                return {"error": "No DevRaQ InfluxDB metric server found for the cluster."}
+            detail_resp.raise_for_status()
+            return detail_resp.json().get("data", {})
         except Exception as e:
-            return {"error": "Failed to fetch metric servers from Proxmox API."}
- 
-        if isinstance(data, list) and data:
-            for server in data:
-                if server.get("type") == "influxdb":
-                    server_id = server.get("id")
-                    if server_id:
-                        detail_url = f"{url}/{server_id}"
-                        try:
-                            detail_resp = requests.get(detail_url, headers=headers, verify=False)
-                            detail_resp.raise_for_status()
-                            return detail_resp.json().get("data", {})
-                        except Exception as e:
-                            return {"error": f"Failed to fetch details for metric server ID {server_id}."}
-            return {"error": "No InfluxDB metric server ID found in the cluster."}
-        else:
-            return {"error": "No InfluxDB metric server found for the cluster."}
+            return {"error": f"Failed to fetch DevRaQ metric server details: {e}"}
     finally:
         db.close()
  
-def create_and_get_metric_server(cluster_data):   
+def get_influxdb_env_defaults():
     parsed_url = urlparse(INFLUXDB_URL)
-    influxdb_payload = {
-        "type": "influxdb",
-        "id": cluster_data.name,
+    return {
         "server": parsed_url.hostname,
         "port": int(INFLUXDB_PORT or (443 if parsed_url.scheme == "https" else 8086)),
         "influxdbproto": parsed_url.scheme,
         "organization": INFLUXDB_ORG,
         "bucket": INFLUXDB_BUCKET,
         "token": INFLUXDB_TOKEN,
+    }
+
+def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None):
+    defaults = get_influxdb_env_defaults()
+    overrides = overrides or {}
+    # Field name "influxdbproto" confirmed against Proxmox VE 9.2.2's own schema
+    # (`pvesh usage cluster/metrics/server/{id} --verbose`). If this ever starts
+    # rejecting requests again after a Proxmox upgrade, re-run that command to
+    # get the current schema before assuming the field name changed.
+    influxdb_payload = {
+        "type": "influxdb",
+        "id": get_devraq_metric_server_id(cluster_data),
+        "server": overrides.get("server") or defaults["server"],
+        "port": int(overrides.get("port") or defaults["port"]),
+        "influxdbproto": overrides.get("influxdbproto") or defaults["influxdbproto"],
+        "organization": overrides.get("organization") or defaults["organization"],
+        "bucket": overrides.get("bucket") or defaults["bucket"],
+        "token": overrides.get("token") or defaults["token"],
         "verify-certificate": 0,
     }
-    
+
     add_influxdb_metric_server(cluster_data, influxdb_payload)
     metric_info = get_influxdb_metric_server(cluster_data)
     return metric_info
@@ -446,7 +485,7 @@ def delete_influxdb_metric_server(cluster_data):
         }
 
         PROXMOX_HOST = getting_Proxmox_host(cluster_data)
-        server_id = cluster_data.name
+        server_id = get_devraq_metric_server_id(cluster_data)
         url = f"{PROXMOX_HOST}/api2/json/cluster/metrics/server/{server_id}"
         try:
             response = requests.delete(url, headers=headers, verify=False)

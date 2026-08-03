@@ -290,22 +290,26 @@ async def assign_user_role_activity(request :dict):
     db: Session = SessionLocal()
     try:
         try:
-            users = await service.get_userList_from_keycloak()
-            if not any(user["username"] == request.get("username")[0] for user in users):
+            username = request.get("username")[0]
+            role_name = request.get("role")
+
+            users = await service.get_userList_from_keycloak(0, 100, username)
+            matched_user = next((user for user in users if user["username"] == username), None)
+            if not matched_user:
                 logger.info("User not found in Keycloak")
                 return {"status_code":404, "detail":"User not found in Keycloak"}
-     
-            
-            role_entry = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
+
+            role_entry = db.query(RBAC).filter(RBAC.role == role_name).first()
             if not role_entry:
-                logger.info("Role not found")  
+                logger.info("Role not found")
                 return {"status_code":404, "detail":"Role not found"}
-     
-            
-            if request.get("username")[0] not in role_entry.users:
-                
-                role_entry.users = role_entry.users + request.get("username")
-     
+
+            keycloak_role = await service.get_role_by_name(role_name)
+            await service.assign_role(matched_user["userid"], keycloak_role["id"], role_name)
+
+            if username not in role_entry.users:
+                role_entry.users = role_entry.users + [username]
+
             db.commit()
             logger.info("User found in role and updated also")
             return {
@@ -377,25 +381,30 @@ async def get_user_permissions_activity(workflow_input: dict):
 async def delete_role_from_user_activity(request: dict):
     db: Session = SessionLocal()
     try:
-        users = await service.get_userList_from_keycloak()
-        if not any(user["username"] == request.get("username")[0] for user in users):
-            logger.info("User not found in Keyclock")  
+        username = request.get("username")[0]
+        role_name = request.get("role")
+
+        users = await service.get_userList_from_keycloak(0, 100, username)
+        matched_user = next((user for user in users if user["username"] == username), None)
+        if not matched_user:
+            logger.info("User not found in Keyclock")
             return {"code":404, "msg":"User not found"}
-    
-        
-        role_entry = db.query(RBAC).filter(RBAC.role == request.get("role")).first()
+
+        role_entry = db.query(RBAC).filter(RBAC.role == role_name).first()
         if not role_entry:
-            logger.info("Role not found")  
+            logger.info("Role not found")
             return {"code":404, "msg":"Role not found"}
 
-        
-        if request.get("username")[0] in role_entry.users:
-            role_entry.users = [u for u in role_entry.users if u != request.get("username")[0]]
+        keycloak_role = await service.get_role_by_name(role_name)
+        await service.remove_role(matched_user["userid"], keycloak_role["id"], role_name)
+
+        if username in role_entry.users:
+            role_entry.users = [u for u in role_entry.users if u != username]
             db.commit()
             logger.info("User removed from role and updated also")
         return {
             "code": 200,
-            "msg": f"""Role '{request.get("role")}' successfully removed from user '{request.get("username")[0]}'"""
+            "msg": f"""Role '{role_name}' successfully removed from user '{username}'"""
         }
     except Exception as e:
         db.rollback()
