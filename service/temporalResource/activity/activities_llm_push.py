@@ -1,21 +1,18 @@
 """
-LLM Push Activity  (SSH-free, HTTP wrapper)
+LLM Push Activity  (K8s-free, direct OCI push)
 
 Flow:
   1. DB se library item + harbor registry record lo
-  2. GGUF / template metadata nikalo (local file read)
-  3. File → K8s exec stdin stream → image-push-tool pod /data/
-  4. HTTP POST /push/artifact → push-image wrapper → oras → Harbor
+  2. GGUF / template metadata nikalo (local file read + ZIP mein version_metadata.json)
+  3. OCI annotations build karo (version_metadata.json ke SAARE fields)
+  4. Direct OCI Distribution Spec se Harbor pe push karo (no wrapper, no pod)
   5. Harbor REST API se repository description set karo
   6. DB update: harbor_image, version, harbor_owner, push_status=pushed
-  7. Pod + temp file cleanup
 """
 
-import io
 import logging
 import os
 import re
-import tarfile
 import tempfile
 import uuid
 from urllib.parse import urlparse
@@ -30,17 +27,11 @@ from temporalio import activity
 from db_configuration.config import SessionLocal
 from models.library_model import LibraryItem
 from models.kubernetes_deploy_model import KubernetesDeployment
-from models.kubernetes_model import KubernetesCluster
 
 logger = logging.getLogger(__name__)
 
 LLM_PUSH_TASK_QUEUE = "llm-push-queue"
 
-_IMAGE_PUSH_NS       = os.getenv("IMAGE_PUSH_TOOL_NS",    "thinkcloud")
-_IMAGE_PUSH_LABEL    = os.getenv("IMAGE_PUSH_TOOL_LABEL", "app=image-push-tool")
-_STACK_CLUSTER_ID    = int(os.getenv("STACK_CLUSTER_ID", "0"))
-_STACK_KUBECONFIG    = os.getenv("STACK_KUBECONFIG", "").strip()
-_STACK_CLUSTER_IP    = os.getenv("STACK_CLUSTER_IP",  "").strip()
 _PUSH_IMAGE_BASE_URL = os.getenv("PUSH_IMAGE_BASE_URL", "").rstrip("/")
 
 
@@ -315,178 +306,6 @@ def _set_harbor_repo_description(
             logger.info(f"[LLMPush] Harbor repo description set: {resp.status}")
     except Exception as exc:
         logger.warning(f"[LLMPush] Harbor description set failed (non-fatal): {exc}")
-
-
-# ── K8s helpers (stack cluster — image-push-tool pod) ────────────────────────
-
-def _build_k8s_client(cluster: KubernetesCluster):
-    """kubeconfig se kubernetes ApiClient banao (hostname → IP replace)."""
-    import kubernetes
-    import yaml
-
-    kc_data = yaml.safe_load(cluster.kubeconfig)
-    for c in kc_data.get("clusters", []):
-        server = c.get("cluster", {}).get("server", "")
-        if server:
-            c["cluster"]["server"] = re.sub(
-                r"(https?://)([^:/]+)(:\d+)?",
-                lambda m: m.group(1) + cluster.control_ip + (m.group(3) or ""),
-                server,
-            )
-    kc_fd, kc_path = tempfile.mkstemp(suffix=".yaml")
-    try:
-        with os.fdopen(kc_fd, "w") as f:
-            import yaml as _y
-            _y.dump(kc_data, f)
-        cfg = kubernetes.client.Configuration()
-        kubernetes.config.load_kube_config(config_file=kc_path, client_configuration=cfg)
-        cfg.verify_ssl = False
-        return kubernetes.client.ApiClient(configuration=cfg)
-    finally:
-        try:
-            os.unlink(kc_path)
-        except OSError:
-            pass
-
-
-def _build_stack_client(db):
-    """Single-node K8s client — STACK_CLUSTER_ID / STACK_KUBECONFIG / in-cluster."""
-    import kubernetes
-    import yaml
-
-    if _STACK_CLUSTER_ID:
-        stack_cluster = db.query(KubernetesCluster).filter(
-            KubernetesCluster.id == _STACK_CLUSTER_ID
-        ).first()
-        if not stack_cluster or not stack_cluster.kubeconfig:
-            raise RuntimeError(f"STACK_CLUSTER_ID={_STACK_CLUSTER_ID} DB mein nahi mila")
-        return _build_k8s_client(stack_cluster)
-
-    if _STACK_KUBECONFIG:
-        with open(_STACK_KUBECONFIG, "r") as f:
-            kc_data = yaml.safe_load(f)
-        if _STACK_CLUSTER_IP:
-            for c in kc_data.get("clusters", []):
-                server = c.get("cluster", {}).get("server", "")
-                if server:
-                    c["cluster"]["server"] = re.sub(
-                        r"(https?://)([^:/]+)(:\d+)?",
-                        lambda m: m.group(1) + _STACK_CLUSTER_IP + (m.group(3) or ""),
-                        server,
-                    )
-        kc_fd, kc_path = tempfile.mkstemp(suffix=".yaml")
-        try:
-            with os.fdopen(kc_fd, "w") as f:
-                yaml.dump(kc_data, f)
-            cfg = kubernetes.client.Configuration()
-            kubernetes.config.load_kube_config(config_file=kc_path, client_configuration=cfg)
-            cfg.verify_ssl = False
-            return kubernetes.client.ApiClient(configuration=cfg)
-        finally:
-            try:
-                os.unlink(kc_path)
-            except OSError:
-                pass
-
-    # Production: backend pod in-cluster
-    try:
-        kubernetes.config.load_incluster_config()
-        return kubernetes.client.ApiClient()
-    except kubernetes.config.ConfigException:
-        raise RuntimeError(
-            "STACK_KUBECONFIG/STACK_CLUSTER_ID set nahi hai aur in-cluster config bhi nahi mili."
-        )
-
-
-def _get_image_push_pod(api_client) -> str:
-    """image-push-tool pod ka naam nikalo (Running wala)."""
-    import kubernetes
-
-    v1   = kubernetes.client.CoreV1Api(api_client)
-    pods = v1.list_namespaced_pod(_IMAGE_PUSH_NS, label_selector=_IMAGE_PUSH_LABEL)
-    running = [p for p in pods.items if p.status.phase == "Running"]
-    if not running:
-        raise RuntimeError(
-            f"image-push-tool pod Running nahi — ns={_IMAGE_PUSH_NS} label={_IMAGE_PUSH_LABEL}"
-        )
-    return running[0].metadata.name
-
-
-def _exec_in_pod(api_client, pod_name: str, cmd: str, timeout: int = 120) -> tuple:
-    """Pod mein /bin/sh -c cmd run karo. Internal helper only."""
-    import kubernetes
-    from kubernetes.stream import stream
-
-    v1   = kubernetes.client.CoreV1Api(api_client)
-    resp = stream(
-        v1.connect_get_namespaced_pod_exec,
-        pod_name, _IMAGE_PUSH_NS,
-        command=["/bin/sh", "-c", cmd],
-        stderr=True, stdin=False, stdout=True, tty=False,
-        _preload_content=False, _request_timeout=timeout,
-    )
-    out_buf = []
-    while resp.is_open():
-        resp.update(timeout=1)
-        if resp.peek_stdout():
-            out_buf.append(resp.read_stdout())
-        if resp.peek_stderr():
-            out_buf.append(resp.read_stderr())
-    resp.close()
-    try:
-        rc = resp.returncode or 0
-    except Exception:
-        rc = 0  # kubernetes ws_client bug — ERROR_CHANNEL returns None
-    return rc, "".join(out_buf)
-
-
-def _copy_file_to_pod(api_client, pod_name: str, local_path: str, remote_dir: str) -> str:
-    """
-    File ko pod mein copy karo — kubectl cp equivalent.
-    tar stream via K8s exec stdin.
-    Returns remote file path.
-    """
-    import kubernetes
-    from kubernetes.stream import stream
-
-    _exec_in_pod(api_client, pod_name, f"mkdir -p {remote_dir}", timeout=15)
-
-    filename  = os.path.basename(local_path)
-    file_size = os.path.getsize(local_path)
-
-    buf  = io.BytesIO()
-    info = tarfile.TarInfo(name=filename)
-    info.size = file_size
-    info.mode = 0o644
-    with tarfile.open(fileobj=buf, mode="w") as tar:
-        with open(local_path, "rb") as fh:
-            tar.addfile(info, fh)
-    buf.seek(0)
-
-    v1   = kubernetes.client.CoreV1Api(api_client)
-    resp = stream(
-        v1.connect_get_namespaced_pod_exec,
-        pod_name, _IMAGE_PUSH_NS,
-        command=["tar", "xmf", "-", "-C", remote_dir],
-        stdin=True, stdout=True, stderr=True, tty=False,
-        _preload_content=False, _request_timeout=3600,
-    )
-    CHUNK = 4 * 1024 * 1024
-    while True:
-        chunk = buf.read(CHUNK)
-        if not chunk:
-            break
-        resp.write_stdin(chunk)
-    resp.close()
-    try:
-        rc = resp.returncode or 0
-    except Exception:
-        rc = 0
-    if rc != 0:
-        raise RuntimeError(f"File copy to pod failed (rc={rc})")
-
-    logger.info(f"[LLMPush] Copied {file_size:,} bytes → pod:{remote_dir}/{filename}")
-    return f"{remote_dir}/{filename}"
 
 
 # ── OCI annotations builder ───────────────────────────────────────────────────
@@ -777,12 +596,8 @@ def llm_push_activity(params: dict) -> dict:
 
         parsed      = urlparse(harbor_dep.harbor_url)
         harbor_host = parsed.netloc or parsed.path.strip("/")
-        harbor_user = item.harbor_user or "admin"
-        harbor_pass = (
-            os.getenv("HARBOR_ADMIN_PASSWORD", "").strip()
-            or item.harbor_pass
-            or "Harbor12345"
-        )
+        harbor_user = harbor_dep.harbor_user or item.harbor_user or "admin"
+        harbor_pass = harbor_dep.harbor_pass or item.harbor_pass or "Harbor12345"
         project = (item.harbor_project or "library").strip("/")
 
         logger.info(f"[LLMPush] harbor_host={harbor_host} project={project}")

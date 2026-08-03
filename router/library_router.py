@@ -63,6 +63,7 @@ async def upload_library_file(
     return await library_controller.upload_library_file(item_id, request, db)
 
 
+
 @library_router.get("/list", response_model=APIResponse[Any])
 def list_library_items(
     type:      Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | ..."),

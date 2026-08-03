@@ -297,43 +297,30 @@ async def upload_library_file(
     except Exception as _ze:
         logger.warning(f"[Library] ZIP metadata read (non-fatal): {_ze}")
 
-    # ── container / llm_model / llm_template: WebDAV nahi, Harbor push ─────────
-    if record.type in _HARBOR_PUSH_TYPES:
+    # ── llm_model / llm_template: temp path pass karo, direct OCI push ──────────
+    if record.type in ("llm_model", "llm_template"):
         record.file_path    = temp_path
         record.file_size    = bytes_written
         record.progress_pct = 100
         record.status       = "ready"
         db.commit()
 
-        # llm_model + llm_template → LLMPushWorkflow (ORAS)
-        # container → HarborPushWorkflow (skopeo, Docker image)
-        is_llm = record.type in ("llm_model", "llm_template")
-        if is_llm:
-            push_workflow_id = f"llm-push-{item_id}-{uuid.uuid4().hex[:8]}"
-            wf_class         = LLMPushWorkflow
-            task_queue       = LLM_PUSH_TASK_QUEUE
-            action_label     = "LLM-Push"
-        else:
-            push_workflow_id = f"harbor-push-{item_id}-{uuid.uuid4().hex[:8]}"
-            wf_class         = HarborPushWorkflow
-            task_queue       = HARBOR_PUSH_TASK_QUEUE
-            action_label     = "Harbor-Push"
-
+        push_workflow_id = f"llm-push-{item_id}-{uuid.uuid4().hex[:8]}"
         try:
             temporal_client = await TemporalClientManager.get_temporal_client()
             await temporal_client.start_workflow(
-                wf_class.run,
+                LLMPushWorkflow.run,
                 args=[{"item_id": item_id, "temp_path": temp_path}],
                 id=push_workflow_id,
-                task_queue=task_queue,
-                search_attributes=_make_search_attrs(record.name, action_label, username),
+                task_queue=LLM_PUSH_TASK_QUEUE,
+                search_attributes=_make_search_attrs(record.name, "LLM-Push", username),
             )
             record.push_workflow_id = push_workflow_id
             record.push_status      = "pushing"
             db.commit()
-            logger.info(f"[Library] {action_label} triggered: wf={push_workflow_id}")
+            logger.info(f"[Library] LLM-Push triggered: wf={push_workflow_id}")
         except Exception as exc:
-            logger.error(f"[Library] {action_label} workflow start failed: {exc}")
+            logger.error(f"[Library] LLM-Push workflow start failed: {exc}")
             try:
                 os.remove(temp_path)
             except OSError:
@@ -341,17 +328,79 @@ async def upload_library_file(
             record.push_status = "failed"
             record.push_error  = str(exc)
             db.commit()
-            raise HTTPException(status_code=500, detail=f"{action_label} workflow start failed: {exc}")
+            raise HTTPException(status_code=500, detail=f"LLM-Push workflow start failed: {exc}")
 
-        return response_format.success_response(200, f"File received — {action_label} started", {
+        return response_format.success_response(200, "File received — LLM-Push started", {
             **_item_to_dict(record),
             "push_workflow_id": push_workflow_id,
         })
 
-    # ── Baki sab types: temp file → WebDAV → PV ──────────────────────────────
+    # ── container: WebDAV (STORAGE_BASE_URL via APISIX) pe upload, pod path set karo ──
+    if record.type == "container":
+        storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+        subdir      = TYPE_SUBDIR.get(record.type, "general")
+        pod_path    = f"/data/library/{subdir}/{record.file_name}"
+        webdav_url  = f"{storage_base}/{subdir}/{record.file_name}"
+
+        def _put_container_to_webdav():
+            with open(temp_path, "rb") as f:
+                return _req.put(
+                    webdav_url, data=f,
+                    headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
+                    verify=False, timeout=None,
+                )
+
+        try:
+            resp = await asyncio.to_thread(_put_container_to_webdav)
+            if resp.status_code not in (200, 201, 204):
+                raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
+        except Exception as exc:
+            logger.error(f"[Library] Container WebDAV upload failed item={item_id}: {exc}")
+            raise HTTPException(status_code=500, detail=f"Upload failed — WebDAV error: {exc}")
+        finally:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+        logger.info(f"[Library] Container uploaded → {webdav_url} (pod: {pod_path})")
+        record.file_path    = pod_path
+        record.file_size    = bytes_written
+        record.progress_pct = 100
+        record.status       = "ready"
+        db.commit()
+
+        push_workflow_id = f"harbor-push-{item_id}-{uuid.uuid4().hex[:8]}"
+        try:
+            temporal_client = await TemporalClientManager.get_temporal_client()
+            await temporal_client.start_workflow(
+                HarborPushWorkflow.run,
+                args=[{"item_id": item_id, "temp_path": pod_path}],
+                id=push_workflow_id,
+                task_queue=HARBOR_PUSH_TASK_QUEUE,
+                search_attributes=_make_search_attrs(record.name, "Harbor-Push", username),
+            )
+            record.push_workflow_id = push_workflow_id
+            record.push_status      = "pushing"
+            db.commit()
+            logger.info(f"[Library] Harbor-Push triggered: wf={push_workflow_id}")
+        except Exception as exc:
+            logger.error(f"[Library] Harbor-Push workflow start failed: {exc}")
+            record.push_status = "failed"
+            record.push_error  = str(exc)
+            db.commit()
+            raise HTTPException(status_code=500, detail=f"Harbor-Push workflow start failed: {exc}")
+
+        return response_format.success_response(200, "File received — Harbor-Push started", {
+            **_item_to_dict(record),
+            "push_workflow_id": push_workflow_id,
+        })
+
+    # ── Baki sab types: temp file → WebDAV (internal URL) → PV ──────────────
     subdir       = TYPE_SUBDIR.get(record.type, "general")
     storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
-    public_url   = f"{storage_base}/{subdir}/{record.file_name}"
+    # PUT + file_path dono STORAGE_BASE_URL se — APISIX pe client_max_body_size badha rakha hai
+    public_url = f"{storage_base}/{subdir}/{record.file_name}"
 
     def _put_to_webdav():
         with open(temp_path, "rb") as f:
@@ -402,6 +451,250 @@ async def upload_library_file(
         **_item_to_dict(record),
         "workflow_id": workflow_id,
     })
+
+
+async def upload_library_direct(request: Request, db: Session):
+    """
+    Single-call upload: metadata X-Library-Metadata header mein, file raw body mein.
+
+    Header example:
+      X-Library-Metadata: {"file_name":"harbor.zip","type":"harbor_template","metadata":{...}}
+
+    Ye create_library_item + upload_library_file ko ek hi request mein karta hai.
+    """
+    import json as _json
+    import tempfile
+    import requests as _req
+
+    username = _extract_username(request)
+
+    # ── Metadata header parse karo ────────────────────────────────────────────
+    meta_header = request.headers.get("X-Library-Metadata", "").strip()
+    if not meta_header:
+        raise HTTPException(status_code=400, detail="X-Library-Metadata header required (JSON string)")
+    try:
+        params = _json.loads(meta_header)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"X-Library-Metadata JSON parse failed: {e}")
+
+    file_name          = (params.get("file_name") or "").strip()
+    item_type          = (params.get("type") or "general").strip()
+    item_name          = (params.get("name") or "").strip()
+    item_version       = params.get("version")
+    harbor_registry_id = params.get("harbor_registry_id")
+    harbor_owner       = params.get("harbor_owner")
+    metadata           = params.get("metadata")  # nested dict — annotations ke liye
+
+    if not file_name:
+        raise HTTPException(status_code=400, detail="file_name required in X-Library-Metadata")
+    if item_type not in LIBRARY_TYPES:
+        raise HTTPException(status_code=400, detail=f"Invalid type '{item_type}'. Valid: {', '.join(sorted(LIBRARY_TYPES))}")
+
+    total_size = int(request.headers.get("content-length") or 0)
+
+    # ── DB record banao (create_library_item logic same) ─────────────────────
+    from models.kubernetes_deploy_model import KubernetesDeployment as _KDep
+
+    _AUTO_NAME_TYPES = _HARBOR_PUSH_TYPES | {"harbor_template", "general", "base_os"}
+    effective_name = item_name or os.path.splitext(file_name)[0]
+    if not effective_name and item_type not in _AUTO_NAME_TYPES:
+        raise HTTPException(status_code=400, detail="'name' required for this type")
+
+    k8s_cluster_id = None
+    if item_type in _HARBOR_PUSH_TYPES:
+        if not harbor_registry_id:
+            raise HTTPException(status_code=400, detail=f"harbor_registry_id required for type '{item_type}'")
+        harbor_dep = db.query(_KDep).filter(_KDep.id == harbor_registry_id).first()
+        if not harbor_dep:
+            raise HTTPException(status_code=404, detail=f"Harbor registry id={harbor_registry_id} not found")
+        k8s_cluster_id = harbor_dep.cluster_id
+
+    effective_version = None if (item_type in _HARBOR_PUSH_TYPES and harbor_registry_id) else item_version
+
+    _meta_json = _json.dumps(metadata, ensure_ascii=False) if metadata else None
+    subdir   = TYPE_SUBDIR.get(item_type, "general")
+    dest_path = f"{LIBRARY_BASE_PATH}/{subdir}/{file_name}"
+
+    record = LibraryItem(
+        name               = effective_name,
+        type               = item_type,
+        version            = effective_version,
+        file_name          = file_name,
+        file_path          = dest_path,
+        file_size          = total_size or None,
+        progress_pct       = 0,
+        status             = "uploading",
+        harbor_registry_id = harbor_registry_id,
+        k8s_cluster_id     = k8s_cluster_id,
+        harbor_owner       = harbor_owner,
+        push_status        = "pending" if harbor_registry_id else None,
+        display_name       = str(metadata.get("display_name", "")).strip() or None if metadata else None,
+        description        = str(metadata.get("description", "")).strip() or None if metadata else None,
+        category           = str(metadata.get("category", "")).strip() or None if metadata else None,
+        metadata_json      = _meta_json,
+    )
+    db.add(record)
+    db.commit()
+    db.refresh(record)
+    item_id = record.id
+    logger.info(f"[Library] Direct upload: item={item_id} type={item_type} file={file_name}")
+
+    # ── File stream → temp ────────────────────────────────────────────────────
+    _td = os.getenv("STORAGE_TEMP_DIR", "")
+    temp_dir = _td if (_td and os.path.isdir(_td)) else None
+    temp_fd, temp_path = tempfile.mkstemp(prefix=f"lib_{item_id}_", suffix=f"_{file_name}", dir=temp_dir)
+    bytes_written = 0
+    last_bucket   = -1
+
+    try:
+        with os.fdopen(temp_fd, "wb") as f:
+            async for chunk in request.stream():
+                f.write(chunk)
+                bytes_written += len(chunk)
+                if total_size > 0:
+                    pct    = min(int(bytes_written / total_size * 100), 49)
+                    bucket = (pct // 5) * 5
+                    if bucket > last_bucket:
+                        last_bucket         = bucket
+                        record.progress_pct = bucket
+                        db.commit()
+    except Exception as exc:
+        logger.error(f"[Library] Direct upload disk write failed item={item_id}: {exc}")
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        db.delete(record)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Upload failed: {exc}")
+
+    logger.info(f"[Library] Direct upload received {bytes_written:,} bytes → {temp_path}")
+    record.progress_pct = 50
+    db.commit()
+
+    # ── ZIP metadata parse karo (name/version/owner auto-set) ────────────────
+    try:
+        import zipfile as _zf
+        if _zf.is_zipfile(temp_path):
+            with _zf.ZipFile(temp_path, "r") as _z:
+                _mf = next(
+                    (n for n in _z.namelist() if os.path.basename(n) == "version_metadata.json"),
+                    None,
+                )
+                if _mf:
+                    _zmeta = _json.loads(_z.open(_mf).read().decode("utf-8"))
+                    if _zmeta.get("artifact_name"):
+                        record.name = _zmeta["artifact_name"]
+                    if _zmeta.get("version"):
+                        record.version = _zmeta["version"]
+                    _owner = _zmeta.get("owner") or _zmeta.get("owner_name")
+                    if _owner and not record.harbor_owner:
+                        record.harbor_owner = _owner
+                    db.commit()
+    except Exception as _ze:
+        logger.warning(f"[Library] Direct upload ZIP metadata (non-fatal): {_ze}")
+
+    # ── Phase 2: type ke hisab se file finalize karo ─────────────────────────
+    # llm_model / llm_template → local temp path, direct OCI push
+    if item_type in ("llm_model", "llm_template"):
+        record.file_path    = temp_path
+        record.file_size    = bytes_written
+        record.progress_pct = 100
+        record.status       = "ready"
+        db.commit()
+        push_wf_id = f"llm-push-{item_id}-{uuid.uuid4().hex[:8]}"
+        try:
+            tc = await TemporalClientManager.get_temporal_client()
+            await tc.start_workflow(
+                LLMPushWorkflow.run,
+                args=[{"item_id": item_id, "temp_path": temp_path}],
+                id=push_wf_id, task_queue=LLM_PUSH_TASK_QUEUE,
+                search_attributes=_make_search_attrs(record.name, "LLM-Push", username),
+            )
+            record.push_workflow_id = push_wf_id
+            record.push_status      = "pushing"
+            db.commit()
+        except Exception as exc:
+            try: os.remove(temp_path)
+            except OSError: pass
+            record.push_status = "failed"; record.push_error = str(exc); db.commit()
+            raise HTTPException(status_code=500, detail=f"LLM-Push start failed: {exc}")
+        return response_format.success_response(200, "Direct upload done — LLM-Push started", _item_to_dict(record))
+
+    # container → WebDAV (STORAGE_BASE_URL via APISIX), pod path
+    if item_type == "container":
+        storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+        pod_path   = f"/data/library/{subdir}/{file_name}"
+        webdav_url = f"{storage_base}/{subdir}/{file_name}"
+
+        def _put_c():
+            with open(temp_path, "rb") as f:
+                return _req.put(webdav_url, data=f,
+                    headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
+                    verify=False, timeout=None)
+        try:
+            r = await asyncio.to_thread(_put_c)
+            if r.status_code not in (200, 201, 204):
+                raise RuntimeError(f"WebDAV PUT {r.status_code}: {r.text[:200]}")
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"WebDAV upload failed: {exc}")
+        finally:
+            try: os.remove(temp_path)
+            except OSError: pass
+
+        record.file_path = pod_path; record.file_size = bytes_written
+        record.progress_pct = 100; record.status = "ready"; db.commit()
+
+        push_wf_id = f"harbor-push-{item_id}-{uuid.uuid4().hex[:8]}"
+        try:
+            tc = await TemporalClientManager.get_temporal_client()
+            await tc.start_workflow(
+                HarborPushWorkflow.run,
+                args=[{"item_id": item_id, "temp_path": pod_path}],
+                id=push_wf_id, task_queue=HARBOR_PUSH_TASK_QUEUE,
+                search_attributes=_make_search_attrs(record.name, "Harbor-Push", username),
+            )
+            record.push_workflow_id = push_wf_id; record.push_status = "pushing"; db.commit()
+        except Exception as exc:
+            record.push_status = "failed"; record.push_error = str(exc); db.commit()
+            raise HTTPException(status_code=500, detail=f"Harbor-Push start failed: {exc}")
+        return response_format.success_response(200, "Direct upload done — Harbor-Push started", _item_to_dict(record))
+
+    # ── Baki sab types: WebDAV (STORAGE_BASE_URL) ────────────────────────────
+    storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+    public_url   = f"{storage_base}/{subdir}/{file_name}"
+
+    def _put_to_webdav():
+        with open(temp_path, "rb") as f:
+            return _req.put(public_url, data=f,
+                headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
+                verify=False, timeout=None)
+    try:
+        resp = await asyncio.to_thread(_put_to_webdav)
+        if resp.status_code not in (200, 201, 204):
+            raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
+    except Exception as exc:
+        logger.error(f"[Library] Direct upload WebDAV failed item={item_id}: {exc}")
+        raise HTTPException(status_code=500, detail=f"WebDAV error: {exc}")
+    finally:
+        try: os.remove(temp_path)
+        except OSError: pass
+
+    workflow_id = f"library-upload-{item_id}-{uuid.uuid4().hex[:8]}"
+    record.file_path = public_url; record.file_size = bytes_written
+    record.progress_pct = 100; record.status = "ready"; record.workflow_id = workflow_id; db.commit()
+    try:
+        tc = await TemporalClientManager.get_temporal_client()
+        await tc.start_workflow(
+            LibraryUploadWorkflow.run,
+            args=[{"item_id": item_id, "total_size": bytes_written}],
+            id=workflow_id, task_queue=LIBRARY_TASK_QUEUE,
+            search_attributes=_make_search_attrs(record.name, "Library-Upload", username),
+        )
+    except Exception as exc:
+        logger.warning(f"[Library] Direct upload Temporal failed (non-fatal): {exc}")
+
+    return response_format.success_response(200, "Direct upload done", _item_to_dict(record))
 
 
 def _deployment_summary(job: LXCRestoreJob) -> dict:
