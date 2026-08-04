@@ -67,7 +67,7 @@ def _webdav_upload_file(local_path: str, uid: str) -> tuple:
     """
     storage_url = _STORAGE_BASE_URL or _STORAGE_INTERNAL_URL
     if not storage_url:
-        raise RuntimeError("STORAGE_BASE_URL env var set nahi hai")
+        raise RuntimeError("STORAGE_BASE_URL env var is not set")
     fname       = os.path.basename(local_path)
     remote_name = f"harbor-push-{uid}-{fname}"
     upload_url  = f"{storage_url}/{remote_name}"
@@ -90,7 +90,7 @@ def _webdav_upload_dir(local_dir: str, uid: str) -> tuple:
     Returns: (pod_dir_path, cleanup_url)
     """
     if not _STORAGE_INTERNAL_URL:
-        raise RuntimeError("STORAGE_INTERNAL_URL env var set nahi hai")
+        raise RuntimeError("STORAGE_INTERNAL_URL env var is not set")
     dir_name = f"harbor-push-{uid}"
     base_url = f"{_STORAGE_INTERNAL_URL}/{dir_name}"
     requests.request("MKCOL", base_url, timeout=30, verify=False)
@@ -257,7 +257,7 @@ def _push_image_via_api(
 ) -> None:
     """POST → push-image wrapper → skopeo → Harbor."""
     if not _PUSH_IMAGE_BASE_URL:
-        raise RuntimeError("PUSH_IMAGE_BASE_URL env var set nahi hai")
+        raise RuntimeError("PUSH_IMAGE_BASE_URL env var is not set")
     payload = {
         "harbor_url":  harbor_host,
         "username":    harbor_user,
@@ -319,7 +319,7 @@ def harbor_push_activity(params: dict) -> dict:
         if not temp_path:
             raise RuntimeError("file_path not set in DB")
         if not item.harbor_registry_id:
-            raise RuntimeError("harbor_registry_id not set — Harbor instance select karo")
+            raise RuntimeError("harbor_registry_id not set — please select a Harbor instance")
 
         harbor_dep = db.query(KubernetesDeployment).filter(
             KubernetesDeployment.id == item.harbor_registry_id
@@ -344,7 +344,7 @@ def harbor_push_activity(params: dict) -> dict:
         if not meta["image_owner"]:
             meta["image_owner"] = _sanitize(item.harbor_project or "library")
             logger.warning(
-                f"[HarborPush] image_owner nahi mila — defaulting to '{meta['image_owner']}'. "
+                f"[HarborPush] image_owner not found — defaulting to '{meta['image_owner']}'. "
                 "Docker tar mein proper RepoTag rakho ya upload request mein harbor_owner pass karo."
             )
 

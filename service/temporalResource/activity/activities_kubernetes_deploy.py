@@ -181,7 +181,7 @@ def _extract_yaml_files(zip_path: str, manifest_path: str, apply_order: List[str
             all_yaml[bn] = zf.read(name).decode("utf-8")
 
     if not all_yaml:
-        raise RuntimeError(f"ZIP mein koi YAML nahi mila (hint: {manifest_path})")
+        raise RuntimeError(f"No YAML found in ZIP (hint: {manifest_path})")
 
     ordered, seen = [], set()
     for pattern in apply_order:
@@ -802,7 +802,7 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
             if not cluster:
                 raise RuntimeError(f"KubernetesCluster id={deploy_rec.cluster_id} not found")
             if not cluster.kubeconfig:
-                raise RuntimeError("kubeconfig empty — K8s cluster settings mein add karo")
+                raise RuntimeError("kubeconfig is empty — please add it in K8s cluster settings")
             kubeconfig_yaml = cluster.kubeconfig
             if not node_ip:
                 node_ip = deploy_rec.node_ip or cluster.control_ip

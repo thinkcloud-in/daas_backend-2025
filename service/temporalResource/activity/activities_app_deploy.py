@@ -260,7 +260,7 @@ def _configure_containerd_per_node(
         pass
 
     if not all_succeeded:
-        raise RuntimeError("containerd patch pods timeout (3 min) — nodes configure nahi hue")
+        raise RuntimeError("containerd patch pods timed out (3 min) — nodes not configured")
 
     logger.info(f"[AppDeploy] All {len(node_names)} nodes containerd configured")
 

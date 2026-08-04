@@ -29,6 +29,16 @@ def list_llm_inference_jobs(
     return llm_inference_v2_controller.list_llm_inference_jobs(db, page, page_size)
 
 
+@llm_inference_v2_router.get("/deployed", response_model=APIResponse[Any])
+def list_deployed_llm_jobs(
+    page:      int = Query(1,  ge=1,         description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Items per page"),
+    db: Session = Depends(get_db),
+):
+    """List only successfully deployed private LLMs (status=running). Returns minimal fields for selection UI."""
+    return llm_inference_v2_controller.list_deployed_llm_jobs(db, page, page_size)
+
+
 @llm_inference_v2_router.get("/list-private-llm/{job_id}", response_model=APIResponse[Any])
 def get_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
     return llm_inference_v2_controller.get_llm_inference_job(job_id, db)

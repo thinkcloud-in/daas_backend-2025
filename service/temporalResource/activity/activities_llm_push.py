@@ -93,7 +93,7 @@ def _read_gguf_metadata(file_path: str) -> dict:
             "params":      params_b,
         }
     except ImportError:
-        logger.warning("[LLMPush] gguf library nahi hai — filename se parse")
+        logger.warning("[LLMPush] gguf library not available — parsing from filename")
         return _parse_from_filename(os.path.basename(file_path))
     except Exception as exc:
         logger.warning(f"[LLMPush] GGUF header read failed: {exc} — filename fallback")
@@ -142,7 +142,7 @@ def _read_template_metadata(zip_path: str) -> dict:
                 None,
             )
             if not meta_file:
-                logger.warning("[LLMPush] version_metadata.json ZIP mein nahi mila")
+                logger.warning("[LLMPush] version_metadata.json not found in ZIP")
                 return {}
             with z.open(meta_file) as f:
                 data = _json.loads(f.read().decode("utf-8"))
@@ -215,7 +215,7 @@ def _read_template_metadata(zip_path: str) -> dict:
             "_raw": data,
         }
     except zipfile.BadZipFile:
-        logger.warning("[LLMPush] File valid ZIP nahi hai")
+        logger.warning("[LLMPush] File is not a valid ZIP")
         return {}
     except Exception as exc:
         logger.warning(f"[LLMPush] Template metadata read failed: {exc}")
@@ -376,7 +376,7 @@ def _push_artifact_via_api(
 ) -> None:
     """HTTP POST → push-image wrapper → oras push → Harbor."""
     if not _PUSH_IMAGE_BASE_URL:
-        raise RuntimeError("PUSH_IMAGE_BASE_URL env var set nahi hai")
+        raise RuntimeError("PUSH_IMAGE_BASE_URL env var is not set")
 
     payload = {
         "harbor_url":    harbor_host,
@@ -583,7 +583,7 @@ def llm_push_activity(params: dict) -> dict:
         if not temp_path:
             temp_path = item.file_path
         if not temp_path or not os.path.exists(temp_path):
-            raise RuntimeError(f"File nahi mila: {temp_path}")
+            raise RuntimeError(f"File not found: {temp_path}")
 
         # ── 2. Harbor registry details lo ────────────────────────────────────
         harbor_dep = db.query(KubernetesDeployment).filter(
@@ -592,7 +592,7 @@ def llm_push_activity(params: dict) -> dict:
         if not harbor_dep:
             raise RuntimeError(f"Harbor registry id={item.harbor_registry_id} not found")
         if not harbor_dep.harbor_url:
-            raise RuntimeError(f"Harbor registry id={item.harbor_registry_id} ka harbor_url nahi hai")
+            raise RuntimeError(f"Harbor registry id={item.harbor_registry_id} has no harbor_url configured")
 
         parsed      = urlparse(harbor_dep.harbor_url)
         harbor_host = parsed.netloc or parsed.path.strip("/")
@@ -646,7 +646,7 @@ def llm_push_activity(params: dict) -> dict:
                         actual_push_path = os.path.join(gguf_temp_dir, gguf_entry)
                         logger.info(f"[LLMPush] GGUF extracted from ZIP: {actual_push_path}")
                     else:
-                        logger.warning("[LLMPush] ZIP mein .gguf nahi mila, ZIP as-is use karenge")
+                        logger.warning("[LLMPush] No .gguf found in ZIP, using ZIP as-is")
                         gguf_temp_dir = None
 
             # Fallback 2: DB mein metadata_json hai? (upload API se pass kiya tha to)
