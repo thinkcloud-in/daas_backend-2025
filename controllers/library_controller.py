@@ -384,34 +384,11 @@ async def upload_library_file(
             except Exception as _te:
                 logger.warning(f"[Library] Container TAR metadata (non-fatal): {_te}")
 
-        storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
-        subdir      = TYPE_SUBDIR.get(record.type, "general")
-        pod_path    = f"/data/library/{subdir}/{record.file_name}"
-        webdav_url  = f"{storage_base}/{subdir}/{record.file_name}"
-
-        def _put_container_to_webdav():
-            with open(temp_path, "rb") as f:
-                return _req.put(
-                    webdav_url, data=f,
-                    headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
-                    verify=False, timeout=None,
-                )
-
-        try:
-            resp = await asyncio.to_thread(_put_container_to_webdav)
-            if resp.status_code not in (200, 201, 204):
-                raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
-        except Exception as exc:
-            logger.error(f"[Library] Container WebDAV upload failed item={item_id}: {exc}")
-            raise HTTPException(status_code=500, detail=f"Upload failed — WebDAV error: {exc}")
-        finally:
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-
-        logger.info(f"[Library] Container uploaded → {webdav_url} (pod: {pod_path})")
-        record.file_path    = pod_path
+        # Container: temp file seedha activity ko dete hain
+        # Activity STORAGE_INTERNAL_URL pe temp upload karega → push-image wrapper access karega
+        # (WebDAV intermediate step nahi — APISIX backend != push-image accessible storage)
+        logger.info(f"[Library] Container received → {temp_path} ({bytes_written:,} bytes)")
+        record.file_path    = temp_path
         record.file_size    = bytes_written
         record.progress_pct = 100
         record.status       = "ready"
@@ -422,7 +399,7 @@ async def upload_library_file(
             temporal_client = await TemporalClientManager.get_temporal_client()
             await temporal_client.start_workflow(
                 HarborPushWorkflow.run,
-                args=[{"item_id": item_id, "temp_path": pod_path}],
+                args=[{"item_id": item_id, "temp_path": temp_path}],
                 id=push_workflow_id,
                 task_queue=HARBOR_PUSH_TASK_QUEUE,
                 search_attributes=_make_search_attrs(record.name, "Harbor-Push", username),
@@ -433,6 +410,10 @@ async def upload_library_file(
             logger.info(f"[Library] Harbor-Push triggered: wf={push_workflow_id}")
         except Exception as exc:
             logger.error(f"[Library] Harbor-Push workflow start failed: {exc}")
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
             record.push_status = "failed"
             record.push_error  = str(exc)
             db.commit()

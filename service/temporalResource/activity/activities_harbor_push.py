@@ -1,12 +1,12 @@
 """
-Harbor Push Activity  (K8s-free, WebDAV + HTTP wrapper)
+Harbor Push Activity  (WebDAV + push-image API → skopeo → Harbor)
 
 Flow:
   1. DB → library item + kubernetes_deployments
   2. Harbor URL + creds — DB only
   3. Local metadata extraction (tar/zip directly)
-  4. File → WebDAV (STORAGE_INTERNAL_URL) → pod sees via shared PV mount
-  5. HTTP POST /push/image → push-image wrapper → skopeo → Harbor
+  4. File → WebDAV (STORAGE_BASE_URL) → shared /data/library PV
+  5. POST push-image/push/image → push-image-tool pod → skopeo → Harbor
   6. WebDAV cleanup + DB update
 """
 
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 HARBOR_PUSH_TASK_QUEUE = "harbor-push-queue"
 
 _PUSH_IMAGE_BASE_URL  = os.getenv("PUSH_IMAGE_BASE_URL",  "").rstrip("/")
+_STORAGE_BASE_URL     = os.getenv("STORAGE_BASE_URL",     "").rstrip("/")
 _STORAGE_INTERNAL_URL = os.getenv("STORAGE_INTERNAL_URL", "").rstrip("/")
 _POD_LIBRARY_PATH     = "/data/library"  # Pod ka WebDAV root mount path
 
@@ -61,13 +62,15 @@ def _strip_reg(s: str) -> str:
 def _webdav_upload_file(local_path: str, uid: str) -> tuple:
     """
     Single file ko WebDAV pe upload karo.
+    STORAGE_BASE_URL (APISIX) use karo — large files ke liye no size limit.
     Returns: (pod_path, cleanup_url)
     """
-    if not _STORAGE_INTERNAL_URL:
-        raise RuntimeError("STORAGE_INTERNAL_URL env var set nahi hai")
-    fname      = os.path.basename(local_path)
+    storage_url = _STORAGE_BASE_URL or _STORAGE_INTERNAL_URL
+    if not storage_url:
+        raise RuntimeError("STORAGE_BASE_URL env var set nahi hai")
+    fname       = os.path.basename(local_path)
     remote_name = f"harbor-push-{uid}-{fname}"
-    upload_url  = f"{_STORAGE_INTERNAL_URL}/{remote_name}"
+    upload_url  = f"{storage_url}/{remote_name}"
     with open(local_path, "rb") as fh:
         r = requests.put(
             upload_url, data=fh,
@@ -252,10 +255,9 @@ def _push_image_via_api(
     project: str, image_name: str, tag: str,
     source_path: str, source_type: str,
 ) -> None:
-    """HTTP POST → push-image wrapper → skopeo copy → Harbor."""
+    """POST → push-image wrapper → skopeo → Harbor."""
     if not _PUSH_IMAGE_BASE_URL:
         raise RuntimeError("PUSH_IMAGE_BASE_URL env var set nahi hai")
-
     payload = {
         "harbor_url":  harbor_host,
         "username":    harbor_user,
@@ -267,20 +269,13 @@ def _push_image_via_api(
         "source_type": source_type,
         "tls_verify":  False,
     }
-    logger.info(
-        f"[HarborPush] POST {_PUSH_IMAGE_BASE_URL}/push/image "
-        f"→ {harbor_host}/{project}/{image_name}:{tag}"
-    )
+    logger.info(f"[HarborPush] POST {_PUSH_IMAGE_BASE_URL}/push/image → {harbor_host}/{project}/{image_name}:{tag}")
     resp = requests.post(
         f"{_PUSH_IMAGE_BASE_URL}/push/image",
-        json=payload,
-        timeout=900,
-        verify=False,
+        json=payload, timeout=900, verify=False,
     )
     if not resp.ok:
-        raise RuntimeError(
-            f"push/image API failed (HTTP {resp.status_code}): {resp.text[:1000]}"
-        )
+        raise RuntimeError(f"push/image API failed (HTTP {resp.status_code}): {resp.text[:1000]}")
     logger.info(f"[HarborPush] push/image OK: {resp.text[:200]}")
 
 
@@ -364,31 +359,17 @@ def harbor_push_activity(params: dict) -> dict:
             f"version={image_version} source_type={source_type}"
         )
 
-        # ── 4. Source path determine karo (file already pod PV pe hai) ──────────
-        # temp_path = pod path (e.g. /data/library/container/model.tar)
-        # OCI dir ZIP: extract locally → WebDAV pe OCI dir upload → pod path
+        # ── 4. WebDAV upload → push-image API (skopeo) → Harbor ────────────────
+        # docker-archive (.tar) → WebDAV → push/image (source_type=docker-archive)
+        # OCI dir ZIP   (.zip)  → extract → WebDAV dir → push/image (source_type=oci)
+        dest_image  = f"{harbor_host}/{project}/{image_owner}/{image_name}:{image_version}"
         extract_tmp = None
         webdav_url  = None
         try:
+            uid = uuid.uuid4().hex[:8]
             if is_oci_dir_zip:
-                # ZIP backend mein locally extract karo → OCI dir WebDAV pe upload
-                uid         = uuid.uuid4().hex[:8]
                 extract_tmp = tempfile.mkdtemp(prefix="harbor-oci-")
-                # ZIP download karo WebDAV se (agar file pod path hai)
-                _zip_local = temp_path
-                if not os.path.exists(temp_path):
-                    # Pod path → WebDAV GET se download karo
-                    _zip_local  = os.path.join(extract_tmp, "source.zip")
-                    _storage    = os.getenv("STORAGE_INTERNAL_URL", "").rstrip("/")
-                    _rel        = temp_path.replace("/data/library/", "", 1)
-                    _dload_url  = f"{_storage}/{_rel}"
-                    logger.info(f"[HarborPush] Downloading ZIP from WebDAV: {_dload_url}")
-                    with requests.get(_dload_url, stream=True, timeout=3600, verify=False) as _dr:
-                        with open(_zip_local, "wb") as _zf:
-                            for _chunk in _dr.iter_content(8 * 1024 * 1024):
-                                _zf.write(_chunk)
-
-                with zipfile.ZipFile(_zip_local, "r") as z:
+                with zipfile.ZipFile(temp_path, "r") as z:
                     z.extractall(extract_tmp)
                 oci_dir = extract_tmp
                 for root, dirs, files in os.walk(extract_tmp):
@@ -398,11 +379,9 @@ def harbor_push_activity(params: dict) -> dict:
                 source_path, webdav_url = _webdav_upload_dir(oci_dir, uid)
                 source_type = "oci"
             else:
-                # docker-archive TAR: pod pe already hai, seedha use karo
-                source_path = temp_path
+                source_path, webdav_url = _webdav_upload_file(temp_path, uid)
+                source_type = "docker-archive"
 
-            # ── 5. HTTP push → Harbor ─────────────────────────────────────────
-            dest_image = f"{harbor_host}/{project}/{image_owner}/{image_name}:{image_version}"
             logger.info(f"[HarborPush] pushing → {dest_image}")
             _push_image_via_api(
                 harbor_host, harbor_user, harbor_pass,
@@ -412,11 +391,15 @@ def harbor_push_activity(params: dict) -> dict:
             logger.info(f"[HarborPush] push OK → {dest_image}")
 
         finally:
-            # OCI dir temp upload cleanup (docker-archive ke liye kuch nahi)
             if webdav_url:
                 _webdav_delete(webdav_url)
             if extract_tmp:
                 shutil.rmtree(extract_tmp, ignore_errors=True)
+            if temp_path and os.path.isfile(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
 
         # ── 6. DB update ──────────────────────────────────────────────────────
         _update(
