@@ -30,6 +30,9 @@ class AppDeployment(Base):
     # VectorDB integration (openwebui only)
     linked_vectordb_id  = Column(Integer, nullable=True)   # app_deployments.id of vectordb
 
+    # Private LLM integration (openwebui only)
+    linked_llm_id       = Column(Integer, nullable=True)   # llm_inference_jobs.id
+
     status              = Column(String, nullable=False, default="pending")
     # pending → connecting → deploying → waiting_ready → deployed | failed
     workflow_id         = Column(String, nullable=True)

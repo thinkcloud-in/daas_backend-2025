@@ -85,3 +85,28 @@ def disconnect_vectordb(openwebui_id: int, db: Session = Depends(get_db)):
     OpenWebUI se VectorDB ka link hatao — K8s env vars remove + rollout.
     """
     return app_deploy_controller.disconnect_vectordb(openwebui_id, db)
+
+
+class ConnectLLMBody(BaseModel):
+    llm_id: int
+
+
+@app_deploy_router.post("/{openwebui_id}/connect-llm", response_model=APIResponse[Any])
+def connect_private_llm(
+    openwebui_id: int,
+    body: ConnectLLMBody,
+    db: Session = Depends(get_db),
+):
+    """
+    OpenWebUI ke saath Private LLM connect karo.
+    K8s pe OPENAI_API_BASE_URL + OPENAI_API_KEY=none env inject karta hai.
+    """
+    return app_deploy_controller.connect_private_llm(openwebui_id, body.llm_id, db)
+
+
+@app_deploy_router.delete("/{openwebui_id}/connect-llm", response_model=APIResponse[Any])
+def disconnect_private_llm(openwebui_id: int, db: Session = Depends(get_db)):
+    """
+    OpenWebUI se Private LLM ka link hatao — K8s env vars remove + rollout.
+    """
+    return app_deploy_controller.disconnect_private_llm(openwebui_id, db)

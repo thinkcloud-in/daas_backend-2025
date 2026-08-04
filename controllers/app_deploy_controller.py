@@ -66,6 +66,7 @@ def _to_dict(d: AppDeployment) -> dict:
         "error_message":      d.error_message,
         "workflow_id":        d.workflow_id,
         "linked_vectordb_id": d.linked_vectordb_id,
+        "linked_llm_id":      d.linked_llm_id,
         "created_at":         d.created_at.isoformat() if d.created_at else None,
         "updated_at":         d.updated_at.isoformat() if d.updated_at else None,
     }
@@ -503,3 +504,150 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
     if k8s_warning:
         result["k8s_warning"] = f"DB unlinked but K8s env remove failed: {k8s_warning}"
     return response_format.success_response(200, "VectorDB disconnected successfully", result)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connect Private LLM to OpenWebUI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_k8s_apps_client(cluster: KubernetesCluster):
+    """kubeconfig DB se load karo, AppsV1Api return karo. No SSH."""
+    import re, yaml, tempfile, os
+    from kubernetes import client as kc, config as kcfg
+
+    if not cluster.kubeconfig:
+        raise HTTPException(status_code=409, detail="K8s cluster kubeconfig not found in DB")
+
+    kc_dict = yaml.safe_load(cluster.kubeconfig)
+    if cluster.control_ip:
+        for ce in kc_dict.get("clusters", []):
+            srv = ce.get("cluster", {}).get("server", "")
+            if srv:
+                ce["cluster"]["server"] = re.sub(
+                    r"https://[^:/]+", f"https://{cluster.control_ip}", srv
+                )
+
+    kc_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(kc_dict, f)
+            kc_path = f.name
+        kcfg.load_kube_config(config_file=kc_path)
+    finally:
+        if kc_path:
+            try:
+                os.unlink(kc_path)
+            except OSError:
+                pass
+
+    return kc.AppsV1Api()
+
+
+def connect_private_llm(openwebui_id: int, llm_id: int, db: Session) -> dict:
+    import re
+    from models.llm_inference_v2_model import LLMInferenceJob
+
+    ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
+    if not ow:
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
+    if ow.deployment_type != "openwebui":
+        raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
+    if ow.status != "deployed":
+        raise HTTPException(status_code=409, detail=f"OpenWebUI is in '{ow.status}' state — deploy it first")
+
+    llm = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == llm_id).first()
+    if not llm:
+        raise HTTPException(status_code=404, detail=f"Private LLM id={llm_id} not found")
+
+    if llm.endpoint_url:
+        base_url = llm.endpoint_url.rstrip("/")
+    elif llm.head_ip:
+        base_url = f"http://{llm.head_ip}:8000"
+    else:
+        raise HTTPException(status_code=409, detail="Private LLM has no endpoint_url or head_ip")
+    if not base_url.endswith("/v1"):
+        base_url = f"{base_url}/v1"
+
+    cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
+    if not cluster:
+        raise HTTPException(status_code=409, detail="K8s cluster not found")
+
+    apps_v1  = _load_k8s_apps_client(cluster)
+    rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+    rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
+    dep_name = f"{rname}-openwebui"
+    namespace = ow.namespace or "default"
+
+    patch = {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [{
+                        "name": "openwebui",
+                        "env": [
+                            {"name": "OPENAI_API_BASE_URL", "value": base_url},
+                            {"name": "OPENAI_API_KEY",      "value": "none"},
+                        ],
+                    }]
+                }
+            }
+        }
+    }
+    try:
+        apps_v1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=patch)
+        logger.info(f"[AppDeploy] LLM env patched: {dep_name} → {base_url}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"K8s patch failed: {str(e)[:300]}")
+
+    ow.linked_llm_id = llm_id
+    db.commit()
+    db.refresh(ow)
+
+    return response_format.success_response(200, "Private LLM connected to OpenWebUI successfully", {
+        "openwebui_id": openwebui_id,
+        "llm_id":       llm_id,
+        "base_url":     base_url,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Disconnect Private LLM from OpenWebUI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def disconnect_private_llm(openwebui_id: int, db: Session) -> dict:
+    import re
+
+    ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
+    if not ow:
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
+
+    cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
+
+    k8s_warning = None
+    if cluster and cluster.kubeconfig:
+        rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+        rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
+        dep_name = f"{rname}-openwebui"
+        namespace = ow.namespace or "default"
+        try:
+            apps_v1    = _load_k8s_apps_client(cluster)
+            deployment = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+            for container in (deployment.spec.template.spec.containers or []):
+                if container.name == "openwebui" and container.env:
+                    container.env = [
+                        e for e in container.env
+                        if e.name not in ("OPENAI_API_BASE_URL", "OPENAI_API_KEY")
+                    ]
+            apps_v1.patch_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment)
+            logger.info(f"[AppDeploy] LLM env removed: {dep_name}")
+        except Exception as e:
+            k8s_warning = str(e)[:300]
+            logger.warning(f"[AppDeploy] LLM disconnect K8s failed id={openwebui_id}: {e}")
+
+    ow.linked_llm_id = None
+    db.commit()
+
+    result = {"openwebui_id": openwebui_id, "linked_llm_id": None}
+    if k8s_warning:
+        result["k8s_warning"] = f"DB unlinked but K8s patch failed: {k8s_warning}"
+    return response_format.success_response(200, "Private LLM disconnected from OpenWebUI successfully", result)
