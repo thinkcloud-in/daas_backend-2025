@@ -337,6 +337,53 @@ async def upload_library_file(
 
     # ── container: WebDAV (STORAGE_BASE_URL via APISIX) pe upload, pod path set karo ──
     if record.type == "container":
+        # Docker TAR se harbor_owner + name extract karo (agar pehle set nahi hua)
+        if not record.harbor_owner:
+            try:
+                import tarfile as _tf, json as _tjson
+                if _tf.is_tarfile(temp_path):
+                    _REGS = ("docker.io/", "ghcr.io/", "quay.io/",
+                             "registry-1.docker.io/", "index.docker.io/")
+                    def _strip_r(s):
+                        for _r in _REGS:
+                            if s.startswith(_r): return s[len(_r):]
+                        return s
+                    _owner, _iname = None, None
+                    with _tf.open(temp_path, "r:*") as _tar:
+                        for _en in ("repositories", "manifest.json"):
+                            try:
+                                _f = _tar.extractfile(_en)
+                                if not _f: continue
+                                _d = _tjson.loads(_f.read())
+                                if _en == "repositories":
+                                    for _rk in _d:
+                                        _comps = _strip_r(_rk).split("/")
+                                        if len(_comps) >= 2: _owner = _comps[-2]
+                                        if _comps: _iname = _comps[-1]
+                                        break
+                                else:
+                                    for _mf in _d:
+                                        for _rt in (_mf.get("RepoTags") or []):
+                                            _path = _strip_r(_rt.partition(":")[0])
+                                            _comps = _path.split("/")
+                                            if len(_comps) >= 2 and not _owner: _owner = _comps[-2]
+                                            if _comps and not _iname: _iname = _comps[-1]
+                                            break
+                                        if _owner: break
+                                if _owner: break
+                            except KeyError:
+                                continue
+                    if _owner:
+                        record.harbor_owner = _owner
+                    _placeholder = os.path.splitext(record.file_name)[0]
+                    if _iname and (not record.name or record.name == _placeholder):
+                        record.name = _iname
+                    if _owner or _iname:
+                        db.commit()
+                        logger.info(f"[Library] Container TAR → owner={record.harbor_owner} name={record.name}")
+            except Exception as _te:
+                logger.warning(f"[Library] Container TAR metadata (non-fatal): {_te}")
+
         storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
         subdir      = TYPE_SUBDIR.get(record.type, "general")
         pod_path    = f"/data/library/{subdir}/{record.file_name}"

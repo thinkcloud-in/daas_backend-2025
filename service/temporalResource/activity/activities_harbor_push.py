@@ -347,9 +347,10 @@ def harbor_push_activity(params: dict) -> dict:
         # ── 3. Local metadata extraction ─────────────────────────────────────
         meta = _extract_image_metadata_local(temp_path, item)
         if not meta["image_owner"]:
-            raise RuntimeError(
-                "Image owner nahi mila. version_metadata.json mein 'owner_name' set karo "
-                "ya Docker tar mein proper RepoTag honi chahiye."
+            meta["image_owner"] = _sanitize(item.harbor_project or "library")
+            logger.warning(
+                f"[HarborPush] image_owner nahi mila — defaulting to '{meta['image_owner']}'. "
+                "Docker tar mein proper RepoTag rakho ya upload request mein harbor_owner pass karo."
             )
 
         image_owner    = meta["image_owner"]
