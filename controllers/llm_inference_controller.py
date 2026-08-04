@@ -171,7 +171,7 @@ def update_llm_inference(inference_id: int, data: LLMInferenceUpdate, db: Sessio
             raise HTTPException(status_code=404, detail="LLM inference not found")
         record.model = data.model
         db.commit()
-        return response_format.success_response(200, "Model updated", {"id": record.id, "model": record.model})
+        return response_format.success_response(200, "LLM inference model updated successfully", {"id": record.id, "model": record.model})
     except HTTPException:
         raise
     except Exception as e:
@@ -185,7 +185,7 @@ def delete_llm_inference(inference_id: int, db: Session):
             raise HTTPException(status_code=404, detail="LLM inference not found")
         db.delete(record)
         db.commit()
-        return response_format.success_response(200, "LLM inference deleted", {"id": inference_id})
+        return response_format.success_response(200, "LLM inference deleted successfully", {"id": inference_id})
     except HTTPException:
         raise
     except Exception as e:

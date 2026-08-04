@@ -724,7 +724,7 @@ async def test_k8s_connection_direct(body: dict) -> dict:
     if not control_ip:
         raise HTTPException(
             status_code=400,
-            detail="control_ip required — kubeconfig me IP nahi mili (k8s-master jaise hostname hai), manually do"
+            detail="control_ip is required — the kubeconfig did not provide an IP (for example, a k8s-master hostname), so enter it manually"
         )
 
     result = await asyncio.to_thread(_run_k8s_test, {
@@ -735,7 +735,7 @@ async def test_k8s_connection_direct(body: dict) -> dict:
         "kubeconfig": body.get("kubeconfig"),
     })
     if result["status"] == "connected":
-        return response_format.success_response(200, "Connection test successful", result)
+        return response_format.success_response(200, "Kubernetes connection test completed successfully", result)
     return response_format.error_response(400, "Connection test failed", result)
 
 
@@ -751,7 +751,7 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
     if not control_ip:
         raise HTTPException(
             status_code=400,
-            detail="control_ip required — kubeconfig me IP nahi mili, manually do"
+            detail="control_ip is required — the kubeconfig did not provide an IP, so enter it manually"
         )
 
     existing = db.query(KubernetesCluster).filter(
@@ -789,7 +789,7 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
     db.commit()
     db.refresh(cluster)
     logger.info(f"[K8s] Cluster '{cluster.name}' saved (id={cluster.id})")
-    return response_format.success_response(201, "Kubernetes cluster connected and added", {
+    return response_format.success_response(201, "Kubernetes cluster connected and added successfully", {
         **_to_dict(cluster), "test_result": test_result,
     })
 
@@ -833,7 +833,7 @@ async def update_k8s_cluster(cluster_id: int, body: dict, db: Session) -> dict:
         return response_format.error_response(400, "Updated but connection failed", {
             **_to_dict(cluster), "test_result": test_result,
         })
-    return response_format.success_response(200, "Cluster updated and connection verified", {
+    return response_format.success_response(200, "Cluster updated and connection verified successfully", {
         **_to_dict(cluster), "test_result": test_result,
     })
 
@@ -856,7 +856,7 @@ async def test_k8s_cluster(cluster_id: int, db: Session) -> dict:
     db.commit()
 
     if result["status"] == "connected":
-        return response_format.success_response(200, "Connection test successful",
+        return response_format.success_response(200, "Kubernetes connection test completed successfully",
                                                 {**result, "cluster_id": cluster_id})
     return response_format.error_response(400, "Connection test failed",
                                           {**result, "cluster_id": cluster_id})
@@ -884,7 +884,7 @@ async def get_k8s_cluster(cluster_id: int, db: Session) -> dict:
         data["nodes"]              = {"error": str(e)[:200]}
         data["system_components"]  = []
 
-    return response_format.success_response(200, "Kubernetes cluster fetched", data)
+    return response_format.success_response(200, "Kubernetes cluster details fetched successfully", data)
 
 
 def delete_k8s_cluster(cluster_id: int, db: Session) -> dict:
@@ -893,7 +893,7 @@ def delete_k8s_cluster(cluster_id: int, db: Session) -> dict:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
     db.delete(cluster)
     db.commit()
-    return response_format.success_response(200, f"Cluster '{cluster.name}' deleted")
+    return response_format.success_response(200, f"Cluster '{cluster.name}' deleted successfully")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -990,7 +990,7 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
         db.commit()
         raise HTTPException(status_code=500, detail=f"Failed to start deploy workflow: {e}")
 
-    return response_format.success_response(201, "Harbor deployment started", {
+    return response_format.success_response(201, "Harbor deployment started successfully", {
         "deploy_id":   deploy.id,
         "cluster_id":  cluster_id,
         "name":        deploy.name,
@@ -1011,7 +1011,7 @@ def get_k8s_deployment(cluster_id: int, deploy_id: int, db: Session) -> dict:
     ).first()
     if not d:
         raise HTTPException(status_code=404, detail=f"Deployment {deploy_id} not found")
-    return response_format.success_response(200, "Deployment fetched", _deploy_to_dict(d))
+    return response_format.success_response(200, "Deployment details fetched successfully", _deploy_to_dict(d))
 
 
 def list_k8s_deployments(cluster_id: int, db: Session) -> dict:

@@ -145,7 +145,7 @@ async def create_library_item(
         if not harbor_registry_id:
             raise HTTPException(
                 status_code=400,
-                detail=f"'harbor_registry_id' required for type '{effective_type}' — Harbor instance select karo",
+                detail=f"'harbor_registry_id' required for type '{effective_type}' — select a Harbor instance",
             )
     if effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id:
         harbor_dep = db.query(KubernetesDeployment).filter(
@@ -154,12 +154,12 @@ async def create_library_item(
         if not harbor_dep:
             raise HTTPException(
                 status_code=404,
-                detail=f"Harbor instance id={harbor_registry_id} nahi mila kubernetes_deployments mein"
+                detail=f"Harbor instance id={harbor_registry_id} was not found in kubernetes_deployments"
             )
         if not harbor_dep.harbor_url:
             raise HTTPException(
                 status_code=409,
-                detail=f"Harbor id={harbor_registry_id} ka harbor_url set nahi — deploy hone do pehle"
+                detail=f"Harbor id={harbor_registry_id} has no harbor_url set — deploy it first"
             )
         k8s_cluster_id = harbor_dep.cluster_id   # backend derive karta hai
         logger.info(f"[Library] harbor_registry={harbor_registry_id} → k8s_cluster={k8s_cluster_id} derived")
@@ -330,7 +330,7 @@ async def upload_library_file(
             db.commit()
             raise HTTPException(status_code=500, detail=f"LLM-Push workflow start failed: {exc}")
 
-        return response_format.success_response(200, "File received — LLM-Push started", {
+        return response_format.success_response(200, "File received and LLM-Push started successfully", {
             **_item_to_dict(record),
             "push_workflow_id": push_workflow_id,
         })
@@ -419,7 +419,7 @@ async def upload_library_file(
             db.commit()
             raise HTTPException(status_code=500, detail=f"Harbor-Push workflow start failed: {exc}")
 
-        return response_format.success_response(200, "File received — Harbor-Push started", {
+        return response_format.success_response(200, "File received and Harbor-Push started successfully", {
             **_item_to_dict(record),
             "push_workflow_id": push_workflow_id,
         })
@@ -647,7 +647,7 @@ async def upload_library_direct(request: Request, db: Session):
             except OSError: pass
             record.push_status = "failed"; record.push_error = str(exc); db.commit()
             raise HTTPException(status_code=500, detail=f"LLM-Push start failed: {exc}")
-        return response_format.success_response(200, "Direct upload done — LLM-Push started", _item_to_dict(record))
+        return response_format.success_response(200, "Direct upload completed and LLM-Push started successfully", _item_to_dict(record))
 
     # container → WebDAV (STORAGE_BASE_URL via APISIX), pod path
     if item_type == "container":
@@ -686,7 +686,7 @@ async def upload_library_direct(request: Request, db: Session):
         except Exception as exc:
             record.push_status = "failed"; record.push_error = str(exc); db.commit()
             raise HTTPException(status_code=500, detail=f"Harbor-Push start failed: {exc}")
-        return response_format.success_response(200, "Direct upload done — Harbor-Push started", _item_to_dict(record))
+        return response_format.success_response(200, "Direct upload completed and Harbor-Push started successfully", _item_to_dict(record))
 
     # ── Baki sab types: WebDAV (STORAGE_BASE_URL) ────────────────────────────
     storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
@@ -722,7 +722,7 @@ async def upload_library_direct(request: Request, db: Session):
     except Exception as exc:
         logger.warning(f"[Library] Direct upload Temporal failed (non-fatal): {exc}")
 
-    return response_format.success_response(200, "Direct upload done", _item_to_dict(record))
+    return response_format.success_response(200, "Direct upload completed successfully", _item_to_dict(record))
 
 
 def _deployment_summary(job: LXCRestoreJob) -> dict:
@@ -925,7 +925,7 @@ async def update_library_item(
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Workflow start failed: {exc}")
 
-    return response_format.success_response(200, "Library item update started", _item_to_dict(item))
+    return response_format.success_response(200, "Library item update started successfully", _item_to_dict(item))
 
 
 async def delete_library_item(item_id: int, db: Session, request: Request):
@@ -947,7 +947,7 @@ async def delete_library_item(item_id: int, db: Session, request: Request):
             except OSError:
                 pass
         logger.info(f"[Library] item={item_id} force-deleted (status was {item.status})")
-        return response_format.success_response(200, "Library item deleted", {"id": item_id})
+        return response_format.success_response(200, "Library item deleted successfully", {"id": item_id})
 
     try:
         client      = await TemporalClientManager.get_temporal_client()
@@ -962,7 +962,7 @@ async def delete_library_item(item_id: int, db: Session, request: Request):
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Workflow start failed: {exc}")
 
-    return response_format.success_response(200, "Library item deletion started", {"id": item_id, "workflow_id": workflow_id})
+    return response_format.success_response(200, "Library item deletion started successfully", {"id": item_id, "workflow_id": workflow_id})
 
 
 _LXC_BRIDGE   = os.getenv("LXC_BRIDGE",   "vmbr0")

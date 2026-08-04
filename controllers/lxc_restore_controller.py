@@ -263,7 +263,7 @@ def delete_deployment(job_id: int, db: Session):
             db.delete(lxc)
             db.commit()
             logger.info(f"[Deploy] LXC job id={job_id} deleted from DB")
-            return response_format.success_response(200, "LXC deployment deleted", {"id": job_id, "type": "lxc"})
+            return response_format.success_response(200, "LXC deployment deleted successfully", {"id": job_id, "type": "lxc"})
 
         # Kubernetes check
         k8s = db.query(KubernetesDeployment).filter(KubernetesDeployment.id == job_id).first()
@@ -271,7 +271,7 @@ def delete_deployment(job_id: int, db: Session):
             db.delete(k8s)
             db.commit()
             logger.info(f"[Deploy] K8s deployment id={job_id} deleted from DB")
-            return response_format.success_response(200, "Kubernetes deployment deleted", {"id": job_id, "type": "kubernetes"})
+            return response_format.success_response(200, "Kubernetes deployment deleted successfully", {"id": job_id, "type": "kubernetes"})
 
         raise HTTPException(status_code=404, detail=f"Deployment id={job_id} not found in LXC or Kubernetes records")
 

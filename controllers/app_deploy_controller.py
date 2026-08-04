@@ -98,37 +98,36 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
     # ── K8s cluster validate ─────────────────────────────────────────────────
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == k8s_cluster_id).first()
     if not cluster:
-        raise HTTPException(status_code=404, detail=f"K8s cluster id={k8s_cluster_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"K8s cluster id={k8s_cluster_id} not found")
     if not cluster.kubeconfig:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"K8s cluster id={k8s_cluster_id} me kubeconfig nahi hai. "
-                f"PUT /v1/kubernetes/clusters/{k8s_cluster_id} se kubeconfig set karo."
+                f"K8s cluster id={k8s_cluster_id} has no kubeconfig. "
+                f"Set it using PUT /v1/kubernetes/clusters/{k8s_cluster_id}."
             )
         )
 
     # ── Library item validate ─────────────────────────────────────────────────
     lib = db.query(LibraryItem).filter(LibraryItem.id == version_id).first()
     if not lib:
-        raise HTTPException(status_code=404, detail=f"Library item id={version_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"Library item id={version_id} not found")
 
     accepted_lib_types = _EXPECTED_LIB_TYPE[deployment_type]
     if lib.type not in accepted_lib_types:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Library item id={version_id} ka type '{lib.type}' hai, "
-                f"lekin deployment_type='{deployment_type}' ke liye "
-                f"{sorted(accepted_lib_types)} mein se ek chahiye."
+                f"Library item id={version_id} has type '{lib.type}', "
+                f"but deployment_type='{deployment_type}' requires one of {sorted(accepted_lib_types)}."
             )
         )
     if not lib.harbor_image:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Library item id={version_id} ka harbor_image set nahi hua — "
-                "pehle upload karke harbor pe push hone do (push_status=pushed)."
+                f"Library item id={version_id} has no harbor_image set — "
+                "upload it first and allow it to be pushed to Harbor (push_status=pushed)."
             )
         )
 
@@ -146,14 +145,14 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
         if not harbor_dep:
             raise HTTPException(
                 status_code=404,
-                detail=f"Harbor registry id={harbor_registry_id} nahi mila kubernetes_deployments me"
+                detail=f"Harbor registry id={harbor_registry_id} was not found in kubernetes_deployments"
             )
         if not harbor_dep.harbor_url:
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Harbor registry id={harbor_registry_id} ka harbor_url abhi set nahi hua — "
-                    "shayad harbor deployment complete nahi hua."
+                    f"Harbor registry id={harbor_registry_id} has no harbor_url set yet — "
+                    "the Harbor deployment may not be complete."
                 )
             )
         harbor_url = harbor_dep.harbor_url   # registry record se override
@@ -215,11 +214,11 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
         deploy.status        = "failed"
         deploy.error_message = str(e)[:300]
         db.commit()
-        raise HTTPException(status_code=500, detail=f"Workflow start nahi hua: {e}")
+        raise HTTPException(status_code=500, detail=f"Workflow failed to start: {e}")
 
-    return response_format.success_response(201, f"{deployment_type} deployment started", {
+    return response_format.success_response(201, f"{deployment_type} deployment started successfully", {
         **_to_dict(deploy),
-        "message": f"Deployment shuru ho gayi. GET /v1/app-deploy/{deploy.id} se status check karo.",
+        "message": f"Deployment started. Use GET /v1/app-deploy/{deploy.id} to check the status.",
     })
 
 
@@ -246,7 +245,7 @@ def list_app_deployments(
         items = q.order_by(AppDeployment.id.desc()).offset(offset).limit(page_size).all()
         total_pages = (total + page_size - 1) // page_size if page_size else 1
 
-        return response_format.success_response(200, "App deployments fetched", {
+        return response_format.success_response(200, "App deployments retrieved successfully", {
             "items": [_to_dict(d) for d in items],
             "pagination": {
                 "page":        page,
@@ -269,8 +268,8 @@ def list_app_deployments(
 def get_app_deployment(deploy_id: int, db: Session) -> dict:
     d = db.query(AppDeployment).filter(AppDeployment.id == deploy_id).first()
     if not d:
-        raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} nahi mila")
-    return response_format.success_response(200, "App deployment fetched", _to_dict(d))
+        raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} not found")
+    return response_format.success_response(200, "App deployment details retrieved successfully", _to_dict(d))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -284,7 +283,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
 
     d = db.query(AppDeployment).filter(AppDeployment.id == deploy_id).first()
     if not d:
-        raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} not found")
 
     # ── K8s resources delete karo ────────────────────────────────────────────
     k8s_cleaned = False
@@ -344,7 +343,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
     if k8s_warning:
         result["k8s_warning"] = f"DB deleted but K8s cleanup failed: {k8s_warning}"
 
-    return response_format.success_response(200, "App deployment deleted", result)
+    return response_format.success_response(200, "App deployment deleted successfully", result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,27 +358,27 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
     # ── Validate OpenWebUI deployment ────────────────────────────────────────
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
-        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
     if ow.deployment_type != "openwebui":
-        raise HTTPException(status_code=400, detail=f"id={openwebui_id} openwebui type nahi hai")
+        raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
     if ow.status != "deployed":
-        raise HTTPException(status_code=409, detail=f"OpenWebUI deployment abhi '{ow.status}' state mein hai — deployed hone ke baad connect karo")
+        raise HTTPException(status_code=409, detail=f"OpenWebUI deployment is currently in '{ow.status}' state — connect after it is deployed")
 
     # ── Validate VectorDB deployment ─────────────────────────────────────────
     vdb = db.query(AppDeployment).filter(AppDeployment.id == vectordb_deploy_id).first()
     if not vdb:
-        raise HTTPException(status_code=404, detail=f"VectorDB deployment id={vectordb_deploy_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"VectorDB deployment id={vectordb_deploy_id} not found")
     if vdb.deployment_type != "vectordb":
-        raise HTTPException(status_code=400, detail=f"id={vectordb_deploy_id} vectordb type nahi hai")
+        raise HTTPException(status_code=400, detail=f"id={vectordb_deploy_id} is not a VectorDB deployment")
     if vdb.status != "deployed":
-        raise HTTPException(status_code=409, detail=f"VectorDB deployment abhi '{vdb.status}' state mein hai")
+        raise HTTPException(status_code=409, detail=f"VectorDB deployment is currently in '{vdb.status}' state")
     if not vdb.external_ip:
-        raise HTTPException(status_code=409, detail="VectorDB ka external_ip set nahi hua — pehle deploy hone do")
+        raise HTTPException(status_code=409, detail="VectorDB external_ip is not set — deploy it first")
 
     # ── K8s env inject ───────────────────────────────────────────────────────
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
     if not cluster or not cluster.control_ip or not cluster.username or not cluster.password:
-        raise HTTPException(status_code=409, detail="OpenWebUI cluster ke SSH credentials nahi hain")
+        raise HTTPException(status_code=409, detail="OpenWebUI cluster SSH credentials are missing")
 
     rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
     rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
@@ -431,7 +430,7 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
     db.refresh(ow)
 
     logger.info(f"[AppDeploy] OpenWebUI id={openwebui_id} linked to VectorDB id={vectordb_deploy_id}")
-    return response_format.success_response(200, "VectorDB connected to OpenWebUI", {
+    return response_format.success_response(200, "VectorDB connected to OpenWebUI successfully", {
         "openwebui_id":      openwebui_id,
         "vectordb_id":       vectordb_deploy_id,
         "pgvector_url":      pgurl,
@@ -450,13 +449,13 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
-        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} nahi mila")
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
     if ow.deployment_type != "openwebui":
-        raise HTTPException(status_code=400, detail=f"id={openwebui_id} openwebui type nahi hai")
+        raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
 
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
     if not cluster or not cluster.control_ip:
-        raise HTTPException(status_code=409, detail="Cluster credentials nahi hain")
+        raise HTTPException(status_code=409, detail="Cluster credentials are missing")
 
     rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
     rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
@@ -503,4 +502,4 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
     result = {"openwebui_id": openwebui_id, "linked_vectordb_id": None}
     if k8s_warning:
         result["k8s_warning"] = f"DB unlinked but K8s env remove failed: {k8s_warning}"
-    return response_format.success_response(200, "VectorDB disconnected", result)
+    return response_format.success_response(200, "VectorDB disconnected successfully", result)

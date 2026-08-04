@@ -384,7 +384,7 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
         if data.status is not None:
             record.status = data.status
         db.commit()
-        return response_format.success_response(200, "Updated", {"id": record.id})
+        return response_format.success_response(200, "LLM inference job updated successfully", {"id": record.id})
     except HTTPException:
         raise
     except Exception as e:
@@ -418,7 +418,7 @@ async def delete_llm_inference_job(job_id: int, db: Session):
             },
         )
 
-        return response_format.success_response(200, "Delete started", {
+        return response_format.success_response(200, "LLM inference job deletion started successfully", {
             "job_id":      job_id,
             "workflow_id": handle.id,
             "status":      "deleting",
