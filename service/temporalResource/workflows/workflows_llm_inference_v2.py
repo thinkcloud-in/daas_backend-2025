@@ -132,10 +132,15 @@ class CreateMultiNodeLLMWorkflow:
         net_iface        = payload.get("net_iface")  # None -> activity auto-detects the VM's real interface
 
         # ── Phase 2: Update DB with VM info ───────────────────────────────────
+        # Status intentionally stays "provisioning" here (and through the rest
+        # of this workflow) -- only "running" (success) or "failed" (the outer
+        # except in run()) are meaningful end states for the pool-level status.
+        # Granular sub-steps are still visible per-activity in Temporal's own
+        # workflow history, so they don't need a matching DB status value.
         await workflow.execute_activity(
             activities_llm_inference_v2.update_llm_inference_job_activity,
             args=[{"job_id": job_id, "vmids": vmids, "ip_addresses": ip_addrs,
-                   "head_ip": head_ip, "status": "vms_ready"}],
+                   "head_ip": head_ip}],
             retry_policy=_RETRY,
             start_to_close_timeout=timedelta(minutes=2),
         )
@@ -159,13 +164,6 @@ class CreateMultiNodeLLMWorkflow:
             for i, ip in enumerate(ip_addrs)
         ]
         await asyncio.gather(*install_tasks)
-
-        await workflow.execute_activity(
-            activities_llm_inference_v2.update_llm_inference_job_activity,
-            args=[{"job_id": job_id, "status": "ray_vllm_installed"}],
-            retry_policy=_RETRY,
-            start_to_close_timeout=timedelta(minutes=2),
-        )
 
         # ── Phase 2.6: Verify GPU health on EVERY node, with auto-reboot-retry ──
         # A broken driver (kernel module / userspace library version mismatch --
@@ -211,13 +209,6 @@ class CreateMultiNodeLLMWorkflow:
             }],
             retry_policy=_RETRY,
             start_to_close_timeout=timedelta(minutes=10),
-        )
-
-        await workflow.execute_activity(
-            activities_llm_inference_v2.update_llm_inference_job_activity,
-            args=[{"job_id": job_id, "status": "ray_head_ready"}],
-            retry_policy=_RETRY,
-            start_to_close_timeout=timedelta(minutes=2),
         )
 
         # ── Phase 5: Ray workers on remaining VMs (parallel) ──────────────────
@@ -285,10 +276,21 @@ class CreateMultiNodeLLMWorkflow:
 
 # ── DB status per action ──────────────────────────────────────────────────────
 _POOL_ACTION_STATUS = {
-    "start":    "vms_ready",
-    "restart":  "vms_ready",
+    "start":    "running",
+    "restart":  "running",
     "stop":     "stopped",
     "shutdown": "stopped",
+}
+
+# Per-action failure status -- kept distinct from creation's "failed" since an
+# action dying doesn't mean the pool was never usable (it may have been
+# running fine before this action was attempted), and distinct per action so
+# the UI/DB can tell which operation broke.
+_POOL_ACTION_FAILED_STATUS = {
+    "start":    "start_failed",
+    "restart":  "restart_failed",
+    "stop":     "stop_failed",
+    "shutdown": "stop_failed",
 }
 
 
@@ -303,6 +305,29 @@ class PoolVMActionWorkflow:
 
     @workflow.run
     async def run(self, payload: dict) -> dict:
+        job_id = payload["job_id"]
+        action = payload.get("action")
+        try:
+            return await self._execute(payload)
+        except Exception as e:
+            # Without this, a failure partway through (e.g. a bad vLLM launch
+            # config) leaves the DB status stuck on the pending value
+            # ("restarting", "starting", ...) forever, since nothing else
+            # ever writes to it -- the UI shows an action in progress
+            # indefinitely even though the workflow has already died.
+            failed_status = _POOL_ACTION_FAILED_STATUS.get(action, "failed")
+            try:
+                await workflow.execute_activity(
+                    activities_llm_inference_v2.update_llm_inference_job_activity,
+                    args=[{"job_id": job_id, "status": failed_status}],
+                    retry_policy=_RETRY,
+                    start_to_close_timeout=timedelta(minutes=2),
+                )
+            except Exception as upd_err:
+                logger.error(f"Failed to mark job {job_id} as {failed_status} after pool action error: {upd_err}")
+            raise
+
+    async def _execute(self, payload: dict) -> dict:
         job_id     = payload["job_id"]
         action     = payload["action"]
         vmids      = payload["vmids"]

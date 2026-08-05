@@ -15,10 +15,12 @@ from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference_v2 import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
 from service.temporalResource.activity.activities_llm_inference_v2 import _netmask_to_cidr
+from service import proxmoxService
 from utils import response_format
 
 _IST = pytz.timezone("Asia/Kolkata")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
+_VLLM_SERVE_PORT = 8000  # matches --port 8000 in launch_vllm_from_template_activity
 
 _ACTIVITY_DISPLAY = {
     # LLM inference
@@ -341,22 +343,43 @@ def get_llm_inference_job(job_id: int, db: Session):
             rows = db.query(Machine).filter(Machine.vm_id.in_([str(v) for v in vmids])).all()
             machine_map = {m.vm_id: m for m in rows}
 
+        # These LLM-pool VMs are cloned directly via Proxmox (not through the
+        # regular Machine-creation flow), so Machine.status is never populated
+        # for them. Fetch live power state straight from Proxmox instead.
+        proxmox_status_map = {}
+        cluster = db.query(Cluster).filter(Cluster.id == record.cluster_id).first()
+        if cluster and vmids:
+            try:
+                all_vms = proxmoxService.get_all_cluster_vms(db, cluster)
+                proxmox_status_map = {
+                    str(vm["vmid"]): vm.get("status")
+                    for vm in all_vms
+                    if str(vm.get("vmid")) in {str(v) for v in vmids}
+                }
+            except Exception as status_err:
+                logging.warning(f"Could not fetch live VM status from Proxmox for job {job_id}: {status_err}")
+
         machines = []
         for i, vmid in enumerate(vmids):
             m          = machine_map.get(str(vmid))
             ip_address = ip_addresses[i] if i < len(ip_addresses) else None
+            role       = "head" if ip_address == record.head_ip else "worker"
             machines.append({
                 "vm_id":      vmid,
                 "name":       m.name     if m else None,
                 "ip_address": ip_address,
                 "hostname":   m.hostname if m else ip_address,
                 "protocol":   m.protocol if m else "ssh",
-                "port":       m.port     if m else 22,
+                # The vLLM OpenAI-compatible endpoint only ever comes up on the
+                # head node (that's where launch_vllm_from_template_activity
+                # starts the API server) -- worker nodes never serve it, so
+                # showing a port for them would be misleading.
+                "port":       _VLLM_SERVE_PORT if role == "head" else None,
                 "username":   m.username if m else None,
-                "status":     m.status   if m else None,
+                "status":     proxmox_status_map.get(str(vmid), "unknown"),
                 "node":       nodes[i]["node"] if i < len(nodes) else None,
                 "gpu":        nodes[i]["gpu"]  if i < len(nodes) else [],
-                "role":       "head" if ip_address == record.head_ip else "worker",
+                "role":       role,
             })
 
         cluster_name, ip_pool_names = _resolve_names(db, record.cluster_id, record.ip_pool_ids or [])
@@ -479,8 +502,15 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             "ip_addresses":           record.ip_addresses or [],
             "ssh_user":               _SSH_USER,
             "ssh_pass":               _SSH_PASS,
-            "tensor_parallel_size":   n_nodes,
-            "pipeline_parallel_size": n_gpus_per_node,
+            # tensor_parallel_size = GPUs per node (within-node), pipeline_parallel_size
+            # = number of nodes (cross-node) -- must match the convention used at
+            # pool-creation time (see CreateMultiNodeLLMWorkflow._provision). These were
+            # previously swapped here, causing vLLM to relaunch with e.g.
+            # tensor-parallel-size=3 for a 3-node/1-GPU-per-node pool, which fails
+            # immediately ("Total number of attention heads (28) must be divisible by
+            # tensor parallel size (3)").
+            "tensor_parallel_size":   n_gpus_per_node,
+            "pipeline_parallel_size": n_nodes,
         }
 
         client = await TemporalClientManager.get_temporal_client()

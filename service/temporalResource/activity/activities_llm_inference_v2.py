@@ -600,6 +600,206 @@ def verify_ray_cluster_gpu_activity(payload: dict) -> dict:
     return {"ip_address": ip, "total_gpus": last_total}
 
 
+def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str, str]:
+    """
+    Build the vLLM launch + health-poll shell commands. Shared by
+    launch_vllm_from_template_activity (first boot) and
+    restore_llm_services_activity (start/restart) so the two code paths can
+    never drift apart -- a prior version of restore_llm_services_activity
+    had its own simplified copy of this logic that silently diverged
+    (wrong env vars, no single-node/multi-node branching), causing restarts
+    to launch vLLM differently than the original provisioning did.
+    """
+    is_multinode = pp_size > 1
+    _vllm_bin = f"{home_dir}/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
+    # Single-node inference (pp_size=1) -> no Ray, simpler & faster.
+    # Multi-node inference (pp_size>1) -> Ray for pipeline parallelism.
+    if is_multinode:
+        _vllm_common_args = (
+            f" --distributed-executor-backend ray"
+            f" --tensor-parallel-size {tp_size}"
+            f" --pipeline-parallel-size {pp_size}"
+            f" --max-model-len 4096"
+            f" --gpu-memory-utilization 0.90"
+            f" --enable-chunked-prefill"
+            f" --trust-remote-code"
+            f" --host 0.0.0.0 --port 8000"
+        )
+    else:
+        # Single node: no Ray overhead, plain in-process inference.
+        # Still need --tensor-parallel-size when the node has multiple
+        # GPUs -- without it vLLM defaults to TP=1 and silently only
+        # uses one of the attached GPUs.
+        _vllm_common_args = (
+            (f" --tensor-parallel-size {tp_size}" if tp_size > 1 else "")
+            + f" --max-model-len 4096"
+            f" --gpu-memory-utilization 0.90"
+            f" --enable-chunked-prefill"
+            f" --trust-remote-code"
+            f" --host 0.0.0.0 --port 8000"
+        )
+
+    _vllm_env_setup = (
+        f"source {home_dir}/vllm-ray-env/bin/activate; "
+        f"export CUDA_HOME=/usr/local/cuda; "
+        f"export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu; "
+        f"export PATH=$PATH:/usr/local/cuda/bin; "
+        f"export VLLM_DEVICE=cuda; "
+        f"export CUDA_VISIBLE_DEVICES=0; "
+    )
+
+    vllm_launch = (
+        # ── 0.5: Load CUDA & vLLM env ────────────────────────────────────────
+        "source /etc/profile || true; "
+        "source ~/.bash_profile || true; "
+        "source ~/.bashrc || true; "
+        # set -a/source /etc/environment is unreliable in non-login SSH shells.
+        # Parse and export each key=value line explicitly instead.
+        "while IFS='=' read -r _k _v; do "
+        "  case \"$_k\" in '#'*|'') continue;; esac; "
+        "  export \"$_k=$_v\"; "
+        "done < /etc/environment; "
+        + _vllm_env_setup +
+        # ── 2. Resolve model path from LLM_MODEL_PATH + LLM_MODEL_NAME ────
+        # LLM_MODEL_PATH = base dir  e.g. /vllm_data/hf_cache
+        # LLM_MODEL_NAME = model dir e.g. ArtLLM
+        # Combined → /vllm_data/hf_cache/ArtLLM
+        #
+        # Also supports:
+        #   LLM_MODEL_NAME as absolute path  (/some/path/model)
+        #   LLM_MODEL_NAME as HF ID          (org/model-name)
+        "RESOLVED_MODEL=''; "
+
+        # Case A: LLM_MODEL_PATH + LLM_MODEL_NAME both set → combine them
+        "if [ -n \"${LLM_MODEL_PATH:-}\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+        "  _combined=\"${LLM_MODEL_PATH}/${LLM_MODEL_NAME}\"; "
+        "  if [ -f \"${_combined}/config.json\" ]; then "
+        "    RESOLVED_MODEL=\"$_combined\"; "
+        "    echo \"[vLLM] Model resolved: $RESOLVED_MODEL (LLM_MODEL_PATH + LLM_MODEL_NAME)\"; "
+        "  else "
+        "    echo \"[vLLM] WARNING: ${_combined}/config.json not found\"; "
+        "  fi; "
+        "fi; "
+
+        # Case B: LLM_MODEL_NAME alone is an absolute path or HF ID (has slash)
+        "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
+        "  case \"$LLM_MODEL_NAME\" in "
+        "    /*) "  # absolute path
+        "      [ -f \"${LLM_MODEL_NAME}/config.json\" ] && RESOLVED_MODEL=\"$LLM_MODEL_NAME\" "
+        "        && echo \"[vLLM] Model resolved: $RESOLVED_MODEL (absolute path)\"; ;; "
+        "    */*) "  # HF ID like org/model
+        "      RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; "
+        "      echo \"[vLLM] Model resolved: $RESOLVED_MODEL (HuggingFace ID)\"; ;; "
+        "  esac; "
+        "fi; "
+
+        # Case C: Fallback scan inside LLM_MODEL_PATH if name not set
+        "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_PATH:-}\" ]; then "
+        "  for _cfg in \"$LLM_MODEL_PATH\"/*/config.json \"$LLM_MODEL_PATH\"/config.json; do "
+        "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
+        "      echo \"[vLLM] Found model in LLM_MODEL_PATH: $RESOLVED_MODEL\"; break; }; "
+        "  done; "
+        "fi; "
+
+        # Case D: Final fallback — scan /vllm_data/hf_cache
+        "if [ -z \"$RESOLVED_MODEL\" ]; then "
+        "  for _cfg in /vllm_data/hf_cache/*/config.json "
+        "             /vllm_data/hf_cache/models--*/snapshots/*/config.json; do "
+        "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
+        "      echo \"[vLLM] Found model in hf_cache fallback: $RESOLVED_MODEL\"; break; }; "
+        "  done; "
+        "fi; "
+
+        # ── 3. Nothing found → fail loudly with env dump ─────────────────
+        "if [ -z \"$RESOLVED_MODEL\" ]; then "
+        "  echo 'VLLM_SKIP: LLM_MODEL_PATH/LLM_MODEL_NAME not set and no model found in /vllm_data/hf_cache'; "
+        "  echo \"  LLM_MODEL_PATH=${LLM_MODEL_PATH:-<unset>}\"; "
+        "  echo \"  LLM_MODEL_NAME=${LLM_MODEL_NAME:-<unset>}\"; "
+        "  echo \"  /etc/environment contents:\"; cat /etc/environment 2>/dev/null || echo '  (not found)'; "
+        "  echo \"  /vllm_data/hf_cache listing:\"; ls /vllm_data/hf_cache/ 2>/dev/null || echo '  (not found)'; "
+        "  exit 1; "  # fail instead of silently skipping so health_poll never runs
+        "fi; "
+
+        # ── 4. Kill stale vLLM process + TRUNCATE old log ─────────────────
+        # Overwrite the log with a dated marker so we never read a stale log
+        # left over from template prep. Everything after appends (>>).
+        "echo \"[vLLM] Launching: $RESOLVED_MODEL\"; "
+        "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+        # Also clear any leftover Ray actor/worker processes from a prior
+        # launch attempt (e.g. EngineCore, RayWorkerP). Without this, a
+        # retry can hit "ActorHandleNotFoundError: ... not valid across
+        # Ray sessions" because vLLM still holds a handle to an actor
+        # from the previous session. NOT `ray stop` -- that would tear
+        # down the whole cluster (this runs on the head); this only
+        # kills vLLM's own leftover worker processes.
+        # grep -v $$ is required -- without it, pgrep matches the shell
+        # running THIS SCRIPT ITSELF (its command line literally contains
+        # this search text), and xargs kills it, terminating the whole
+        # launch after only a fraction of a second (confirmed via logs:
+        # channel dropped in 0.22s, before the script could possibly have
+        # reached model resolution).
+        "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+        "sleep 2; "
+        f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/vllm_server.log; "
+
+        # ── 5. Fire-and-forget launch ─────────────────────────────────────
+        # env VAR=value prefix guarantees vars reach the nohup subprocess
+        # even if the SSH channel closes before shell exports are inherited.
+        f"_VLLM_ENV=\"VLLM_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 CUDA_HOME=/usr/local/cuda\"; "
+
+        # Log exact env + command to vllm_server.log before launching
+        f"echo \"[vLLM-env] VLLM_DEVICE=$VLLM_DEVICE\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-env] CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-env] CUDA_HOME=$CUDA_HOME\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-env] LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-env] _VLLM_ENV=$_VLLM_ENV\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-env] /dev/nvidia* = $(ls /dev/nvidia* 2>/dev/null || echo MISSING)\" >> {home_dir}/vllm_server.log; "
+        f"echo \"[vLLM-checkpoint $(date -u)] 1. Preparing launch command\" >> {home_dir}/vllm_server.log; "
+
+        "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+        f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
+        f"  nohup env $_VLLM_ENV {_vllm_bin}"
+        f"    --model \"$RESOLVED_MODEL\""
+        f"    --served-model-name \"$RESOLVED_MODEL\""
+        f"    {_vllm_common_args}"
+        f"    >> {home_dir}/vllm_server.log 2>&1 & "
+        "else "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+        f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
+        f"  nohup env $_VLLM_ENV {_vllm_bin}"
+        f"    --model \"$RESOLVED_MODEL\""
+        f"    --served-model-name \"$RESOLVED_MODEL\""
+        f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
+        f"    {_vllm_common_args}"
+        f"    >> {home_dir}/vllm_server.log 2>&1 & "
+        "fi; "
+        f"echo \"[vLLM-checkpoint $(date -u)] 3. Process backgrounded successfully\" >> {home_dir}/vllm_server.log; "
+        "echo \"[vLLM] Process launched in background\""
+    )
+
+    health_poll = (
+        "source /etc/profile || true; "
+        "source ~/.bash_profile || true; "
+        "source ~/.bashrc || true; "
+        "for i in $(seq 1 90); do "
+        "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
+        "  echo \"Waiting for vllm... $i/90\"; "
+        "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
+        "  sleep 10; "
+        "done; "
+        "{ "
+        "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
+        "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
+        "  echo '=== vllm_server.log (last 80 lines) ==='; "
+        f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
+        "} >&2; "
+        "exit 1"
+    )
+
+    return vllm_launch, health_poll
+
+
 @activity.defn
 def launch_vllm_from_template_activity(payload: dict) -> dict:
 
@@ -640,9 +840,6 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         run_commands(ip, ssh_user, ssh_pass, [_wait_gpu], timeout=180)
         logger.info(f"[{ip}] GPU/NVML ready")
 
-        # ── Step 0.5: Compute if multi-node (determines Ray vLLM params) ──────
-        is_multinode = pp_size > 1
-
         # ── Step 0.6: Wait for Ray head service (always, but only vLLM uses it if multi-node) ──
         # Reboot ke baad Ray head service auto-start hoti hai — wait karo ready hone ka
         _wait_ray_head = (
@@ -664,191 +861,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             logger.warning(f"[{ip}] Ray head wait encountered error (non-fatal): {_ray_err}")
 
         home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
-        _vllm_bin = f"{home_dir}/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
-        # Single-node inference (pp_size=1) → no Ray, simpler & faster.
-        # Multi-node inference (pp_size>1) → Ray for pipeline parallelism.
-        if is_multinode:
-            _vllm_common_args = (
-                f" --distributed-executor-backend ray"
-                f" --tensor-parallel-size {tp_size}"
-                f" --pipeline-parallel-size {pp_size}"
-                f" --max-model-len 4096"
-                f" --gpu-memory-utilization 0.90"
-                f" --enable-chunked-prefill"
-                f" --trust-remote-code"
-                f" --host 0.0.0.0 --port 8000"
-            )
-        else:
-            # Single node: no Ray overhead, plain in-process inference.
-            # Still need --tensor-parallel-size when the node has multiple
-            # GPUs -- without it vLLM defaults to TP=1 and silently only
-            # uses one of the attached GPUs.
-            _vllm_common_args = (
-                (f" --tensor-parallel-size {tp_size}" if tp_size > 1 else "")
-                + f" --max-model-len 4096"
-                f" --gpu-memory-utilization 0.90"
-                f" --enable-chunked-prefill"
-                f" --trust-remote-code"
-                f" --host 0.0.0.0 --port 8000"
-            )
-
-        _vllm_env_setup = (
-            f"source {home_dir}/vllm-ray-env/bin/activate; "
-            f"export CUDA_HOME=/usr/local/cuda; "
-            f"export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu; "
-            f"export PATH=$PATH:/usr/local/cuda/bin; "
-            f"export VLLM_DEVICE=cuda; "
-            f"export CUDA_VISIBLE_DEVICES=0; "
-        )
-
-        vllm_launch = (
-            # ── 0.5: Load CUDA & vLLM env ────────────────────────────────────────
-            "source /etc/profile || true; "
-            "source ~/.bash_profile || true; "
-            "source ~/.bashrc || true; "
-            # set -a/source /etc/environment is unreliable in non-login SSH shells.
-            # Parse and export each key=value line explicitly instead.
-            "while IFS='=' read -r _k _v; do "
-            "  case \"$_k\" in '#'*|'') continue;; esac; "
-            "  export \"$_k=$_v\"; "
-            "done < /etc/environment; "
-            + _vllm_env_setup +
-            # ── 2. Resolve model path from LLM_MODEL_PATH + LLM_MODEL_NAME ────
-            # LLM_MODEL_PATH = base dir  e.g. /vllm_data/hf_cache
-            # LLM_MODEL_NAME = model dir e.g. ArtLLM
-            # Combined → /vllm_data/hf_cache/ArtLLM
-            #
-            # Also supports:
-            #   LLM_MODEL_NAME as absolute path  (/some/path/model)
-            #   LLM_MODEL_NAME as HF ID          (org/model-name)
-            "RESOLVED_MODEL=''; "
-
-            # Case A: LLM_MODEL_PATH + LLM_MODEL_NAME both set → combine them
-            "if [ -n \"${LLM_MODEL_PATH:-}\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
-            "  _combined=\"${LLM_MODEL_PATH}/${LLM_MODEL_NAME}\"; "
-            "  if [ -f \"${_combined}/config.json\" ]; then "
-            "    RESOLVED_MODEL=\"$_combined\"; "
-            "    echo \"[vLLM] Model resolved: $RESOLVED_MODEL (LLM_MODEL_PATH + LLM_MODEL_NAME)\"; "
-            "  else "
-            "    echo \"[vLLM] WARNING: ${_combined}/config.json not found\"; "
-            "  fi; "
-            "fi; "
-
-            # Case B: LLM_MODEL_NAME alone is an absolute path or HF ID (has slash)
-            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
-            "  case \"$LLM_MODEL_NAME\" in "
-            "    /*) "  # absolute path
-            "      [ -f \"${LLM_MODEL_NAME}/config.json\" ] && RESOLVED_MODEL=\"$LLM_MODEL_NAME\" "
-            "        && echo \"[vLLM] Model resolved: $RESOLVED_MODEL (absolute path)\"; ;; "
-            "    */*) "  # HF ID like org/model
-            "      RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; "
-            "      echo \"[vLLM] Model resolved: $RESOLVED_MODEL (HuggingFace ID)\"; ;; "
-            "  esac; "
-            "fi; "
-
-            # Case C: Fallback scan inside LLM_MODEL_PATH if name not set
-            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_PATH:-}\" ]; then "
-            "  for _cfg in \"$LLM_MODEL_PATH\"/*/config.json \"$LLM_MODEL_PATH\"/config.json; do "
-            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
-            "      echo \"[vLLM] Found model in LLM_MODEL_PATH: $RESOLVED_MODEL\"; break; }; "
-            "  done; "
-            "fi; "
-
-            # Case D: Final fallback — scan /vllm_data/hf_cache
-            "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  for _cfg in /vllm_data/hf_cache/*/config.json "
-            "             /vllm_data/hf_cache/models--*/snapshots/*/config.json; do "
-            "    [ -f \"$_cfg\" ] && { RESOLVED_MODEL=$(dirname \"$_cfg\"); "
-            "      echo \"[vLLM] Found model in hf_cache fallback: $RESOLVED_MODEL\"; break; }; "
-            "  done; "
-            "fi; "
-
-            # ── 3. Nothing found → fail loudly with env dump ─────────────────
-            "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  echo 'VLLM_SKIP: LLM_MODEL_PATH/LLM_MODEL_NAME not set and no model found in /vllm_data/hf_cache'; "
-            "  echo \"  LLM_MODEL_PATH=${LLM_MODEL_PATH:-<unset>}\"; "
-            "  echo \"  LLM_MODEL_NAME=${LLM_MODEL_NAME:-<unset>}\"; "
-            "  echo \"  /etc/environment contents:\"; cat /etc/environment 2>/dev/null || echo '  (not found)'; "
-            "  echo \"  /vllm_data/hf_cache listing:\"; ls /vllm_data/hf_cache/ 2>/dev/null || echo '  (not found)'; "
-            "  exit 1; "  # fail instead of silently skipping so health_poll never runs
-            "fi; "
-
-            # ── 4. Kill stale vLLM process + TRUNCATE old log ─────────────────
-            # Overwrite the log with a dated marker so we never read a stale log
-            # left over from template prep. Everything after appends (>>).
-            "echo \"[vLLM] Launching: $RESOLVED_MODEL\"; "
-            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
-            # Also clear any leftover Ray actor/worker processes from a prior
-            # launch attempt (e.g. EngineCore, RayWorkerP). Without this, a
-            # retry can hit "ActorHandleNotFoundError: ... not valid across
-            # Ray sessions" because vLLM still holds a handle to an actor
-            # from the previous session. NOT `ray stop` -- that would tear
-            # down the whole cluster (this runs on the head); this only
-            # kills vLLM's own leftover worker processes.
-            # grep -v $$ is required -- without it, pgrep matches the shell
-            # running THIS SCRIPT ITSELF (its command line literally contains
-            # this search text), and xargs kills it, terminating the whole
-            # launch after only a fraction of a second (confirmed via logs:
-            # channel dropped in 0.22s, before the script could possibly have
-            # reached model resolution).
-            "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
-            "sleep 2; "
-            f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/vllm_server.log; "
-
-            # ── 5. Fire-and-forget launch ─────────────────────────────────────
-            # env VAR=value prefix guarantees vars reach the nohup subprocess
-            # even if the SSH channel closes before shell exports are inherited.
-            f"_VLLM_ENV=\"VLLM_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 CUDA_HOME=/usr/local/cuda\"; "
-
-            # Log exact env + command to vllm_server.log before launching
-            f"echo \"[vLLM-env] VLLM_DEVICE=$VLLM_DEVICE\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-env] CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-env] CUDA_HOME=$CUDA_HOME\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-env] LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-env] _VLLM_ENV=$_VLLM_ENV\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-env] /dev/nvidia* = $(ls /dev/nvidia* 2>/dev/null || echo MISSING)\" >> {home_dir}/vllm_server.log; "
-            f"echo \"[vLLM-checkpoint $(date -u)] 1. Preparing launch command\" >> {home_dir}/vllm_server.log; "
-
-            "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-            f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
-            f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
-            f"  nohup env $_VLLM_ENV {_vllm_bin}"
-            f"    --model \"$RESOLVED_MODEL\""
-            f"    --served-model-name \"$RESOLVED_MODEL\""
-            f"    {_vllm_common_args}"
-            f"    >> {home_dir}/vllm_server.log 2>&1 & "
-            "else "
-            f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
-            f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
-            f"  nohup env $_VLLM_ENV {_vllm_bin}"
-            f"    --model \"$RESOLVED_MODEL\""
-            f"    --served-model-name \"$RESOLVED_MODEL\""
-            f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
-            f"    {_vllm_common_args}"
-            f"    >> {home_dir}/vllm_server.log 2>&1 & "
-            "fi; "
-            f"echo \"[vLLM-checkpoint $(date -u)] 3. Process backgrounded successfully\" >> {home_dir}/vllm_server.log; "
-            "echo \"[vLLM] Process launched in background\""
-        )
-
-        health_poll = (
-            "source /etc/profile || true; "
-            "source ~/.bash_profile || true; "
-            "source ~/.bashrc || true; "
-            "for i in $(seq 1 90); do "
-            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
-            "  echo \"Waiting for vllm... $i/90\"; "
-            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
-            "  sleep 10; "
-            "done; "
-            "{ "
-            "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
-            "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
-            "  echo '=== vllm_server.log (last 80 lines) ==='; "
-            f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
-            "} >&2; "
-            "exit 1"
-        )
+        vllm_launch, health_poll = _build_vllm_commands(home_dir, tp_size, pp_size)
 
         try:
             start_time = time.time()
@@ -1007,79 +1020,11 @@ def restore_llm_services_activity(payload: dict) -> dict:
         logger.info(f"[{ip}] Ray cluster is healthy")
 
         # ── Step 3: Kill stale vLLM + relaunch ───────────────────────────────
-        _vllm_bin_r = f"{venv_bin}/python3 -m vllm.entrypoints.openai.api_server"
-        _vllm_args_r = (
-            f" --distributed-executor-backend ray"
-            f" --tensor-parallel-size {tp_size}"
-            f" --pipeline-parallel-size {pp_size}"
-            f" --max-model-len 4096"
-            f" --gpu-memory-utilization 0.90"
-            f" --enable-chunked-prefill"
-            f" --trust-remote-code"
-            f" --host 0.0.0.0 --port 8000"
-        )
-        vllm_launch = (
-            "source /etc/profile || true; "
-            "source ~/.bash_profile || true; "
-            "source ~/.bashrc || true; "
-            "set -a; source /etc/environment; set +a; "
-            f"export CUDA_HOME=/usr/local/cuda; "
-            f"export LD_LIBRARY_PATH=$LD_LIBRARY_PATH:/usr/local/cuda/lib64:/usr/lib64:/usr/lib/x86_64-linux-gnu; "
-            f"export PATH=$PATH:/usr/local/cuda/bin; "
-            f"export VLLM_TARGET_DEVICE=cuda; "
-
-            # Resolve model: LLM_MODEL_PATH + LLM_MODEL_NAME → combined path
-            "RESOLVED_MODEL=''; "
-            "if [ -n \"${LLM_MODEL_PATH:-}\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
-            "  _combined=\"${LLM_MODEL_PATH}/${LLM_MODEL_NAME}\"; "
-            "  [ -f \"${_combined}/config.json\" ] && RESOLVED_MODEL=\"$_combined\" "
-            "    && echo \"[vLLM-restore] Model: $RESOLVED_MODEL\"; "
-            "fi; "
-            "if [ -z \"$RESOLVED_MODEL\" ] && [ -n \"${LLM_MODEL_NAME:-}\" ]; then "
-            "  case \"$LLM_MODEL_NAME\" in "
-            "    /*) [ -f \"${LLM_MODEL_NAME}/config.json\" ] && RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; ;; "
-            "    */*) RESOLVED_MODEL=\"$LLM_MODEL_NAME\"; ;; "
-            "  esac; "
-            "fi; "
-            "if [ -z \"$RESOLVED_MODEL\" ]; then "
-            "  echo 'ERROR: Cannot resolve model — set LLM_MODEL_PATH and LLM_MODEL_NAME in /etc/environment'; exit 1; "
-            "fi; "
-
-            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
-            # Same as the initial-launch path -- clear leftover Ray actor/worker
-            # processes from a prior session so a relaunch here doesn't hit
-            # "ActorHandleNotFoundError: ... not valid across Ray sessions".
-            # grep -v $$ excludes the shell running this script itself (see
-            # matching comment in launch_vllm_from_template_activity).
-            "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
-            "sleep 3; "
-            "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\"{_vllm_args_r} > {home_dir}/vllm_server.log 2>&1 & disown; "
-            "else "
-            f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\" --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\"{_vllm_args_r} > {home_dir}/vllm_server.log 2>&1 & disown; "
-            "fi; "
-            "sleep 8; "
-            "pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || "
-            f"  {{ echo 'ERROR: vLLM process failed to start'; cat {home_dir}/vllm_server.log; exit 1; }}"
-        )
-        health_poll = (
-            "source /etc/profile || true; "
-            "source ~/.bash_profile || true; "
-            "source ~/.bashrc || true; "
-            "for i in $(seq 1 90); do "
-            "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
-            "  echo \"Waiting for vllm... $i/90\"; "
-            "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
-            "  sleep 10; "
-            "done; "
-            "{ "
-            "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
-            "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
-            "  echo '=== vllm_server.log (last 80 lines) ==='; "
-            f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
-            "} >&2; "
-            "exit 1"
-        )
+        # Uses the exact same command-building logic as the original
+        # provisioning launch (launch_vllm_from_template_activity), so a
+        # restart can never diverge from how the pool was first launched
+        # (single-node vs multi-node branching, env vars, model resolution).
+        vllm_launch, health_poll = _build_vllm_commands(home_dir, tp_size, pp_size)
         run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
         logger.info(f"[{ip}] vLLM relaunched and healthy")
 
