@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 _SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
 _SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
+_VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launches/restarts
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -740,41 +741,29 @@ def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str
         # reached model resolution).
         "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
         "sleep 2; "
-        f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/vllm_server.log; "
+        f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/{_VLLM_LOG_FILE}; "
 
         # ── 5. Fire-and-forget launch ─────────────────────────────────────
         # env VAR=value prefix guarantees vars reach the nohup subprocess
         # even if the SSH channel closes before shell exports are inherited.
         f"_VLLM_ENV=\"VLLM_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 CUDA_HOME=/usr/local/cuda\"; "
 
-        # Log exact env + command to vllm_server.log before launching
-        f"echo \"[vLLM-env] VLLM_DEVICE=$VLLM_DEVICE\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-env] CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-env] CUDA_HOME=$CUDA_HOME\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-env] LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-env] _VLLM_ENV=$_VLLM_ENV\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-env] /dev/nvidia* = $(ls /dev/nvidia* 2>/dev/null || echo MISSING)\" >> {home_dir}/vllm_server.log; "
-        f"echo \"[vLLM-checkpoint $(date -u)] 1. Preparing launch command\" >> {home_dir}/vllm_server.log; "
-
         "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
-        f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
         f"  nohup env $_VLLM_ENV {_vllm_bin}"
         f"    --model \"$RESOLVED_MODEL\""
         f"    --served-model-name \"$RESOLVED_MODEL\""
         f"    {_vllm_common_args}"
-        f"    >> {home_dir}/vllm_server.log 2>&1 & "
+        f"    >> {home_dir}/{_VLLM_LOG_FILE} 2>&1 & "
         "else "
-        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
-        f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
         f"  nohup env $_VLLM_ENV {_vllm_bin}"
         f"    --model \"$RESOLVED_MODEL\""
         f"    --served-model-name \"$RESOLVED_MODEL\""
         f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
         f"    {_vllm_common_args}"
-        f"    >> {home_dir}/vllm_server.log 2>&1 & "
+        f"    >> {home_dir}/{_VLLM_LOG_FILE} 2>&1 & "
         "fi; "
-        f"echo \"[vLLM-checkpoint $(date -u)] 3. Process backgrounded successfully\" >> {home_dir}/vllm_server.log; "
         "echo \"[vLLM] Process launched in background\""
     )
 
@@ -791,8 +780,8 @@ def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str
         "{ "
         "  echo '=== nvidia-smi ==='; nvidia-smi 2>/dev/null || echo 'nvidia-smi failed'; "
         "  echo '=== ray status ==='; ray status 2>/dev/null || echo 'ray status failed'; "
-        "  echo '=== vllm_server.log (last 80 lines) ==='; "
-        f"  [ -f {home_dir}/vllm_server.log ] && tail -80 {home_dir}/vllm_server.log || echo 'Log not found'; "
+        f"  echo '=== {_VLLM_LOG_FILE} (last 80 lines) ==='; "
+        f"  [ -f {home_dir}/{_VLLM_LOG_FILE} ] && tail -80 {home_dir}/{_VLLM_LOG_FILE} || echo 'Log not found'; "
         "} >&2; "
         "exit 1"
     )
@@ -864,13 +853,10 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         vllm_launch, health_poll = _build_vllm_commands(home_dir, tp_size, pp_size)
 
         try:
-            start_time = time.time()
             logger.info(f"[{ip}] Executing vLLM launch script over SSH...")
             launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=120)
-            duration = time.time() - start_time
             exit_code = launch_results[0].get("exit_code") if launch_results else None
-            logger.info(f"[{ip}] SSH launch command finished in {duration:.2f}s (exit_code={exit_code})")
-            
+
             # run_commands treats exit_code -1 (SSH channel closed without a real
             # exit status) as if it were a clean success -- it does NOT raise for
             # it. That silently let a mid-script channel drop (before the launch
@@ -879,20 +865,10 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             # process and no log ("Log not found"). Detect it explicitly here and
             # route into the same verify/retry logic below instead of trusting it.
             if launch_results and exit_code == -1:
-                logger.error(f"[{ip}] SSH connection dropped mid-command after {duration:.2f}s (exit_code=-1)")
+                logger.error(f"[{ip}] SSH connection dropped mid-command (exit_code=-1)")
                 raise RuntimeError(f"Command failed (exit -1) on {ip}: channel closed without exit status")
             launch_stdout = launch_results[0]["stdout"] if launch_results else ""
-            _stderr_preview = (launch_results[0].get("stderr", "") if launch_results else "")[:500]
-            logger.info(
-                f"[{ip}] vllm_launch stdout (last 300 chars)={launch_stdout[-300:]!r}, "
-                f"stderr_preview={_stderr_preview!r}"
-            )
         except RuntimeError as launch_err:
-            duration = time.time() - start_time
-            logger.warning(
-                f"[{ip}] vllm_launch run_commands RAISED after {duration:.2f}s: "
-                f"{type(launch_err).__name__}: {str(launch_err)[:500]}"
-            )
             if "exit -1" in str(launch_err):
                 # SSH channel dropped — exit -1 means channel closed without exit status.
                 # This can happen BEFORE or AFTER nohup was submitted, so we cannot assume
