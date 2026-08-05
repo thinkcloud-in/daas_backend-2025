@@ -42,6 +42,7 @@ from service.temporalResource.workers import workers_kubernetes_deploy
 from service.temporalResource.workers import workers_harbor_push
 from service.temporalResource.workers import workers_app_deploy
 from service.temporalResource.workers import workers_llm_push
+from service.temporalResource.workers import workers_connect_llm
 from middleware import DB_init
 from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
@@ -189,8 +190,9 @@ def start_workers():
     start_thread_manager("HarborImage", workers_harbor_image.run_harbor_image_worker)
     start_thread_manager("K8sDeploy", workers_kubernetes_deploy.run_k8s_deploy_worker)
     start_thread_manager("HarborPush", workers_harbor_push.run_harbor_push_worker)
-    start_thread_manager("AppDeploy", workers_app_deploy.run_app_deploy_worker)
-    start_thread_manager("LLMPush",   workers_llm_push.run_llm_push_worker)
+    start_thread_manager("AppDeploy",   workers_app_deploy.run_app_deploy_worker)
+    start_thread_manager("LLMPush",     workers_llm_push.run_llm_push_worker)
+    start_thread_manager("ConnectLLM",  workers_connect_llm.run_connect_llm_worker)
 
     logger.info("Hybrid background worker manager started (5 threads, 100+ concurrent tasks).")
 

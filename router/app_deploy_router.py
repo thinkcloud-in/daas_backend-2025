@@ -88,25 +88,32 @@ def disconnect_vectordb(openwebui_id: int, db: Session = Depends(get_db)):
 
 
 class ConnectLLMBody(BaseModel):
-    llm_id: int
+    llm_ids: list[int]
 
 
 @app_deploy_router.post("/{openwebui_id}/connect-llm", response_model=APIResponse[Any])
-def connect_private_llm(
+async def connect_private_llm(
     openwebui_id: int,
     body: ConnectLLMBody,
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI ke saath Private LLM connect karo.
-    K8s pe OPENAI_API_BASE_URL + OPENAI_API_KEY=none env inject karta hai.
+    OpenWebUI ke saath Private LLM(s) connect karo.
+    Primary: OpenWebUI REST API (instant, no restart).
+    Fallback: Temporal workflow — K8s env vars inject + rollout wait (one-time only).
     """
-    return app_deploy_controller.connect_private_llm(openwebui_id, body.llm_id, db)
+    return await app_deploy_controller.connect_private_llm(openwebui_id, body.llm_ids, db)
 
 
 @app_deploy_router.delete("/{openwebui_id}/connect-llm", response_model=APIResponse[Any])
-def disconnect_private_llm(openwebui_id: int, db: Session = Depends(get_db)):
+async def disconnect_private_llm(
+    openwebui_id: int,
+    llm_id: Optional[int] = Query(None, description="LLM id to disconnect. Omit to disconnect all."),
+    db: Session = Depends(get_db),
+):
     """
-    OpenWebUI se Private LLM ka link hatao — K8s env vars remove + rollout.
+    OpenWebUI se Private LLM ka link hatao.
+    Primary: OpenWebUI REST API (instant, no restart).
+    Fallback: Temporal workflow — K8s env vars update + rollout (one-time only).
     """
-    return app_deploy_controller.disconnect_private_llm(openwebui_id, db)
+    return await app_deploy_controller.disconnect_private_llm(openwebui_id, llm_id, db)

@@ -316,26 +316,61 @@ def _ensure_pull_secret(v1, namespace: str, harbor_host: str, harbor_user: str, 
 
 def _openwebui_manifest(rname: str, namespace: str, image: str) -> list[dict]:
     svc_name = f"{rname}-openwebui"
+    pvc_name = f"{svc_name}-data"
     return [
+        {
+            "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": pvc_name, "namespace": namespace,
+                         "labels": {"app": svc_name, "managed-by": "daas"}},
+            "spec": {
+                "accessModes": ["ReadWriteOnce"],
+                "resources": {"requests": {"storage": "1Gi"}},
+            },
+        },
         {
             "apiVersion": "apps/v1", "kind": "Deployment",
             "metadata": {"name": svc_name, "namespace": namespace,
                          "labels": {"app": svc_name, "managed-by": "daas", "daas-type": "openwebui"}},
             "spec": {
                 "replicas": 1,
+                "strategy": {
+                    "type": "RollingUpdate",
+                    "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+                },
                 "selector": {"matchLabels": {"app": svc_name}},
                 "template": {
                     "metadata": {"labels": {"app": svc_name, "managed-by": "daas"}},
                     "spec": {
                         "imagePullSecrets": [{"name": "harbor-registry-secret"}],
+                        "volumes": [
+                            {"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}},
+                        ],
                         "containers": [{
                             "name": "openwebui", "image": image,
                             "imagePullPolicy": "IfNotPresent",
                             "ports": [{"containerPort": 8080}],
-                            "env": [{"name": "WEBUI_SECRET_KEY", "value": "daas-openwebui-secret"}],
+                            "env": [
+                                {"name": "WEBUI_SECRET_KEY", "value": "daas-openwebui-secret"},
+                                {"name": "WEBUI_API_KEY",    "value": "daas-openwebui-api-key"},
+                            ],
+                            "volumeMounts": [
+                                {"name": "data", "mountPath": "/app/backend/data"},
+                            ],
                             "resources": {
                                 "requests": {"memory": "512Mi", "cpu": "250m"},
                                 "limits":   {"memory": "2Gi",   "cpu": "2000m"},
+                            },
+                            "readinessProbe": {
+                                "httpGet": {"path": "/health", "port": 8080},
+                                "initialDelaySeconds": 10,
+                                "periodSeconds": 5,
+                                "failureThreshold": 12,
+                            },
+                            "livenessProbe": {
+                                "httpGet": {"path": "/health", "port": 8080},
+                                "initialDelaySeconds": 30,
+                                "periodSeconds": 10,
+                                "failureThreshold": 3,
                             },
                         }],
                     },

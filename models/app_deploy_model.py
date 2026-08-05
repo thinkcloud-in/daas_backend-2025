@@ -30,8 +30,8 @@ class AppDeployment(Base):
     # VectorDB integration (openwebui only)
     linked_vectordb_id  = Column(Integer, nullable=True)   # app_deployments.id of vectordb
 
-    # Private LLM integration (openwebui only)
-    linked_llm_id       = Column(Integer, nullable=True)   # llm_inference_jobs.id
+    # Private LLM integration (openwebui only) — JSON array of llm_inference_jobs.id
+    linked_llm_ids      = Column(Text, nullable=True)      # e.g. "[1, 3, 5]"
 
     status              = Column(String, nullable=False, default="pending")
     # pending → connecting → deploying → waiting_ready → deployed | failed
