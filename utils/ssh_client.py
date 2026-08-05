@@ -63,27 +63,33 @@ def reboot_and_wait(host: str, username: str, password: str, wait_before_retry: 
     wait_before_retry: seconds to wait before starting reconnect attempts
     (give the OS time to actually go down before we start polling).
     """
+    client = None
     try:
         client = _get_client(host, username, password)
         client.exec_command("sudo reboot")
-        client.close()
     except Exception:
         pass  # connection drop on reboot is expected
+    finally:
+        if client is not None:
+            client.close()
 
     logger.info(f"Reboot issued to {host}, waiting {wait_before_retry}s before reconnect attempts...")
     time.sleep(wait_before_retry)
 
     # Now poll until SSH is back
     for attempt in range(1, _CONNECT_RETRIES + 1):
+        client = None
         try:
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             client.connect(host, username=username, password=password, timeout=10)
-            client.close()
             logger.info(f"{host} is back online after reboot (attempt {attempt})")
             return
         except Exception as e:
             logger.warning(f"Waiting for {host} to come back... attempt {attempt}/{_CONNECT_RETRIES}: {e}")
             time.sleep(_RETRY_INTERVAL)
+        finally:
+            if client is not None:
+                client.close()
 
     raise RuntimeError(f"{host} did not come back online after reboot within expected time")

@@ -60,6 +60,37 @@ class CreateMultiNodeLLMWorkflow:
         ips       = payload["reserved_ips"]   # [{"ip": str, "pool_id": int}]
         ssh_creds = {"ssh_user": payload.get("ssh_user"), "ssh_pass": payload.get("ssh_pass")}
 
+        if not payload.get("subnet"):
+            raise ValueError(
+                "payload['subnet'] is required (the real cluster subnet in CIDR "
+                "form, e.g. '172.16.4.0/24'). It is used to open the inter-node "
+                "firewall accept-rule between all cluster VMs. A missing/wrong "
+                "subnet here leaves node-to-node traffic (e.g. the PyTorch/NCCL "
+                "rendezvous port) unprotected, causing 'No route to host' errors "
+                "between GPU workers during multi-node vLLM launch."
+            )
+
+        # ── Phase 0.5: Reserve one VMID + one name per node UP FRONT, sequentially ─
+        # Must happen before the parallel clone tasks below -- if each node's
+        # clone activity independently called /cluster/nextid or computed its
+        # own "next free name", two nodes cloning at the same moment could
+        # both be handed the same id (Proxmox's nextid has no locking) or the
+        # same name (e.g. both "lucky-001"), since neither sees the other's
+        # not-yet-created VM.
+        reservation = await workflow.execute_activity(
+            activities_llm_inference_v2.reserve_vmids_activity,
+            args=[{
+                "cluster_id":    payload["cluster_id"],
+                "count":         len(nodes),
+                "pool_name":     payload["name"],
+                "name_template": payload.get("name_template"),
+            }],
+            retry_policy=RetryPolicy(maximum_attempts=1),
+            start_to_close_timeout=timedelta(minutes=2),
+        )
+        reserved_vmids = reservation["vmids"]
+        reserved_names = reservation["vm_names"]
+
         # ── Phase 1: Clone + configure all VMs in parallel ───────────────────
         clone_tasks = []
         for i, (node_cfg, reserved) in enumerate(zip(nodes, ips)):
@@ -76,6 +107,8 @@ class CreateMultiNodeLLMWorkflow:
                         "storage":       payload.get("storage", "local-lvm"),
                         "pool_name":     payload["name"],
                         "name_template": payload.get("name_template"),
+                        "vmid":          reserved_vmids[i],
+                        "vm_name":       reserved_names[i],
                         **ssh_creds,
                     }],
                     retry_policy=RetryPolicy(maximum_attempts=1),
@@ -96,7 +129,7 @@ class CreateMultiNodeLLMWorkflow:
         # Compute parallelism sizes from topology
         n_nodes          = len(nodes)                             # pipeline stages (cross-node)
         n_gpus_per_node  = len(nodes[0]["gpu"]) if nodes else 1  # tensor parallelism (within-node)
-        net_iface        = payload.get("net_iface", "ens18")
+        net_iface        = payload.get("net_iface")  # None -> activity auto-detects the VM's real interface
 
         # ── Phase 2: Update DB with VM info ───────────────────────────────────
         await workflow.execute_activity(
@@ -114,8 +147,8 @@ class CreateMultiNodeLLMWorkflow:
                 args=[{
                     "ip_address": ip,
                     "name":       f"{payload['name']}-{i}",
-                    "subnet":     payload.get("subnet", "192.168.100.0/24"),
-                    "net_iface":  payload.get("net_iface", "ens18"),
+                    "subnet":     payload["subnet"],
+                    "net_iface":  payload.get("net_iface"),  # None -> activity auto-detects the VM's real interface
                     "model":      payload.get("model", ""),
                     "model_path": payload.get("model_path", "/vllm_data/hf_cache"),
                     **ssh_creds,
@@ -134,11 +167,34 @@ class CreateMultiNodeLLMWorkflow:
             start_to_close_timeout=timedelta(minutes=2),
         )
 
+        # ── Phase 2.6: Verify GPU health on EVERY node, with auto-reboot-retry ──
+        # A broken driver (kernel module / userspace library version mismatch --
+        # usually from an update that hasn't been rebooted into) previously went
+        # completely undetected on worker nodes, since the old GPU/NVML wait
+        # only ever ran on the head node inside launch_vllm_from_template_activity.
+        # That let vLLM fail deep inside Ray actor init with a confusing,
+        # multi-layer error instead of failing fast here with a clear one.
+        gpu_health_tasks = [
+            workflow.execute_activity(
+                activities_llm_inference_v2.verify_gpu_health_activity,
+                args=[{"ip_address": ip, **ssh_creds}],
+                retry_policy=RetryPolicy(maximum_attempts=1),
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+            for ip in ip_addrs
+        ]
+        await asyncio.gather(*gpu_health_tasks)
+
         # ── Phase 3: Affinity rules ───────────────────────────────────────────
-        for vmid in vmids:
+        # Each VM must be pinned to the node IT was actually cloned onto --
+        # using nodes[0] for every vmid here previously pinned every VM to the
+        # first node, so Proxmox's HA agent would try to migrate later VMs
+        # (e.g. VM 2 on node B) onto node A, colliding with VM 1's GPU there
+        # ("PCI device already in use").
+        for i, vmid in enumerate(vmids):
             await workflow.execute_activity(
                 activities_llm_inference.add_affinity_rule_activity,
-                args=[{"cluster_id": payload["cluster_id"], "vmid": vmid, "node": nodes[0]["node"]}],
+                args=[{"cluster_id": payload["cluster_id"], "vmid": vmid, "node": nodes[i]["node"]}],
                 retry_policy=_RETRY,
                 start_to_close_timeout=timedelta(minutes=2),
             )
@@ -183,6 +239,21 @@ class CreateMultiNodeLLMWorkflow:
         ]
         if worker_tasks:
             await asyncio.gather(*worker_tasks)
+
+        # ── Phase 5.5: Confirm Ray cluster actually sees all expected GPUs ────
+        # Catches the "Pending Demands stuck forever" scenario immediately,
+        # before wasting a 900s health-poll timeout on a launch that could
+        # never succeed.
+        await workflow.execute_activity(
+            activities_llm_inference_v2.verify_ray_cluster_gpu_activity,
+            args=[{
+                "ip_address":    head_ip,
+                "expected_gpus": n_gpus_per_node * n_nodes,
+                **ssh_creds,
+            }],
+            retry_policy=RetryPolicy(maximum_attempts=1),
+            start_to_close_timeout=timedelta(minutes=2),
+        )
 
         # ── Phase 6: Launch vLLM on head node ────────────────────────────────
         # tensor_parallel_size  = GPUs per node (within-node, NVLink/PCIe)

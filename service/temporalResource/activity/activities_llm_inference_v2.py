@@ -15,7 +15,7 @@ from models.models import Cluster, Machine
 from models.IPs_model import IPEntry, IPSModel
 from models.llm_inference_v2_model import LLMInferenceJob
 from service import proxmoxService
-from service.clusterService import get_api_token, getting_Proxmox_host
+from service.clusterService import get_api_token, getting_Proxmox_host, root_proxmox_login
 from utils.ssh_client import run_commands, reboot_and_wait
 
 import dotenv
@@ -133,6 +133,74 @@ def _run_commands_with_key(host: str, username: str, pkey, commands: list):
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
+def reserve_vmids_activity(payload: dict) -> dict:
+    """
+    Reserve N unique VMIDs + N unique VM names for a pool BEFORE the per-node
+    clones fire in parallel.
+
+    Both /cluster/nextid and generate_machine_name() work off a snapshot of
+    "what already exists" -- they don't reserve anything. If each parallel
+    clone activity independently computes its own next-id / next-name, two
+    nodes cloning at the same moment can both compute the SAME id (e.g. both
+    109) and the SAME name (e.g. both "lucky-001"), since neither sees the
+    other's not-yet-created VM. Doing both allocations once, sequentially,
+    up front — before any parallel clone starts — avoids that race entirely.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id    = payload["cluster_id"]
+        count         = int(payload["count"])
+        pool_name     = payload.get("pool_name", "vm")
+        name_template = payload.get("name_template") or f"{pool_name}-{{n:fixed=3}}"
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+
+        api_token    = get_api_token(db, cluster_data.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        if not PROXMOX_HOST:
+            raise RuntimeError("No reachable Proxmox host")
+
+        all_vms   = proxmoxService.get_all_cluster_vms(db, cluster_data)
+        used_ids  = {int(vm["vmid"]) for vm in all_vms if vm.get("vmid")}
+
+        resp = requests.get(
+            f"{PROXMOX_HOST}/api2/json/cluster/nextid",
+            headers=headers, verify=False, timeout=10
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Failed to get next VMID: {resp.text}")
+        candidate = int(resp.json()["data"])
+
+        reserved = []
+        while len(reserved) < count:
+            if candidate not in used_ids:
+                reserved.append(candidate)
+                used_ids.add(candidate)
+            candidate += 1
+
+        existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
+        db_names       = [m.name for m in db.query(Machine).all()]
+        all_names      = set(existing_names) | set(db_names)
+        raw_names      = proxmoxService.generate_machine_name(name_template, list(all_names), count)
+
+        vm_names = []
+        for n in raw_names:
+            n = re.sub(r'[^a-zA-Z0-9-]', '-', n)
+            n = re.sub(r'-+', '-', n).strip('-').lower()
+            if n and not n[0].isalpha():
+                n = 'vm-' + n
+            vm_names.append(n[:63])
+
+        logger.info(f"[cluster {cluster_id}] Reserved VMIDs: {reserved}, names: {vm_names}")
+        return {"vmids": reserved, "vm_names": vm_names}
+    finally:
+        db.close()
+
+
+@activity.defn
 def clone_and_configure_vm_activity(payload: dict) -> dict:
     """
     For one node:
@@ -171,21 +239,30 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
 
         logger.info(f"[cluster {cluster_id}] GPUs (raw PCI): {gpus}")
 
-        # ── Generate unique VM name ───────────────────────────────────────
-        all_vms        = proxmoxService.get_all_cluster_vms(db, cluster_data)
-        existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
-        db_names       = [m.name for m in db.query(Machine).all()]
-        all_names      = set(existing_names) | set(db_names)
-        # Use name_template from payload if provided (e.g. "lucky-{n:fixed=3}"),
-        # otherwise fall back to "{pool_name}-{n:fixed=3}".
-        name_template  = payload.get("name_template") or f"{pool_name}-{{n:fixed=3}}"
-        vm_name        = proxmoxService.generate_machine_name(name_template, list(all_names), 1)[0]
-        # Proxmox requires DNS-valid hostnames: lowercase, alphanumeric + hyphens only
-        vm_name = re.sub(r'[^a-zA-Z0-9-]', '-', vm_name)
-        vm_name = re.sub(r'-+', '-', vm_name).strip('-').lower()
-        if vm_name and not vm_name[0].isalpha():
-            vm_name = 'vm-' + vm_name
-        vm_name = vm_name[:63]
+        all_vms = proxmoxService.get_all_cluster_vms(db, cluster_data)
+
+        # ── Resolve VM name ───────────────────────────────────────────────
+        # Prefer a pre-reserved name (reserve_vmids_activity, called once
+        # sequentially before parallel clones fire) — same rationale as the
+        # pre-reserved vmid: computing "next free name" independently inside
+        # each parallel clone let two nodes both land on e.g. "lucky-001".
+        # Fall back to computing one here only if none was reserved.
+        if payload.get("vm_name"):
+            vm_name = payload["vm_name"]
+        else:
+            existing_names = [vm["name"] for vm in all_vms if "name" in vm and vm["name"]]
+            db_names       = [m.name for m in db.query(Machine).all()]
+            all_names      = set(existing_names) | set(db_names)
+            # Use name_template from payload if provided (e.g. "lucky-{n:fixed=3}"),
+            # otherwise fall back to "{pool_name}-{n:fixed=3}".
+            name_template  = payload.get("name_template") or f"{pool_name}-{{n:fixed=3}}"
+            vm_name        = proxmoxService.generate_machine_name(name_template, list(all_names), 1)[0]
+            # Proxmox requires DNS-valid hostnames: lowercase, alphanumeric + hyphens only
+            vm_name = re.sub(r'[^a-zA-Z0-9-]', '-', vm_name)
+            vm_name = re.sub(r'-+', '-', vm_name).strip('-').lower()
+            if vm_name and not vm_name[0].isalpha():
+                vm_name = 'vm-' + vm_name
+            vm_name = vm_name[:63]
 
         # ── Resolve IP details from pool ──────────────────────────────────
         ip_entry = db.query(IPEntry).filter(IPEntry.ip == reserved_ip).first()
@@ -214,13 +291,21 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
             raise RuntimeError(f"Template VM {template} not found. Available vmids: {all_vmids}")
 
         # ── Get free VMID ─────────────────────────────────────────────────
-        resp = requests.get(
-            f"{PROXMOX_HOST}/api2/json/cluster/nextid",
-            headers=headers, verify=False, timeout=10
-        )
-        if resp.status_code >= 400:
-            raise RuntimeError(f"Failed to get next VMID: {resp.text}")
-        vmid = int(resp.json()["data"])
+        # Prefer a pre-reserved id (reserve_vmids_activity, called once
+        # sequentially before parallel clones fire) to avoid the race where
+        # two nodes cloning in parallel both call /cluster/nextid and get the
+        # same id. Fall back to a live nextid call only if none was reserved
+        # (e.g. single-node / older callers).
+        if payload.get("vmid"):
+            vmid = int(payload["vmid"])
+        else:
+            resp = requests.get(
+                f"{PROXMOX_HOST}/api2/json/cluster/nextid",
+                headers=headers, verify=False, timeout=10
+            )
+            if resp.status_code >= 400:
+                raise RuntimeError(f"Failed to get next VMID: {resp.text}")
+            vmid = int(resp.json()["data"])
 
         # ── Strip hostpci from template before clone ──────────────────────
         # If the template has raw PCI devices configured, Proxmox will try
@@ -294,14 +379,28 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
             safe=""
         )
 
-        # ── Attach GPU + set CPU/RAM + cloud-init in one PUT ──────────────
-        # machine=q35 is required for pcie=1 PCI passthrough
         config_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config"
+
+        # ── Attach raw PCI GPU(s) ──────────────────────────────────────────
+        # Proxmox hard-restricts setting hostpci for non-mapped (raw) devices
+        # to root, regardless of the API token's assigned role/ACL — so this
+        # one call must use the cluster's root session, not the dedicated
+        # per-cluster token used everywhere else.
+        root_headers, root_cookies = root_proxmox_login(
+            PROXMOX_HOST, cluster_data.username, cluster_data.password
+        )
+        resp = requests.put(
+            config_url, headers=root_headers, cookies=root_cookies,
+            data={**hostpci_data, "machine": "q35"},
+            verify=False, timeout=30
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"GPU attach failed: {resp.text}")
+
+        # ── Set CPU/RAM + cloud-init (non-root token) ─────────────────────
         resp = requests.put(
             config_url, headers=headers,
             data={
-                **hostpci_data,
-                "machine":      "q35",
                 "sshkeys":      sshkeys_param,
                 "ipconfig0":    f"ip={ip_with_cidr},gw={gateway}",
                 "nameserver":   dns,
@@ -368,6 +467,20 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         time.sleep(5)
         logger.info(f"[{vmid}] PasswordAuthentication enabled at {reserved_ip}")
 
+        # ── Reboot once after first boot with GPU attached ─────────────────
+        # Confirmed via real logs: the head node (which already gets an
+        # explicit reboot later, in launch_vllm_from_template_activity)
+        # consistently stays GPU-healthy; a worker node that ran continuously
+        # since its very first boot (no reboot at all) had its GPU driver
+        # break LIVE, with no reboot or update involved on our side. A GPU
+        # attached via PCI passthrough initializing cleanly on the VM's
+        # first-ever boot is less reliable than a normal boot with the
+        # device already present from POST onward. Doing this here, for
+        # every node (not just the head), closes that gap.
+        logger.info(f"[{vmid}] Rebooting once after first boot to ensure clean GPU init...")
+        reboot_and_wait(reserved_ip, ssh_user, ssh_pass, wait_before_retry=60)
+        logger.info(f"[{vmid}] Back online after post-attach reboot")
+
         # ── Mark IP as used (fresh short-lived session) ───────────────────
         # The original session was closed before the clone; open a new one now
         # and re-query the IPEntry so we commit on a live connection.
@@ -390,6 +503,101 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         # db may already be closed (set to None before the clone) — guard it.
         if db is not None:
             db.close()
+
+
+@activity.defn
+def verify_gpu_health_activity(payload: dict) -> dict:
+    """
+    Confirms nvidia-smi actually works on this node, with one automatic
+    reboot-and-retry if it doesn't.
+
+    This exists because launch_vllm_from_template_activity's own GPU/NVML
+    wait only ever ran on the HEAD node -- worker nodes were never checked
+    at all, so a broken driver on a worker (e.g. "Driver/library version
+    mismatch" -- kernel module and userspace library out of sync, usually
+    from a driver update that hasn't been rebooted into yet) went completely
+    undetected until vLLM itself failed deep inside Ray's actor init, many
+    steps later, with a confusing multi-layer error. Running this on every
+    node up front catches it immediately and attempts the same fix a human
+    would reach for first (reboot), before giving up with a clear message.
+    """
+    ip       = payload["ip_address"]
+    ssh_user = payload.get("ssh_user", _SSH_USER)
+    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+
+    _check = "nvidia-smi 2>&1"
+
+    result = run_commands(ip, ssh_user, ssh_pass, [_check + " || true"], timeout=30)
+    output = result[0]["stdout"] if result else ""
+
+    if "Driver/library version mismatch" in output or "NVML" in output and "Failed" in output:
+        logger.warning(
+            f"[{ip}] nvidia-smi reports a driver/library mismatch — "
+            f"rebooting once to reload the correct kernel module: {output[:200]!r}"
+        )
+        reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=60)
+
+        result = run_commands(ip, ssh_user, ssh_pass, [_check + " || true"], timeout=30)
+        output = result[0]["stdout"] if result else ""
+
+        if "Driver/library version mismatch" in output or ("NVML" in output and "Failed" in output):
+            raise RuntimeError(
+                f"[{ip}] GPU driver still broken after reboot-and-retry: {output[:300]!r}. "
+                f"This needs a manual driver rebuild/reinstall (dkms) on this VM — "
+                f"not something a reboot alone can fix."
+            )
+        logger.info(f"[{ip}] GPU healthy after reboot")
+    else:
+        logger.info(f"[{ip}] GPU/nvidia-smi healthy")
+
+    return {"ip_address": ip, "gpu_healthy": True}
+
+
+@activity.defn
+def verify_ray_cluster_gpu_activity(payload: dict) -> dict:
+    """
+    Confirms the Ray cluster itself (not just each node's own nvidia-smi)
+    actually reports the expected total GPU count before we ever attempt to
+    launch vLLM. This is the check that would have caught the earlier
+    "Pending Demands: {'GPU': 1.0} * 2" stuck-forever scenario immediately,
+    instead of only discovering it after a 900s health-poll timeout with an
+    unhelpful "Log not found".
+    """
+    ip            = payload["ip_address"]  # head node
+    ssh_user      = payload.get("ssh_user", _SSH_USER)
+    ssh_pass      = payload.get("ssh_pass", _SSH_PASS)
+    expected_gpus = int(payload["expected_gpus"])
+    home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
+    venv_bin = f"{home_dir}/vllm-ray-env/bin"
+
+    _check = (
+        "for i in $(seq 1 12); do "
+        f"  {venv_bin}/ray status 2>/dev/null | grep -oP '(?<=/)[0-9.]+(?= GPU)'; "
+        "  sleep 5; "
+        "done"
+    )
+    result = run_commands(ip, ssh_user, ssh_pass, [_check], timeout=90)
+    out = (result[0]["stdout"] if result else "").strip()
+
+    # grep runs 12 times in the loop; take the last (most recent) reading.
+    lines = [l for l in out.splitlines() if l.strip()]
+    last_total = None
+    if lines:
+        try:
+            last_total = float(lines[-1])
+        except ValueError:
+            pass
+
+    if last_total is None or last_total < expected_gpus:
+        raise RuntimeError(
+            f"[{ip}] Ray cluster reports {last_total} total GPU(s), expected "
+            f"{expected_gpus}. Not proceeding to vLLM launch -- a node likely "
+            f"failed to register its GPU with the cluster (check ray status "
+            f"and each node's ray-worker.service manually)."
+        )
+
+    logger.info(f"[{ip}] Ray cluster confirms {last_total} GPU(s) available (expected {expected_gpus})")
+    return {"ip_address": ip, "total_gpus": last_total}
 
 
 @activity.defn
@@ -471,9 +679,13 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
                 f" --host 0.0.0.0 --port 8000"
             )
         else:
-            # Single node: no Ray overhead, plain in-process inference
+            # Single node: no Ray overhead, plain in-process inference.
+            # Still need --tensor-parallel-size when the node has multiple
+            # GPUs -- without it vLLM defaults to TP=1 and silently only
+            # uses one of the attached GPUs.
             _vllm_common_args = (
-                f" --max-model-len 4096"
+                (f" --tensor-parallel-size {tp_size}" if tp_size > 1 else "")
+                + f" --max-model-len 4096"
                 f" --gpu-memory-utilization 0.90"
                 f" --enable-chunked-prefill"
                 f" --trust-remote-code"
@@ -565,7 +777,22 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             # Overwrite the log with a dated marker so we never read a stale log
             # left over from template prep. Everything after appends (>>).
             "echo \"[vLLM] Launching: $RESOLVED_MODEL\"; "
-            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; sleep 2; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+            # Also clear any leftover Ray actor/worker processes from a prior
+            # launch attempt (e.g. EngineCore, RayWorkerP). Without this, a
+            # retry can hit "ActorHandleNotFoundError: ... not valid across
+            # Ray sessions" because vLLM still holds a handle to an actor
+            # from the previous session. NOT `ray stop` -- that would tear
+            # down the whole cluster (this runs on the head); this only
+            # kills vLLM's own leftover worker processes.
+            # grep -v $$ is required -- without it, pgrep matches the shell
+            # running THIS SCRIPT ITSELF (its command line literally contains
+            # this search text), and xargs kills it, terminating the whole
+            # launch after only a fraction of a second (confirmed via logs:
+            # channel dropped in 0.22s, before the script could possibly have
+            # reached model resolution).
+            "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+            "sleep 2; "
             f"echo \"===== vLLM launch attempt $(date -u) — model=$RESOLVED_MODEL =====\" > {home_dir}/vllm_server.log; "
 
             # ── 5. Fire-and-forget launch ─────────────────────────────────────
@@ -580,9 +807,11 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             f"echo \"[vLLM-env] LD_LIBRARY_PATH=$LD_LIBRARY_PATH\" >> {home_dir}/vllm_server.log; "
             f"echo \"[vLLM-env] _VLLM_ENV=$_VLLM_ENV\" >> {home_dir}/vllm_server.log; "
             f"echo \"[vLLM-env] /dev/nvidia* = $(ls /dev/nvidia* 2>/dev/null || echo MISSING)\" >> {home_dir}/vllm_server.log; "
+            f"echo \"[vLLM-checkpoint $(date -u)] 1. Preparing launch command\" >> {home_dir}/vllm_server.log; "
 
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
             f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+            f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
             f"  nohup env $_VLLM_ENV {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
@@ -590,6 +819,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             f"    >> {home_dir}/vllm_server.log 2>&1 & "
             "else "
             f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/vllm_server.log; "
+            f"  echo \"[vLLM-checkpoint $(date -u)] 2. Spawning nohup vllm process\" >> {home_dir}/vllm_server.log; "
             f"  nohup env $_VLLM_ENV {_vllm_bin}"
             f"    --model \"$RESOLVED_MODEL\""
             f"    --served-model-name \"$RESOLVED_MODEL\""
@@ -597,6 +827,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             f"    {_vllm_common_args}"
             f"    >> {home_dir}/vllm_server.log 2>&1 & "
             "fi; "
+            f"echo \"[vLLM-checkpoint $(date -u)] 3. Process backgrounded successfully\" >> {home_dir}/vllm_server.log; "
             "echo \"[vLLM] Process launched in background\""
         )
 
@@ -620,9 +851,35 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         )
 
         try:
+            start_time = time.time()
+            logger.info(f"[{ip}] Executing vLLM launch script over SSH...")
             launch_results = run_commands(ip, ssh_user, ssh_pass, [vllm_launch], timeout=120)
+            duration = time.time() - start_time
+            exit_code = launch_results[0].get("exit_code") if launch_results else None
+            logger.info(f"[{ip}] SSH launch command finished in {duration:.2f}s (exit_code={exit_code})")
+            
+            # run_commands treats exit_code -1 (SSH channel closed without a real
+            # exit status) as if it were a clean success -- it does NOT raise for
+            # it. That silently let a mid-script channel drop (before the launch
+            # script ever reached the log-write/nohup lines) look like a normal
+            # launch, sending us straight into a doomed 900s health poll with no
+            # process and no log ("Log not found"). Detect it explicitly here and
+            # route into the same verify/retry logic below instead of trusting it.
+            if launch_results and exit_code == -1:
+                logger.error(f"[{ip}] SSH connection dropped mid-command after {duration:.2f}s (exit_code=-1)")
+                raise RuntimeError(f"Command failed (exit -1) on {ip}: channel closed without exit status")
             launch_stdout = launch_results[0]["stdout"] if launch_results else ""
+            _stderr_preview = (launch_results[0].get("stderr", "") if launch_results else "")[:500]
+            logger.info(
+                f"[{ip}] vllm_launch stdout (last 300 chars)={launch_stdout[-300:]!r}, "
+                f"stderr_preview={_stderr_preview!r}"
+            )
         except RuntimeError as launch_err:
+            duration = time.time() - start_time
+            logger.warning(
+                f"[{ip}] vllm_launch run_commands RAISED after {duration:.2f}s: "
+                f"{type(launch_err).__name__}: {str(launch_err)[:500]}"
+            )
             if "exit -1" in str(launch_err):
                 # SSH channel dropped — exit -1 means channel closed without exit status.
                 # This can happen BEFORE or AFTER nohup was submitted, so we cannot assume
@@ -630,9 +887,18 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
                 logger.warning(f"[{ip}] SSH dropped during vLLM launch (exit -1) — verifying process...")
                 time.sleep(30)
 
-                # Fresh SSH: check if vLLM process is actually running
+                # Fresh SSH: check if vLLM process is actually running.
+                # NOTE the [v]llm bracket trick: pgrep -f matches every process's
+                # FULL command line, including the shell invoking pgrep itself --
+                # since that shell's own command line literally contains the
+                # search text, a plain 'vllm.entrypoints...' pattern always
+                # self-matches and reports RUNNING even when nothing is actually
+                # running (confirmed via logs: "confirmed running" after only
+                # 0.22s, before the launch script could possibly have started
+                # vLLM). [v]llm as a regex still matches a real process's plain
+                # "vllm..." text, but not its own invocation's literal "[v]llm...".
                 _check_cmd = (
-                    "pgrep -fl 'vllm.entrypoints.openai.api_server' "
+                    "pgrep -fl '[v]llm.entrypoints.openai.api_server' "
                     "&& echo VLLM_RUNNING || echo VLLM_NOT_RUNNING"
                 )
                 try:
@@ -649,8 +915,27 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
                         launch_stdout = re_results[0]["stdout"] if re_results else ""
                     except RuntimeError as relaunch_err:
                         if "exit -1" in str(relaunch_err):
-                            logger.warning(f"[{ip}] Re-launch also got exit -1 — assuming nohup submitted, waiting 60s")
+                            # Previously this just waited 60s and assumed success with
+                            # no verification -- if the process genuinely never started
+                            # (e.g. a real failure inside vllm_launch got masked by the
+                            # channel drop), that silently produced a doomed 900s health
+                            # poll with no useful diagnostics ("Log not found" and
+                            # nothing else). Actually verify before proceeding.
+                            logger.warning(f"[{ip}] Re-launch also got exit -1 — waiting 60s then verifying...")
                             time.sleep(60)
+                            try:
+                                _chk2 = run_commands(ip, ssh_user, ssh_pass, [_check_cmd], timeout=30)
+                                _chk2_out = _chk2[0]["stdout"] if _chk2 else "VLLM_NOT_RUNNING"
+                            except Exception:
+                                _chk2_out = "VLLM_NOT_RUNNING"
+                            if "VLLM_NOT_RUNNING" in _chk2_out:
+                                raise RuntimeError(
+                                    f"[{ip}] vLLM process could not be confirmed running after "
+                                    f"2 launch attempts + SSH channel drops. Not proceeding to "
+                                    f"health poll — check /etc/environment model config and "
+                                    f"SSH/network stability to this VM."
+                                ) from relaunch_err
+                            logger.info(f"[{ip}] vLLM confirmed running after re-verification")
                             launch_stdout = "ASSUMED_LAUNCHED"
                         else:
                             raise
@@ -760,7 +1045,14 @@ def restore_llm_services_activity(payload: dict) -> dict:
             "  echo 'ERROR: Cannot resolve model — set LLM_MODEL_PATH and LLM_MODEL_NAME in /etc/environment'; exit 1; "
             "fi; "
 
-            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; sleep 3; "
+            "pgrep -f 'vllm.entrypoints.openai.api_server' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+            # Same as the initial-launch path -- clear leftover Ray actor/worker
+            # processes from a prior session so a relaunch here doesn't hit
+            # "ActorHandleNotFoundError: ... not valid across Ray sessions".
+            # grep -v $$ excludes the shell running this script itself (see
+            # matching comment in launch_vllm_from_template_activity).
+            "pgrep -f 'ray::RayWorkerP|EngineCore' | grep -v $$ | xargs -r kill 2>/dev/null || true; "
+            "sleep 3; "
             "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
             f"  nohup {_vllm_bin_r} --model \"$RESOLVED_MODEL\" --served-model-name \"$RESOLVED_MODEL\"{_vllm_args_r} > {home_dir}/vllm_server.log 2>&1 & disown; "
             "else "
@@ -903,6 +1195,8 @@ def delete_llm_pool_activity(payload: dict) -> dict:
         db.commit()
 
         # ── Delete VMs from Proxmox ───────────────────────────────────────
+        failed_vmids = []
+        deleted_vmids = []
         if vmids:
             cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
             if cluster_data:
@@ -914,20 +1208,26 @@ def delete_llm_pool_activity(payload: dict) -> dict:
                 for i, vmid in enumerate(vmids):
                     node = nodes[i]["node"] if i < len(nodes) else None
                     if not node:
+                        logger.warning(f"[delete] No node recorded for VM {vmid} — cannot target delete, marking failed")
+                        failed_vmids.append(vmid)
                         continue
                     logger.info(f"[delete] Removing VM {vmid} from node {node}")
 
-                    # Remove HA resources
+                    # Remove HA resources (best-effort — VM purge below removes
+                    # these anyway; not fatal if the VM/rule is already gone)
                     requests.delete(
                         f"{PROXMOX_HOST}/api2/json/cluster/ha/resources/vm%3A{vmid}",
                         headers=headers, verify=False, timeout=15
                     )
-                    # Remove HA group
+                    # Remove HA node-affinity rule (groups were migrated to rules;
+                    # the old 'cluster/ha/groups' endpoint no longer exists)
                     requests.delete(
-                        f"{PROXMOX_HOST}/api2/json/cluster/ha/groups/llm-{vmid}",
+                        f"{PROXMOX_HOST}/api2/json/cluster/ha/rules/llm-{vmid}",
                         headers=headers, verify=False, timeout=15
                     )
-                    # Strip GPU passthrough config
+                    # Strip GPU passthrough config (raw hostpci — root-only on this
+                    # Proxmox version, same restriction as attaching it; best-effort
+                    # since the VM purge below removes the config file regardless)
                     requests.put(
                         f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config",
                         headers=headers,
@@ -935,29 +1235,85 @@ def delete_llm_pool_activity(payload: dict) -> dict:
                         verify=False, timeout=15
                     )
                     # Stop VM
-                    requests.post(
+                    stop_resp = requests.post(
                         f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop",
                         headers=headers, verify=False, timeout=30
                     )
-                    # Wait for stopped state (max 60 s)
+                    if stop_resp.status_code >= 400 and stop_resp.status_code != 404:
+                        logger.warning(f"[delete] Stop request for VM {vmid} failed: {stop_resp.text}")
+
+                    # Wait for stopped state (max 60 s) — track whether it actually stopped
+                    stopped = False
                     for _ in range(12):
                         _time.sleep(5)
                         st = requests.get(
                             f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current",
                             headers=headers, verify=False, timeout=10
                         )
-                        if st.ok and st.json().get("data", {}).get("status") == "stopped":
+                        if st.status_code == 404:
+                            # VM already gone (e.g. never existed / already deleted)
+                            stopped = True
                             break
-                    # Permanently delete VM + disks
-                    requests.delete(
+                        if st.ok and st.json().get("data", {}).get("status") == "stopped":
+                            stopped = True
+                            break
+
+                    # Permanently delete VM + disks — verify the response before
+                    # trusting this VM is actually gone.
+                    del_resp = requests.delete(
                         f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}",
                         headers=headers,
                         params={"purge": 1, "destroy-unreferenced-disks": 1},
                         verify=False, timeout=60
                     )
-                    logger.info(f"[delete] VM {vmid} deleted")
+                    if del_resp.status_code == 404:
+                        # Already gone — treat as success
+                        logger.info(f"[delete] VM {vmid} already absent from Proxmox")
+                        deleted_vmids.append(vmid)
+                    elif del_resp.status_code >= 400:
+                        logger.error(
+                            f"[delete] Failed to delete VM {vmid} on node {node} "
+                            f"(stopped={stopped}): {del_resp.text}"
+                        )
+                        failed_vmids.append(vmid)
+                    else:
+                        # Proxmox may return a UPID (async task) — wait for it so we
+                        # know the purge actually finished before trusting it.
+                        upid = del_resp.json().get("data")
+                        delete_confirmed = True
+                        if upid:
+                            try:
+                                _wait_for_task(_all_hosts(cluster_data) or [PROXMOX_HOST], headers, node, upid, timeout=120)
+                            except Exception as wait_err:
+                                logger.error(f"[delete] VM {vmid} delete task did not confirm complete: {wait_err}")
+                                delete_confirmed = False
+                        if delete_confirmed:
+                            logger.info(f"[delete] VM {vmid} deleted")
+                            deleted_vmids.append(vmid)
+                        else:
+                            failed_vmids.append(vmid)
 
-        # ── Release IPs ───────────────────────────────────────────────────
+        if failed_vmids:
+            # Do NOT release IPs or drop the DB record when some VMs failed to
+            # delete -- doing so would let those IPs be reassigned to a new VM
+            # while the old one (and its config file) is still sitting on
+            # Proxmox, causing exactly the "config file already exists" clone
+            # collision this guard is meant to prevent.
+            record.status = "delete_failed"
+            db.commit()
+            logger.error(
+                f"[delete] Job {job_id}: {len(failed_vmids)} VM(s) failed to delete "
+                f"({failed_vmids}) — job kept as 'delete_failed' for retry, "
+                f"IPs and DB record NOT released."
+            )
+            return {
+                "ok": False,
+                "job_id": job_id,
+                "deleted_vmids": deleted_vmids,
+                "failed_vmids": failed_vmids,
+            }
+
+        # ── Release IPs (only reached if every VM was confirmed deleted) ──
         from models.IPs_model import IPEntry
         for ip in ip_addresses:
             entry = db.query(IPEntry).filter(IPEntry.ip == ip).first()
@@ -969,7 +1325,7 @@ def delete_llm_pool_activity(payload: dict) -> dict:
         db.delete(record)
         db.commit()
         logger.info(f"[delete] Job {job_id} fully deleted")
-        return {"ok": True, "job_id": job_id}
+        return {"ok": True, "job_id": job_id, "deleted_vmids": deleted_vmids}
 
     except Exception as e:
         raise RuntimeError(str(e))

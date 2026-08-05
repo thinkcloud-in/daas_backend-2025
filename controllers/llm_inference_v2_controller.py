@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import pytz
@@ -13,6 +14,7 @@ from models.models import Cluster, Machine
 from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference_v2 import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
+from service.temporalResource.activity.activities_llm_inference_v2 import _netmask_to_cidr
 from utils import response_format
 
 _IST = pytz.timezone("Asia/Kolkata")
@@ -20,6 +22,7 @@ _TIME_FMT = "%Y-%m-%d %H:%M:%S"
 
 _ACTIVITY_DISPLAY = {
     # LLM inference
+    "reserve_vmids_activity":             "Reserve VM IDs",
     "clone_and_configure_vm_activity":    "VM Clone & Configure",
     "update_llm_inference_job_activity":  "Update Job Status",
     "install_ray_vllm_activity":          "Install Ray + vLLM",
@@ -162,6 +165,16 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
 
         db.flush()
 
+        # ── Derive the real cluster subnet from the IP pool actually used ──────
+        # Node-to-node firewall rules (e.g. for the PyTorch/NCCL rendezvous port)
+        # rely on this being correct; a wrong subnet silently leaves inter-node
+        # traffic unprotected instead of raising an error.
+        first_pool = next(p for p in ip_pool_objects if p.id == reserved_ips[0]["pool_id"])
+        subnet_cidr = _netmask_to_cidr(first_pool.Subnet)
+        cluster_subnet = str(
+            ipaddress.ip_network(f"{reserved_ips[0]['ip']}/{subnet_cidr}", strict=False)
+        )
+
         # ── Persist job record ────────────────────────────────────────────────
         record = LLMInferenceJob(
             name=data.poolName,
@@ -188,6 +201,7 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "template":     data.template,
             "nodes":        [n.dict() for n in data.nodes],
             "reserved_ips": reserved_ips,
+            "subnet":       cluster_subnet,
             "storage":      data.storage or "local-lvm",
             "machine_name":  data.machine_name or data.poolName,
             "name_template": data.machine_name or None,

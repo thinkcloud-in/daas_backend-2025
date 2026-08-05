@@ -27,6 +27,30 @@ _DEVRAQ_RPM_URL = os.getenv("DEVRAQ_RPM_URL", "")  # URL to devraq-agent RPM
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+def _detect_net_iface(ip: str, ssh_user: str, ssh_pass: str, fallback: str = "eth0") -> str:
+    """
+    Auto-detect the VM's actual primary network interface name instead of
+    assuming one. Interface naming (eth0, ens18, enp0s18, ...) is decided by
+    the guest OS/kernel at boot, not by us -- a hardcoded guess breaks the
+    moment a template is rebuilt with a different naming scheme. Detecting it
+    live, per-VM, means this keeps working regardless of what the template
+    happens to use.
+    """
+    try:
+        result = run_commands(
+            ip, ssh_user, ssh_pass,
+            ["ip route get 8.8.8.8 2>/dev/null | awk '{for(i=1;i<=NF;i++) if ($i==\"dev\") {print $(i+1); exit}}'"],
+            timeout=15,
+        )
+        iface = result[0]["stdout"].strip()
+        if iface:
+            return iface
+        logger.warning(f"[{ip}] Could not detect network interface (empty output) — falling back to '{fallback}'")
+    except Exception as exc:
+        logger.warning(f"[{ip}] Network interface detection failed ({exc}) — falling back to '{fallback}'")
+    return fallback
+
+
 def _get_proxmox_ctx(db: Session, cluster_id: str):
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
@@ -191,7 +215,9 @@ def create_vm_with_gpu_activity(payload: dict) -> dict:
 def add_affinity_rule_activity(payload: dict) -> dict:
     """
     Adds a HA affinity rule to keep the LLM VM on its designated node.
-    Proxmox HA rules are node-pinned via the 'ha' group resource.
+    Proxmox migrated HA groups to HA rules (node-affinity type) -- the old
+    'cluster/ha/groups' endpoint now 500s with "ha groups have been migrated
+    to rules", so pinning is done via 'cluster/ha/rules' instead.
     """
     db: Session = SessionLocal()
     try:
@@ -201,30 +227,39 @@ def add_affinity_rule_activity(payload: dict) -> dict:
 
         cluster, host, headers = _get_proxmox_ctx(db, cluster_id)
 
-        group_id = f"llm-{vmid}"
-        # Create HA group pinned to the node
-        resp = requests.post(
-            f"{host}/api2/json/cluster/ha/groups",
-            headers=headers,
-            json={"group": group_id, "nodes": node, "restricted": 1},
-            verify=VERIFY_SSL, timeout=15,
-        )
-        # skip if already exists (Proxmox returns 500 with "already defined")
-        if resp.status_code not in (200, 400) and "already defined" not in resp.text:
-            resp.raise_for_status()
+        rule_id = f"llm-{vmid}"
 
-        # Add VM to HA resource under that group
+        # Add VM to HA resource management FIRST -- the rules API rejects
+        # rules that reference an "unmanaged" resource, so the vm:<id> sid
+        # must already exist under HA before a node-affinity rule can cite it.
         resp = requests.post(
             f"{host}/api2/json/cluster/ha/resources",
             headers=headers,
-            json={"sid": f"vm:{vmid}", "group": group_id, "state": "started"},
+            json={"sid": f"vm:{vmid}", "state": "started"},
             verify=VERIFY_SSL, timeout=15,
         )
         if resp.status_code not in (200, 400) and "already defined" not in resp.text:
             resp.raise_for_status()
 
+        # Create node-affinity rule pinning this VM to its node
+        resp = requests.post(
+            f"{host}/api2/json/cluster/ha/rules",
+            headers=headers,
+            json={
+                "rule":      rule_id,
+                "type":      "node-affinity",
+                "resources": f"vm:{vmid}",
+                "nodes":     node,
+                "strict":    1,
+            },
+            verify=VERIFY_SSL, timeout=15,
+        )
+        # skip if already exists (Proxmox returns 400/500 with "already exists")
+        if resp.status_code not in (200, 400) and "already exists" not in resp.text:
+            resp.raise_for_status()
+
         logger.info(f"Affinity rule set: VM {vmid} pinned to node {node}")
-        return {"vmid": vmid, "ha_group": group_id}
+        return {"vmid": vmid, "ha_rule": rule_id}
     finally:
         db.close()
 
@@ -301,8 +336,16 @@ def install_ray_vllm_activity(payload: dict) -> dict:
     ssh_user = payload.get("ssh_user", _SSH_USER)
     ssh_pass = payload.get("ssh_pass", _SSH_PASS)
     hostname = payload.get("name", "llm-node")
-    subnet = payload.get("subnet", "192.168.100.0/24")
-    net_iface = payload.get("net_iface", "ens18")
+    subnet = payload.get("subnet")
+    if not subnet:
+        raise RuntimeError(
+            "install_ray_vllm_activity requires 'subnet' (the real cluster subnet, "
+            "e.g. '172.16.4.0/24') to open the inter-node firewall rule. "
+            "A wrong/default subnet here silently leaves node-to-node traffic "
+            "(e.g. the PyTorch/NCCL rendezvous port) unprotected by the firewall's "
+            "accept-rule, causing 'No route to host' failures between GPU workers."
+        )
+    net_iface = payload.get("net_iface") or _detect_net_iface(ip, ssh_user, ssh_pass)
     model = payload.get("model", "")
     model_path = payload.get("model_path", "/vllm_data/hf_cache")
 
@@ -338,7 +381,13 @@ def install_ray_vllm_activity(payload: dict) -> dict:
     # ── Phase 1: NVIDIA driver (only if not already installed) ───────────────
     if not nvidia_installed:
         phase1 = [
-            "sudo dnf update -y",
+            # Deliberately NOT running "dnf update -y" here -- a full system
+            # update can pull in a newer kernel package without a reboot to
+            # match it, leaving the NVIDIA module built for the OLD kernel
+            # while the VM boots into the NEW one on its next restart. That
+            # exact drift (confirmed via `dkms status` showing two different
+            # kernel builds) was the root cause of "Driver/library version
+            # mismatch" on worker nodes. Only install what's actually needed.
             "sudo dnf config-manager --set-enabled crb",
             "sudo dnf install -y epel-release",
             "sudo dnf install -y kernel-devel-$(uname -r) kernel-headers-$(uname -r) make gcc dkms",
@@ -381,6 +430,7 @@ def install_ray_vllm_activity(payload: dict) -> dict:
         "grep -qF 'LD_LIBRARY_PATH=/usr/local/cuda/lib64' ~/.bashrc || echo 'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH' >> ~/.bashrc",
         "grep -qF 'VLLM_USE_V1' ~/.bashrc || echo 'export VLLM_USE_V1=1' >> ~/.bashrc",
         f"grep -qF 'NCCL_SOCKET_IFNAME' ~/.bashrc || echo 'export NCCL_SOCKET_IFNAME={net_iface}' >> ~/.bashrc",
+        f"grep -qF 'GLOO_SOCKET_IFNAME' ~/.bashrc || echo 'export GLOO_SOCKET_IFNAME={net_iface}' >> ~/.bashrc",
         "grep -qF 'vllm-ray-env/bin' ~/.bashrc || echo 'export PATH=\"$HOME/vllm-ray-env/bin:$PATH\"' >> ~/.bashrc",
 
         # /etc/environment — used by systemd services + vLLM launch (survives reboot)
@@ -419,8 +469,10 @@ def install_ray_vllm_activity(payload: dict) -> dict:
         # Runtime vars — safe to always refresh (not model-related)
         "sudo sed -i '/^VLLM_USE_V1=/d' /etc/environment",
         "sudo sed -i '/^NCCL_SOCKET_IFNAME=/d' /etc/environment",
+        "sudo sed -i '/^GLOO_SOCKET_IFNAME=/d' /etc/environment",
         'echo \'VLLM_USE_V1=1\' | sudo tee -a /etc/environment > /dev/null',
         f'echo \'NCCL_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
+        f'echo \'GLOO_SOCKET_IFNAME={net_iface}\' | sudo tee -a /etc/environment > /dev/null',
 
         # Firewall — start firewalld if not running, then configure ports
         (
@@ -466,11 +518,32 @@ def configure_ray_activity(payload: dict) -> dict:
     role = payload.get("role", "head")
     head_ip = payload.get("head_ip", ip)
     num_gpus = payload.get("num_gpus", 1)
-    net_iface = payload.get("net_iface", "ens18")
+    net_iface = payload.get("net_iface") or _detect_net_iface(ip, ssh_user, ssh_pass)
 
     home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
     venv_bin = f"{home_dir}/vllm-ray-env/bin"
     cuda_path = "/usr/local/cuda/bin"
+
+    # Ray binds several internal services (node-manager, object-manager,
+    # runtime-env agent, dashboard agent, metrics) to RANDOM ephemeral ports
+    # by default -- only the well-known ports (6379 GCS, 8265 dashboard,
+    # 10001 client) were ever opened in the firewall. That gap is what was
+    # silently breaking the raylet<->GCS connection: confirmed via `ss
+    # -tulnp` that raylet/DashboardAgent/RuntimeEnvAgent were bound to
+    # random ports (e.g. 34499, 52365, 37513) outside the opened
+    # 10002-19999 range, invisible to the firewall rule written for it.
+    # Pinning them to fixed values inside that already-open range makes
+    # every port Ray actually uses match what's permitted, so the firewall
+    # can stay enabled with no gap and no need to disable it anywhere.
+    _fixed_ray_ports = (
+        "--node-manager-port=10002 "
+        "--object-manager-port=10003 "
+        "--runtime-env-agent-port=10004 "
+        "--dashboard-agent-listen-port=10005 "
+        "--dashboard-agent-grpc-port=10006 "
+        "--metrics-export-port=10007 "
+        "--min-worker-port=10008 --max-worker-port=19999"
+    )
 
     if role == "head":
         service_name = "ray-head"
@@ -478,6 +551,7 @@ def configure_ray_activity(payload: dict) -> dict:
             f"{venv_bin}/ray start --head --port=6379 "
             f"--num-gpus={num_gpus} "
             "--dashboard-host=0.0.0.0 --include-dashboard=true "
+            f"{_fixed_ray_ports} "
             "--block"
         )
     else:
@@ -485,6 +559,7 @@ def configure_ray_activity(payload: dict) -> dict:
         exec_start = (
             f"{venv_bin}/ray start --address={head_ip}:6379 "
             f"--num-gpus={num_gpus} "
+            f"{_fixed_ray_ports} "
             "--block"
         )
 
@@ -502,8 +577,21 @@ def configure_ray_activity(payload: dict) -> dict:
         f"Group={ssh_user}",
         f'Environment="PATH={venv_bin}:{cuda_path}:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin"',
         f'Environment="NCCL_SOCKET_IFNAME={net_iface}"',
+        # Gloo (the CPU-side control/coordination backend PyTorch uses
+        # alongside NCCL) picks its own interface unless told otherwise --
+        # without this it can select an IPv6 link-local address, which the
+        # firewall's IPv4-only accept-rule doesn't cover, causing
+        # "Gloo connectFullMesh failed ... Permission denied" between nodes.
+        f'Environment="GLOO_SOCKET_IFNAME={net_iface}"',
         'Environment="VLLM_USE_V1=1"',
         'Environment="LD_LIBRARY_PATH=/usr/local/cuda/lib64"',
+        # Ray's memory monitor fails to read this VM's cgroup correctly
+        # ("Got negative used memory for cgroup -1"), and that malfunction
+        # was observed stalling the raylet's own heartbeat cadence right
+        # before GCS marks it dead ("mistakenly been marked as dead").
+        # Disabling the monitor (refresh_ms=0) removes the broken component
+        # instead of trying to fix cgroup detection inside the guest.
+        'Environment="RAY_memory_monitor_refresh_ms=0"',
         f"ExecStart={exec_start}",
         f"ExecStop={venv_bin}/ray stop --force",
         "Restart=always",
