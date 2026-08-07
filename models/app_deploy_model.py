@@ -30,7 +30,7 @@ class AppDeployment(Base):
     # VectorDB integration (openwebui only)
     linked_vectordb_id  = Column(Integer, nullable=True)   # app_deployments.id of vectordb
 
-    # Private LLM integration (openwebui only) — JSON array of llm_inference_jobs.id
+    # Private LLM integration (openwebui only) — JSON array of llm_inferences.id
     linked_llm_ids      = Column(Text, nullable=True)      # e.g. "[1, 3, 5]"
 
     # Keycloak SSO integration (openwebui only) — JSON object

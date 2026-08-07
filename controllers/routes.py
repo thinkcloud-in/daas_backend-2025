@@ -17,7 +17,7 @@ import os
 import pytz
 from models.API_Response_model import APIResponse
 from utils import response_format
-from controllers.llm_inference_v2_controller import _fetch_steps
+from controllers.llm_inference_controller import _fetch_steps
 
 logger = logging.getLogger(__name__)
 
