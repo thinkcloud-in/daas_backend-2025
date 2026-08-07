@@ -100,6 +100,7 @@ def _to_dict(d: AppDeployment, db: Session = None) -> dict:
         "linked_vectordb_id": d.linked_vectordb_id,
         "linked_llm_ids":     llm_id_list,
         "linked_llms":        linked_llms,
+        "keycloak_config":    _parse_keycloak_config(d.keycloak_config),
         "created_at":         d.created_at.isoformat() if d.created_at else None,
         "updated_at":         d.updated_at.isoformat() if d.updated_at else None,
     }
@@ -224,6 +225,8 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
         "harbor_user":      harbor_user,
         "harbor_pass":      harbor_pass,
         "image":            image,
+        "storage_class":    body.get("storage_class"),
+        "storage_size":     body.get("storage_size", "1Gi"),
     }
 
     try:
@@ -577,6 +580,74 @@ def _load_k8s_apps_client(cluster: KubernetesCluster):
 
 
 _DAAS_OW_API_KEY = "daas-openwebui-api-key"
+
+_KEYCLOAK_ENV_KEYS = {
+    "ENABLE_OAUTH_SIGNUP", "OAUTH_PROVIDER_NAME", "OPENID_PROVIDER_URL",
+    "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_MERGE_ACCOUNTS_BY_EMAIL",
+    "ENABLE_LOGIN_FORM", "OAUTH_SCOPES", "DEFAULT_USER_ROLE",
+    "OAUTH_ROLES_CLAIM", "OAUTH_ADMIN_ROLES",
+}
+
+
+def _parse_keycloak_config(raw: str | None) -> dict | None:
+    if not raw:
+        return None
+    try:
+        import json as _j
+        cfg = _j.loads(raw)
+        cfg.pop("client_secret", None)   # secret response mein nahi bhejenge
+        return cfg
+    except Exception:
+        return None
+
+
+def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None) -> str | None:
+    """
+    OpenWebUI K8s deployment mein Keycloak env vars set (connect) ya remove (disconnect) karo.
+    oauth_env_vars=None means disconnect — sab KEYCLOAK env vars hata do.
+    Returns None on success, error string on failure.
+    """
+    import re
+    from kubernetes.client.models import V1EnvVar
+
+    cluster = None
+    from db_configuration.config import SessionLocal
+    db = SessionLocal()
+    try:
+        cluster = db.query(KubernetesCluster).filter(
+            KubernetesCluster.id == ow.k8s_cluster_id
+        ).first()
+    finally:
+        db.close()
+
+    if not cluster or not cluster.kubeconfig:
+        return "K8s cluster kubeconfig missing"
+
+    rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+    rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
+    dep_name = f"{rname}-openwebui"
+    namespace = ow.namespace or "default"
+
+    try:
+        apps_v1    = _load_k8s_apps_client(cluster)
+        deployment = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+
+        for container in (deployment.spec.template.spec.containers or []):
+            if container.name == "openwebui":
+                # Remove existing keycloak env vars
+                clean_env = [e for e in (container.env or []) if e.name not in _KEYCLOAK_ENV_KEYS]
+                # Add new ones if connecting
+                if oauth_env_vars:
+                    for k, v in oauth_env_vars.items():
+                        clean_env.append(V1EnvVar(name=k, value=str(v)))
+                container.env = clean_env
+                break
+
+        apps_v1.replace_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment)
+        logger.info(f"[AppDeploy] Keycloak env vars {'set' if oauth_env_vars else 'removed'} for {dep_name}")
+        return None
+    except Exception as e:
+        return str(e)[:300]
 
 
 def _ow_sync_connections(service_url: str, desired_urls: list[str]) -> str | None:
@@ -952,4 +1023,106 @@ async def disconnect_private_llm(openwebui_id: int, llm_id: int | None, db: Sess
             "OpenWebUI API unreachable — K8s env vars update started (rolling update ~60s). "
             "Model will disappear after pod restarts."
         ),
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Connect / Disconnect Keycloak SSO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
+    import json as _json
+
+    ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
+    if not ow:
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
+    if ow.deployment_type != "openwebui":
+        raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
+    if ow.status not in ("deployed", "failed", "llm_connect_failed"):
+        raise HTTPException(status_code=409, detail=f"OpenWebUI is in '{ow.status}' state — deploy it first")
+
+    keycloak_url  = (body.get("keycloak_url") or "").rstrip("/")
+    realm         = (body.get("realm") or "").strip()
+    client_id     = (body.get("client_id") or "").strip()
+    client_secret = (body.get("client_secret") or "").strip()
+
+    if not keycloak_url:
+        raise HTTPException(status_code=400, detail="keycloak_url is required")
+    if not realm:
+        raise HTTPException(status_code=400, detail="realm is required")
+    if not client_id:
+        raise HTTPException(status_code=400, detail="client_id is required")
+    if not client_secret:
+        raise HTTPException(status_code=400, detail="client_secret is required")
+
+    provider_name     = body.get("provider_name") or "keycloak"
+    enable_signup     = "true"
+    merge_accounts    = "true"
+    enable_login_form = "true"
+    oauth_scopes      = body.get("oauth_scopes") or "openid email profile"
+
+    openid_provider_url = f"{keycloak_url}/realms/{realm}/.well-known/openid-configuration"
+
+    oauth_env_vars = {
+        "ENABLE_OAUTH_SIGNUP":           enable_signup,
+        "OAUTH_PROVIDER_NAME":           provider_name,
+        "OPENID_PROVIDER_URL":           openid_provider_url,
+        "OAUTH_CLIENT_ID":               client_id,
+        "OAUTH_CLIENT_SECRET":           client_secret,
+        "OAUTH_MERGE_ACCOUNTS_BY_EMAIL": merge_accounts,
+        "ENABLE_LOGIN_FORM":             enable_login_form,
+        "OAUTH_SCOPES":                  oauth_scopes,
+        "DEFAULT_USER_ROLE":             "user",
+        "OAUTH_ROLES_CLAIM":             "realm_access.roles",
+        "OAUTH_ADMIN_ROLES":             "admin",
+    }
+
+    err = _k8s_patch_keycloak(ow, oauth_env_vars)
+    if err:
+        raise HTTPException(status_code=502, detail=f"K8s patch failed: {err}")
+
+    cfg_to_store = {
+        "keycloak_url":      keycloak_url,
+        "realm":             realm,
+        "client_id":         client_id,
+        "client_secret":     client_secret,
+        "provider_name":     provider_name,
+        "enable_signup":     enable_signup,
+        "merge_accounts":    merge_accounts,
+        "enable_login_form": enable_login_form,
+        "oauth_scopes":      oauth_scopes,
+        "admin_roles":       "admin",
+    }
+    ow.keycloak_config = _json.dumps(cfg_to_store)
+    db.commit()
+
+    logger.info(f"[AppDeploy] Keycloak SSO connected for openwebui id={openwebui_id}, realm={realm}")
+    return response_format.success_response(200, "Keycloak SSO connected — pod rolling update in progress (~60s)", {
+        "openwebui_id":       openwebui_id,
+        "keycloak_config":    _parse_keycloak_config(ow.keycloak_config),
+        "openid_provider_url": openid_provider_url,
+        "note": "Pod is restarting to pick up Keycloak env vars. Login page will show Keycloak SSO option after ~60s.",
+    })
+
+
+def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
+    ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
+    if not ow:
+        raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
+    if ow.deployment_type != "openwebui":
+        raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
+    if not ow.keycloak_config:
+        raise HTTPException(status_code=404, detail="No Keycloak SSO is connected to this OpenWebUI")
+
+    err = _k8s_patch_keycloak(ow, None)
+    if err:
+        raise HTTPException(status_code=502, detail=f"K8s patch failed: {err}")
+
+    ow.keycloak_config = None
+    db.commit()
+
+    logger.info(f"[AppDeploy] Keycloak SSO disconnected for openwebui id={openwebui_id}")
+    return response_format.success_response(200, "Keycloak SSO disconnected — pod rolling update in progress (~60s)", {
+        "openwebui_id": openwebui_id,
+        "note": "Pod is restarting to remove Keycloak env vars. Standard login form returns after ~60s.",
     })

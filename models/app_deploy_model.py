@@ -33,6 +33,9 @@ class AppDeployment(Base):
     # Private LLM integration (openwebui only) — JSON array of llm_inference_jobs.id
     linked_llm_ids      = Column(Text, nullable=True)      # e.g. "[1, 3, 5]"
 
+    # Keycloak SSO integration (openwebui only) — JSON object
+    keycloak_config     = Column(Text, nullable=True)
+
     status              = Column(String, nullable=False, default="pending")
     # pending → connecting → deploying → waiting_ready → deployed | failed
     workflow_id         = Column(String, nullable=True)
