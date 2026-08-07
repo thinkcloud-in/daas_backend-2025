@@ -25,7 +25,10 @@ async def llm_inference_v2_worker():
         task_queue=TASK_QUEUE,
         workflows=[CreateMultiNodeLLMWorkflow, PoolVMActionWorkflow, DeleteLLMPoolWorkflow],
         activities=[
+            activities_llm_inference_v2.reserve_vmids_activity,
             activities_llm_inference_v2.clone_and_configure_vm_activity,
+            activities_llm_inference_v2.verify_gpu_health_activity,
+            activities_llm_inference_v2.verify_ray_cluster_gpu_activity,
             activities_llm_inference_v2.launch_vllm_from_template_activity,
             activities_llm_inference_v2.update_llm_inference_job_activity,
             activities_llm_inference_v2.vm_power_action_activity,

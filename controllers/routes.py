@@ -172,9 +172,12 @@ async def list_pools_names(db: Session = Depends(get_db)):
 
 # Route to list all the pools
 @router.get('/vdi_pools/pools', response_model=APIResponse)
-async def list_pools():
-    pools = await controller.get_all_pools()
-    return response_format.success_response(200, "Pools retrieved successfully.", pools.get("pools", []))
+async def list_pools(page: int = 1, page_size: int = 10):
+    result = await controller.get_all_pools(page=page, page_size=page_size)
+    return response_format.success_response(200, "Pools retrieved successfully.", {
+        "items": result.get("pools", []),
+        "pagination": result.get("pagination"),
+    })
 
 #get pool details based on id
 @router.get("/vdi_pools/pool/{pool_id}", response_model=APIResponse)

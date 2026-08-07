@@ -484,8 +484,14 @@ async def get_all_pool_names(db: Session = None):
         if own_db:
             db.close()
 
-async def get_all_pools(db: Session = None):
-    """Directly query the database for all pools (Bypasses Temporal for responsiveness)."""
+async def get_all_pools(db: Session = None, page: int = None, page_size: int = None):
+    """Directly query the database for pools (Bypasses Temporal for responsiveness).
+
+    page/page_size are optional -- when omitted, behaves exactly as before
+    (returns every pool) so the other internal callers that rely on a full
+    list after a mutation (activities_pool.py, activities_machine.py) are
+    unaffected. Only the dedicated list route passes them.
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -493,7 +499,25 @@ async def get_all_pools(db: Session = None):
     try:
         from models.models import Machine
 
-        pools = db.query(Pool).all()
+        query = db.query(Pool).order_by(Pool.pool_name.asc())
+
+        pagination = None
+        if page is not None and page_size is not None:
+            page = max(1, page)
+            page_size = max(1, min(page_size, 100))
+            total = query.count()
+            total_pages = max(1, (total + page_size - 1) // page_size)
+            query = query.offset((page - 1) * page_size).limit(page_size)
+            pagination = {
+                "page": page,
+                "page_size": page_size,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next": page < total_pages,
+                "has_prev": page > 1,
+            }
+
+        pools = query.all()
         pools_json = jsonable_encoder(pools)
 
         # Compute "entitled" live from actual machine assignments instead of
@@ -520,8 +544,11 @@ async def get_all_pools(db: Session = None):
                     pool_data["cluster"] = "NA"
             else:
                 pool_data["cluster"] = "NA"
-                
-        return {"msg": "listed all the Pools successfully", "pools": pools_json}
+
+        result = {"msg": "listed all the Pools successfully", "pools": pools_json}
+        if pagination is not None:
+            result["pagination"] = pagination
+        return result
     finally:
         if own_db:
             db.close()

@@ -102,7 +102,7 @@ class CreateLLMInferenceWorkflow:
                 **ssh_base,
                 "name": payload["name"],
                 "subnet": payload.get("subnet", "192.168.100.0/24"),
-                "net_iface": payload.get("net_iface", "ens18"),
+                "net_iface": payload.get("net_iface"),  # None -> activity auto-detects
             }],
             retry_policy=_RETRY,
             start_to_close_timeout=timedelta(minutes=60),

@@ -1,7 +1,9 @@
 import asyncio
+import ipaddress
 import logging
 import os
 import pytz
+import yaml
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from temporalio.api.enums.v1 import EventType
@@ -13,13 +15,17 @@ from models.models import Cluster, Machine
 from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference_v2 import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference_v2 import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
+from service.temporalResource.activity.activities_llm_inference_v2 import _netmask_to_cidr
+from service import proxmoxService
 from utils import response_format
 
 _IST = pytz.timezone("Asia/Kolkata")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
+_VLLM_SERVE_PORT = 8000  # matches --port 8000 in launch_vllm_from_template_activity
 
 _ACTIVITY_DISPLAY = {
     # LLM inference
+    "reserve_vmids_activity":             "Reserve VM IDs",
     "clone_and_configure_vm_activity":    "VM Clone & Configure",
     "update_llm_inference_job_activity":  "Update Job Status",
     "install_ray_vllm_activity":          "Install Ray + vLLM",
@@ -162,6 +168,23 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
 
         db.flush()
 
+        # ── Derive the real cluster subnet from the IP pool actually used ──────
+        # Node-to-node firewall rules (e.g. for the PyTorch/NCCL rendezvous port)
+        # rely on this being correct; a wrong subnet silently leaves inter-node
+        # traffic unprotected instead of raising an error.
+        first_pool = next(p for p in ip_pool_objects if p.id == reserved_ips[0]["pool_id"])
+        subnet_cidr = _netmask_to_cidr(first_pool.Subnet)
+        cluster_subnet = str(
+            ipaddress.ip_network(f"{reserved_ips[0]['ip']}/{subnet_cidr}", strict=False)
+        )
+
+        # ── Parse the extra vLLM params textarea into a real dict once, here ────
+        # Both create AND every future restart read this same parsed dict back
+        # from the DB -- never re-parsing raw YAML text inside an activity.
+        vllm_extra_params = yaml.safe_load(data.vllmExtraParams) if data.vllmExtraParams else None
+        if vllm_extra_params is not None and not isinstance(vllm_extra_params, dict):
+            raise HTTPException(status_code=400, detail="Extra vLLM params must be a flat mapping of key: value pairs.")
+
         # ── Persist job record ────────────────────────────────────────────────
         record = LLMInferenceJob(
             name=data.poolName,
@@ -170,9 +193,12 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             template=data.template,
             nodes=[n.dict() for n in data.nodes],
             machine_name=data.machine_name,
-            pool_os_type=data.poolOSType,
             storage=data.storage or "local-lvm",
             model=data.model,
+            model_type=data.modelType,
+            model_type_other=data.modelTypeOther,
+            max_images_per_request=data.maxImagesPerRequest,
+            vllm_extra_params=vllm_extra_params,
             status="provisioning",
         )
         db.add(record)
@@ -188,11 +214,15 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "template":     data.template,
             "nodes":        [n.dict() for n in data.nodes],
             "reserved_ips": reserved_ips,
+            "subnet":       cluster_subnet,
             "storage":      data.storage or "local-lvm",
             "machine_name":  data.machine_name or data.poolName,
             "name_template": data.machine_name or None,
             "model":         data.model or "",
             "model_path":    data.model_path or "/vllm_data/hf_cache",
+            "model_type":    data.modelType,
+            "max_images_per_request": data.maxImagesPerRequest,
+            "vllm_extra_params":      vllm_extra_params,
             "ssh_user":      data.ssh_user or _SSH_USER,
             "ssh_pass":      data.ssh_pass or _SSH_PASS,
         }
@@ -282,7 +312,6 @@ def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
                 "template":       r.template,
                 "nodes":          r.nodes,
                 "machine_name":   r.machine_name,
-                "pool_os_type":   r.pool_os_type,
                 "storage":        r.storage,
                 "vmids":          r.vmids,
                 "ip_addresses":   r.ip_addresses,
@@ -371,22 +400,43 @@ def get_llm_inference_job(job_id: int, db: Session):
             rows = db.query(Machine).filter(Machine.vm_id.in_([str(v) for v in vmids])).all()
             machine_map = {m.vm_id: m for m in rows}
 
+        # These LLM-pool VMs are cloned directly via Proxmox (not through the
+        # regular Machine-creation flow), so Machine.status is never populated
+        # for them. Fetch live power state straight from Proxmox instead.
+        proxmox_status_map = {}
+        cluster = db.query(Cluster).filter(Cluster.id == record.cluster_id).first()
+        if cluster and vmids:
+            try:
+                all_vms = proxmoxService.get_all_cluster_vms(db, cluster)
+                proxmox_status_map = {
+                    str(vm["vmid"]): vm.get("status")
+                    for vm in all_vms
+                    if str(vm.get("vmid")) in {str(v) for v in vmids}
+                }
+            except Exception as status_err:
+                logging.warning(f"Could not fetch live VM status from Proxmox for job {job_id}: {status_err}")
+
         machines = []
         for i, vmid in enumerate(vmids):
             m          = machine_map.get(str(vmid))
             ip_address = ip_addresses[i] if i < len(ip_addresses) else None
+            role       = "head" if ip_address == record.head_ip else "worker"
             machines.append({
                 "vm_id":      vmid,
                 "name":       m.name     if m else None,
                 "ip_address": ip_address,
                 "hostname":   m.hostname if m else ip_address,
                 "protocol":   m.protocol if m else "ssh",
-                "port":       m.port     if m else 22,
+                # The vLLM OpenAI-compatible endpoint only ever comes up on the
+                # head node (that's where launch_vllm_from_template_activity
+                # starts the API server) -- worker nodes never serve it, so
+                # showing a port for them would be misleading.
+                "port":       _VLLM_SERVE_PORT if role == "head" else None,
                 "username":   m.username if m else None,
-                "status":     m.status   if m else None,
+                "status":     proxmox_status_map.get(str(vmid), "unknown"),
                 "node":       nodes[i]["node"] if i < len(nodes) else None,
                 "gpu":        nodes[i]["gpu"]  if i < len(nodes) else [],
-                "role":       "head" if ip_address == record.head_ip else "worker",
+                "role":       role,
             })
 
         cluster_name, ip_pool_names = _resolve_names(db, record.cluster_id, record.ip_pool_ids or [])
@@ -401,9 +451,12 @@ def get_llm_inference_job(job_id: int, db: Session):
             "template":       record.template,
             "nodes":          record.nodes,
             "machine_name":   record.machine_name,
-            "pool_os_type":   record.pool_os_type,
             "storage":        record.storage,
             "model":          record.model,
+            "model_type":             record.model_type,
+            "model_type_other":       record.model_type_other,
+            "max_images_per_request": record.max_images_per_request,
+            "vllm_extra_params":      record.vllm_extra_params,
             "vmids":          record.vmids,
             "ip_addresses":   record.ip_addresses,
             "head_ip":        record.head_ip,
@@ -509,8 +562,21 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             "ip_addresses":           record.ip_addresses or [],
             "ssh_user":               _SSH_USER,
             "ssh_pass":               _SSH_PASS,
-            "tensor_parallel_size":   n_nodes,
-            "pipeline_parallel_size": n_gpus_per_node,
+            # tensor_parallel_size = GPUs per node (within-node), pipeline_parallel_size
+            # = number of nodes (cross-node) -- must match the convention used at
+            # pool-creation time (see CreateMultiNodeLLMWorkflow._provision). These were
+            # previously swapped here, causing vLLM to relaunch with e.g.
+            # tensor-parallel-size=3 for a 3-node/1-GPU-per-node pool, which fails
+            # immediately ("Total number of attention heads (28) must be divisible by
+            # tensor parallel size (3)").
+            "tensor_parallel_size":   n_gpus_per_node,
+            "pipeline_parallel_size": n_nodes,
+            # Read back from the DB (persisted at creation), not re-entered by the
+            # caller -- a restart must relaunch vLLM with the exact same model
+            # type / extra params the pool was originally configured with.
+            "model_type":             record.model_type,
+            "max_images_per_request": record.max_images_per_request,
+            "vllm_extra_params":      record.vllm_extra_params,
         }
 
         client = await TemporalClientManager.get_temporal_client()
