@@ -62,7 +62,7 @@ def _to_dict(d: AppDeployment, db: Session = None) -> dict:
     # Fetch each connected LLM's details
     linked_llms = []
     if llm_id_list and db:
-        from models.llm_inference_v2_model import LLMInferenceJob
+        from models.llm_inference_model import LLMInferenceJob
         for llm_id in llm_id_list:
             try:
                 llm = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == llm_id).first()
@@ -680,7 +680,7 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
     import json as _json
     import re
     import uuid
-    from models.llm_inference_v2_model import LLMInferenceJob
+    from models.llm_inference_model import LLMInferenceJob
 
     if not llm_ids:
         raise HTTPException(status_code=400, detail="llm_ids list cannot be empty")
@@ -827,7 +827,7 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
 
 async def disconnect_private_llm(openwebui_id: int, llm_id: int | None, db: Session) -> dict:
     import re, json as _json, uuid
-    from models.llm_inference_v2_model import LLMInferenceJob
+    from models.llm_inference_model import LLMInferenceJob
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:

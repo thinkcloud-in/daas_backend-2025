@@ -8,7 +8,6 @@ from models.IPs_model import Base as IPs_Base
 from models.request_logger_model import Base as RequestLog_Base
 from models import task_models
 from models.llm_inference_model import Base as LLMInference_Base
-from models.llm_inference_v2_model import Base as LLMInferenceV2_Base
 
 def create_tables():
     try:
@@ -22,7 +21,6 @@ def create_tables():
         IPMI_Base.metadata.create_all(bind=engine)
         RequestLog_Base.metadata.create_all(bind=engine)
         LLMInference_Base.metadata.create_all(bind=engine)
-        LLMInferenceV2_Base.metadata.create_all(bind=engine)
 
     except Exception as e:
         raise Exception(f"Failed to create tables: {str(e)}") from e

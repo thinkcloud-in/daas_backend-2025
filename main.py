@@ -34,7 +34,6 @@ from service.temporalResource.workers import workers_retentionPeriod
 from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workers import workers_llm_inference
-from service.temporalResource.workers import workers_llm_inference_v2
 from service.temporalResource.workers import workers_library
 from service.temporalResource.workers import workers_lxc_restore
 from service.temporalResource.workers import workers_harbor_image
@@ -48,7 +47,6 @@ from utils.exception_handler import exception_handlers
 from router.hyper_v_router import hyper_v_router
 from router.ssl_router import ssl_router
 from router.llm_inference_router import llm_inference_router
-from router.llm_inference_v2_router import llm_inference_v2_router
 from router.library_router import library_router
 from router.pod_storage_router import pod_storage_router
 from router.kubernetes_router import kubernetes_router
@@ -103,7 +101,6 @@ app.include_router(grafana_router)
 app.include_router(hyper_v_router)
 app.include_router(ssl_router)
 app.include_router(llm_inference_router)
-app.include_router(llm_inference_v2_router)
 app.include_router(library_router)
 app.include_router(kubernetes_router)
 app.include_router(app_deploy_router)
@@ -183,8 +180,7 @@ def start_workers():
     )
 
     start_thread_manager("SSL", workers_ssl.ssl_workers)
-    #start_thread_manager("LLMInference", workers_llm_inference.run_all_llm_inference_workers)
-    start_thread_manager("LLMInferenceV2", workers_llm_inference_v2.run_all_llm_inference_v2_workers)
+    start_thread_manager("LLMInference", workers_llm_inference.run_all_llm_inference_workers)
     start_thread_manager("LibraryUpload", workers_library.run_all_library_workers)
     start_thread_manager("LXCRestore", workers_lxc_restore.run_all_lxc_workers)
     start_thread_manager("HarborImage", workers_harbor_image.run_harbor_image_worker)

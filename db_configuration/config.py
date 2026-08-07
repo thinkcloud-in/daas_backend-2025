@@ -49,11 +49,11 @@ except Exception as e:
 try:
     with engine.begin() as connection:
         connection.execute(text("""
-            ALTER TABLE llm_inference_jobs
+            ALTER TABLE llm_inferences
                 ADD COLUMN IF NOT EXISTS model TEXT;
         """))
 except Exception as e:
-    logger.error(f"Failed to apply llm_inference_jobs migrations: {str(e)}")
+    logger.error(f"Failed to apply llm_inferences migrations: {str(e)}")
 
 try:
     with engine.begin() as connection:
