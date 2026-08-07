@@ -1,7 +1,9 @@
 import logging
 import os
 import time
+from urllib.parse import quote as _url_quote
 
+import requests as _req
 from temporalio import activity
 
 from db_configuration.config import SessionLocal
@@ -9,6 +11,50 @@ from models.library_model import LibraryItem
 from utils.k8s_pod_exec import delete_file_from_pod
 
 logger = logging.getLogger(__name__)
+
+_HARBOR_PUSH_TYPES = {"container"}
+
+
+def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
+    """
+    Harbor REST API se image delete karo.
+    harbor_image format: "172.16.4.41:30080/library/openwebui/openwebui:0.6.5"
+    """
+    # Parse: host / project / repo_path : tag
+    # "172.16.4.41:30080/library/openwebui/openwebui:0.6.5"
+    parts = harbor_image.split("/", 1)          # ["172.16.4.41:30080", "library/openwebui/openwebui:0.6.5"]
+    host  = parts[0]
+    rest  = parts[1] if len(parts) > 1 else ""  # "library/openwebui/openwebui:0.6.5"
+
+    # tag alag karo
+    if ":" in rest.split("/")[-1]:
+        last_slash = rest.rfind(":")
+        tag  = rest[last_slash + 1:]            # "0.6.5"
+        path = rest[:last_slash]                # "library/openwebui/openwebui"
+    else:
+        tag  = "latest"
+        path = rest
+
+    path_parts = path.split("/")               # ["library", "openwebui", "openwebui"]
+    project    = path_parts[0]                 # "library"
+    repo_path  = "/".join(path_parts[1:])      # "openwebui/openwebui"
+    repo_enc   = _url_quote(repo_path, safe="")  # "openwebui%2Fopenwebui"
+
+    base_url = f"http://{host}"
+    api_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"
+
+    logger.info(f"[LibraryDelete] Harbor API DELETE: {api_url}")
+    resp = _req.delete(
+        api_url,
+        auth=(harbor_user, harbor_pass),
+        verify=False,
+        timeout=30,
+    )
+    if resp.status_code in (200, 202, 404):
+        # 404 = already deleted — theek hai
+        logger.info(f"[LibraryDelete] Harbor delete status={resp.status_code}")
+        return
+    raise RuntimeError(f"Harbor delete failed: {resp.status_code} {resp.text[:200]}")
 
 
 _MAX_POLL_SECONDS = 6 * 3600  # 6 hours max — iske baad timeout
@@ -119,9 +165,21 @@ def delete_library_file_activity(payload: dict) -> dict:
             return {"item_id": item_id, "status": "deleted"}
 
         file_path = item.file_path
-        logger.info(f"[Library] delete item={item_id} file={file_path}")
+        logger.info(f"[Library] delete item={item_id} type={item.type} file={file_path}")
 
-        if file_path:
+        if item.type in _HARBOR_PUSH_TYPES and item.harbor_image:
+            # Harbor se image delete karo
+            try:
+                _harbor_delete_image(
+                    harbor_image=item.harbor_image,
+                    harbor_user=item.harbor_user or "admin",
+                    harbor_pass=item.harbor_pass or "Harbor12345",
+                )
+                logger.info(f"[Library] Harbor image deleted: {item.harbor_image}")
+            except Exception as exc:
+                logger.warning(f"[Library] Harbor delete failed: {exc} — removing DB record anyway")
+        elif file_path:
+            # Storage (WebDAV/pod) se file delete karo
             try:
                 delete_file_from_pod(file_path)
                 logger.info(f"[Library] pod file deleted: {file_path}")

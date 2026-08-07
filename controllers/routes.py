@@ -27,6 +27,99 @@ _LLM_WF_TYPES = {
     "LXCRestoreWorkflow",
 }
 
+_K8S_DEPLOY_WF_TYPE   = "K8sHarborDeployWorkflow"
+_HARBOR_PUSH_WF_TYPE  = "HarborPushWorkflow"
+
+
+async def _enrich_k8s_deploy(wf: dict) -> dict:
+    """K8s Harbor deploy workflow ko DB steps_log se enrich karo."""
+    import json as _json
+    from db_configuration.config import SessionLocal
+    from models.kubernetes_deploy_model import KubernetesDeployment
+
+    db = SessionLocal()
+    try:
+        deploy = db.query(KubernetesDeployment).filter(
+            KubernetesDeployment.workflow_id == wf["workflow_id"]
+        ).first()
+        if not deploy:
+            return wf
+
+        try:
+            raw_steps = _json.loads(deploy.steps_log) if deploy.steps_log else []
+        except Exception:
+            raw_steps = []
+
+        steps = [
+            {"step": i + 1, "label": s, "status": "completed"}
+            for i, s in enumerate(raw_steps)
+        ]
+
+        from controllers.kubernetes_controller import _DEPLOY_PROGRESS
+        progress = _DEPLOY_PROGRESS.get(
+            deploy.status,
+            {"step": 0, "label": deploy.status, "pct": 0},
+        )
+
+        wf.update({
+            "deploy_id":     deploy.id,
+            "cluster_id":    deploy.cluster_id,
+            "node_ip":       deploy.node_ip,
+            "namespace":     deploy.namespace,
+            "deploy_status": deploy.status,
+            "progress":      progress,
+            "harbor_url":    deploy.harbor_url,
+            "error_message": deploy.error_message,
+            "steps":         steps,
+            "total_steps":   len(steps),
+            "completed_steps": len(steps),
+            "current_step":  raw_steps[-1] if raw_steps else None,
+        })
+    except Exception as exc:
+        logger.warning(f"[K8s enrich] {exc}")
+    finally:
+        db.close()
+
+    return wf
+
+
+async def _enrich_harbor_push(wf: dict) -> dict:
+    """HarborPushWorkflow ko library item push_status se enrich karo."""
+    from db_configuration.config import SessionLocal
+    from models.library_model import LibraryItem
+
+    db = SessionLocal()
+    try:
+        item = db.query(LibraryItem).filter(
+            LibraryItem.push_workflow_id == wf["workflow_id"]
+        ).first()
+        if not item:
+            return wf
+
+        _STATUS_MAP = {
+            "pending":  {"pct": 0,   "label": "Queued"},
+            "pushing":  {"pct": 50,  "label": "Pushing to Harbor"},
+            "pushed":   {"pct": 100, "label": "Pushed"},
+            "failed":   {"pct": 0,   "label": "Failed"},
+        }
+        progress = _STATUS_MAP.get(item.push_status or "pending", {"pct": 0, "label": item.push_status})
+
+        wf.update({
+            "library_item_id": item.id,
+            "library_name":    item.name,
+            "push_status":     item.push_status,
+            "harbor_image":    item.harbor_image,
+            "push_error":      item.push_error,
+            "progress":        progress,
+        })
+    except Exception as exc:
+        logger.warning(f"[HarborPush enrich] {exc}")
+    finally:
+        db.close()
+
+    return wf
+
+
 router = APIRouter(prefix="/v1")
 
 TEMPORAL_SERVER = os.getenv("TEMPORAL_SERVER")
@@ -423,10 +516,19 @@ async def list_workflows():
                 "UserName": wf.search_attributes.get("UserName", ["UnknownUserName"])[0]
             })
     
-    # Enrich LLM inference workflows with Temporal activity steps
+    # Enrich workflows with activity steps
     async def _add_steps(wf):
-        if wf.get("workflow_type") not in _LLM_WF_TYPES:
+        wf_type = wf.get("workflow_type")
+
+        if wf_type == _K8S_DEPLOY_WF_TYPE:
+            return await _enrich_k8s_deploy(wf)
+
+        if wf_type == _HARBOR_PUSH_WF_TYPE:
+            return await _enrich_harbor_push(wf)
+
+        if wf_type not in _LLM_WF_TYPES:
             return wf
+
         try:
             handle = client.get_workflow_handle(wf["workflow_id"])
             steps  = await _fetch_steps(handle)

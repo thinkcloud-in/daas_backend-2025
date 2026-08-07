@@ -340,6 +340,50 @@ def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
         return response_format.error_response(500, "Failed to list LLM inference jobs", str(e))
 
 
+def list_deployed_llm_jobs(db: Session, page: int = 1, page_size: int = 10):
+    try:
+        page      = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        offset    = (page - 1) * page_size
+
+        base_q  = db.query(LLMInferenceJob).filter(LLMInferenceJob.status == "vms_ready")
+        total   = base_q.count()
+        records = (
+            base_q
+            .order_by(LLMInferenceJob.created_at.desc())
+            .offset(offset)
+            .limit(page_size)
+            .all()
+        )
+
+        data = [
+            {
+                "id":           r.id,
+                "name":         r.name,
+                "machine_name": r.machine_name,
+                "head_ip":      r.head_ip,
+                "endpoint_url": r.endpoint_url,
+                "ip_addresses": r.ip_addresses,
+            }
+            for r in records
+        ]
+
+        total_pages = (total + page_size - 1) // page_size
+        return response_format.success_response(200, "Deployed private LLMs fetched successfully", {
+            "items": data,
+            "pagination": {
+                "page":        page,
+                "page_size":   page_size,
+                "total":       total,
+                "total_pages": total_pages,
+                "has_next":    page < total_pages,
+                "has_prev":    page > 1,
+            },
+        })
+    except Exception as e:
+        return response_format.error_response(500, "Failed to fetch deployed private LLMs", str(e))
+
+
 def get_llm_inference_job(job_id: int, db: Session):
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
@@ -437,7 +481,7 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
         if data.status is not None:
             record.status = data.status
         db.commit()
-        return response_format.success_response(200, "Updated", {"id": record.id})
+        return response_format.success_response(200, "LLM inference job updated successfully", {"id": record.id})
     except HTTPException:
         raise
     except Exception as e:
@@ -471,7 +515,7 @@ async def delete_llm_inference_job(job_id: int, db: Session):
             },
         )
 
-        return response_format.success_response(200, "Delete started", {
+        return response_format.success_response(200, "LLM inference job deletion started successfully", {
             "job_id":      job_id,
             "workflow_id": handle.id,
             "status":      "deleting",

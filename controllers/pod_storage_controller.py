@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 _WEBDAV_BASE        = os.getenv("STORAGE_BASE_URL",     "https://devraq.dev.team/library").rstrip("/")
 _WEBDAV_UPLOAD_BASE = os.getenv("STORAGE_INTERNAL_URL", _WEBDAV_BASE).rstrip("/")
-VALID_DIRS          = {"harbor", "os", "openwebui", "vectordb", "podman", "general"}
+VALID_DIRS          = {"harbor", "os", "container", "llm_model", "llm_template", "podman", "general"}
 
 
 def _validate_dir(directory: str):
