@@ -17,6 +17,8 @@ class AppDeployBody(BaseModel):
     harbor_registry_id:  Optional[int] = None   # kubernetes_deployments.id (harbor instance)
     version_id:          int            # library.id — specific version to deploy
     namespace:           Optional[str] = "default"
+    storage_class:       Optional[str] = None   # e.g. "ceph-rbd", "cephfs" — None = cluster default
+    storage_size:        Optional[str] = "1Gi"  # PVC size e.g. "2Gi", "5Gi"
 
 
 @app_deploy_router.post("", response_model=APIResponse[Any])
@@ -117,3 +119,47 @@ async def disconnect_private_llm(
     Fallback: Temporal workflow — K8s env vars update + rollout (one-time only).
     """
     return await app_deploy_controller.disconnect_private_llm(openwebui_id, llm_id, db)
+
+
+class ConnectKeycloakBody(BaseModel):
+    keycloak_url:  str
+    realm:         str
+    client_id:     str
+    client_secret: str
+    provider_name: Optional[str] = "keycloak"
+    oauth_scopes:  Optional[str] = "openid email profile"
+
+
+@app_deploy_router.post("/{openwebui_id}/connect-keycloak", response_model=APIResponse[Any])
+def connect_keycloak(
+    openwebui_id: int,
+    body: ConnectKeycloakBody,
+    db: Session = Depends(get_db),
+):
+    """
+    OpenWebUI ke saath Keycloak SSO connect karo (K8s env vars via Python client).
+
+    Required fields:
+    - keycloak_url   : Keycloak server URL (e.g. http://172.16.4.10:8080)
+    - realm          : Keycloak realm name (e.g. daas)
+    - client_id      : OAuth client ID configured in Keycloak
+    - client_secret  : OAuth client secret
+
+    Optional fields (defaults shown):
+    - provider_name     : SSO button label (default: keycloak)
+    - enable_signup     : Allow new users via SSO (default: true)
+    - merge_accounts    : Merge SSO accounts by email (default: true)
+    - enable_login_form : Show password login alongside SSO (default: false)
+    - oauth_scopes      : OAuth scopes (default: openid email profile)
+
+    Pod restart ~60s — Keycloak button appears on login page after restart.
+    """
+    return app_deploy_controller.connect_keycloak(openwebui_id, body.model_dump(), db)
+
+
+@app_deploy_router.delete("/{openwebui_id}/connect-keycloak", response_model=APIResponse[Any])
+def disconnect_keycloak(openwebui_id: int, db: Session = Depends(get_db)):
+    """
+    OpenWebUI se Keycloak SSO hatao — K8s env vars remove + rolling update (~60s).
+    """
+    return app_deploy_controller.disconnect_keycloak(openwebui_id, db)

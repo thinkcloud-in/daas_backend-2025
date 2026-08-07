@@ -314,18 +314,23 @@ def _ensure_pull_secret(v1, namespace: str, harbor_host: str, harbor_user: str, 
 # YAML builders
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _openwebui_manifest(rname: str, namespace: str, image: str) -> list[dict]:
+def _openwebui_manifest(rname: str, namespace: str, image: str,
+                        storage_class: str | None = None,
+                        storage_size: str = "1Gi") -> list[dict]:
     svc_name = f"{rname}-openwebui"
     pvc_name = f"{svc_name}-data"
+    pvc_spec: dict = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources": {"requests": {"storage": storage_size}},
+    }
+    if storage_class:
+        pvc_spec["storageClassName"] = storage_class
     return [
         {
             "apiVersion": "v1", "kind": "PersistentVolumeClaim",
             "metadata": {"name": pvc_name, "namespace": namespace,
                          "labels": {"app": svc_name, "managed-by": "daas"}},
-            "spec": {
-                "accessModes": ["ReadWriteOnce"],
-                "resources": {"requests": {"storage": "1Gi"}},
-            },
+            "spec": pvc_spec,
         },
         {
             "apiVersion": "apps/v1", "kind": "Deployment",
@@ -570,7 +575,11 @@ def app_deploy_activity(payload: dict) -> dict:
 
         # ── Step 8: Manifest apply ───────────────────────────────────────────
         if deployment_type == "openwebui":
-            manifests = _openwebui_manifest(rname, namespace, image)
+            manifests = _openwebui_manifest(
+                rname, namespace, image,
+                storage_class=payload.get("storage_class"),
+                storage_size=payload.get("storage_size", "1Gi"),
+            )
         else:
             manifests = _vectordb_manifest(rname, namespace, image)
 
