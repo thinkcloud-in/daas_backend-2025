@@ -1,5 +1,7 @@
 import os
 import re
+import json
+import shlex
 import time
 import ipaddress
 import logging
@@ -601,7 +603,36 @@ def verify_ray_cluster_gpu_activity(payload: dict) -> dict:
     return {"ip_address": ip, "total_gpus": last_total}
 
 
-def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str, str]:
+def _render_vllm_arg(key: str, value) -> str:
+    """
+    Render one (key, value) pair as a vLLM CLI flag. Keys use snake_case
+    (matching the UI's YAML field names) and get translated to vLLM's
+    dashed flag form.
+
+    vLLM flags come in two shapes and must be told apart:
+      - boolean/store_true flags (--enable-chunked-prefill, --trust-remote-code)
+        take NO value on the command line -- their presence alone means "on".
+        Passing e.g. "--enable-chunked-prefill true" is not how argparse
+        store_true works and can be rejected as an unrecognized argument.
+      - value flags (--max-model-len 4096) need "--flag value".
+    True  -> bare flag, no value.
+    False -> omitted entirely (there's no negated form for these flags).
+    Anything else -> "--flag <shell-quoted value>".
+    """
+    flag = "--" + key.replace("_", "-")
+    if isinstance(value, bool):
+        return f" {flag}" if value else ""
+    return f" {flag} {shlex.quote(str(value))}"
+
+
+def _build_vllm_commands(
+    home_dir: str,
+    tp_size: int,
+    pp_size: int,
+    model_type: str | None = None,
+    max_images_per_request: int | None = None,
+    extra_params: dict | None = None,
+) -> tuple[str, str]:
     """
     Build the vLLM launch + health-poll shell commands. Shared by
     launch_vllm_from_template_activity (first boot) and
@@ -610,35 +641,56 @@ def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str
     had its own simplified copy of this logic that silently diverged
     (wrong env vars, no single-node/multi-node branching), causing restarts
     to launch vLLM differently than the original provisioning did.
+
+    extra_params (parsed from the UI's "Extra vLLM Params" textarea, already
+    a dict by the time it gets here -- never raw YAML) is merged on top of
+    the built-in defaults: same key overrides, new key gets added. A
+    "served_model_name" key is special-cased out of the dict since it
+    replaces the default (path-derived) --served-model-name value rather
+    than being a generic flag.
     """
     is_multinode = pp_size > 1
     _vllm_bin = f"{home_dir}/vllm-ray-env/bin/python3 -m vllm.entrypoints.openai.api_server"
+
+    # ── Base args as a dict, not a hand-built string -- this is what makes
+    # "same key overrides, new key gets added" possible via dict.update().
+    base_args: dict = {}
     # Single-node inference (pp_size=1) -> no Ray, simpler & faster.
     # Multi-node inference (pp_size>1) -> Ray for pipeline parallelism.
     if is_multinode:
-        _vllm_common_args = (
-            f" --distributed-executor-backend ray"
-            f" --tensor-parallel-size {tp_size}"
-            f" --pipeline-parallel-size {pp_size}"
-            f" --max-model-len 4096"
-            f" --gpu-memory-utilization 0.90"
-            f" --enable-chunked-prefill"
-            f" --trust-remote-code"
-            f" --host 0.0.0.0 --port 8000"
-        )
-    else:
-        # Single node: no Ray overhead, plain in-process inference.
-        # Still need --tensor-parallel-size when the node has multiple
-        # GPUs -- without it vLLM defaults to TP=1 and silently only
-        # uses one of the attached GPUs.
-        _vllm_common_args = (
-            (f" --tensor-parallel-size {tp_size}" if tp_size > 1 else "")
-            + f" --max-model-len 4096"
-            f" --gpu-memory-utilization 0.90"
-            f" --enable-chunked-prefill"
-            f" --trust-remote-code"
-            f" --host 0.0.0.0 --port 8000"
-        )
+        base_args["distributed_executor_backend"] = "ray"
+        base_args["tensor_parallel_size"] = tp_size
+        base_args["pipeline_parallel_size"] = pp_size
+    elif tp_size > 1:
+        # Still need --tensor-parallel-size when a single node has multiple
+        # GPUs -- without it vLLM defaults to TP=1 and silently only uses
+        # one of the attached GPUs.
+        base_args["tensor_parallel_size"] = tp_size
+    base_args.update({
+        "max_model_len": 4096,
+        "gpu_memory_utilization": 0.90,
+        "enable_chunked_prefill": True,
+        "trust_remote_code": True,
+        "host": "0.0.0.0",
+        "port": 8000,
+    })
+
+    if model_type == "vision_language" and max_images_per_request:
+        # vLLM parses --limit-mm-per-prompt with json.loads -- it needs a JSON
+        # object, not the old "image=4" key=value shorthand.
+        base_args["limit_mm_per_prompt"] = json.dumps({"image": int(max_images_per_request)})
+
+    served_model_name_override = None
+    if extra_params:
+        extra_params = dict(extra_params)  # don't mutate the caller's dict
+        if "served_model_name" in extra_params:
+            served_model_name_override = str(extra_params.pop("served_model_name")).strip()
+        base_args.update(extra_params)
+
+    _vllm_common_args = "".join(_render_vllm_arg(k, v) for k, v in base_args.items())
+    _served_model_name_expr = (
+        shlex.quote(served_model_name_override) if served_model_name_override else '"$RESOLVED_MODEL"'
+    )
 
     _vllm_env_setup = (
         f"source {home_dir}/vllm-ray-env/bin/activate; "
@@ -749,17 +801,17 @@ def _build_vllm_commands(home_dir: str, tp_size: int, pp_size: int) -> tuple[str
         f"_VLLM_ENV=\"VLLM_DEVICE=cuda CUDA_VISIBLE_DEVICES=0 CUDA_HOME=/usr/local/cuda\"; "
 
         "if [ \"${RESOLVED_MODEL:0:1}\" = \"/\" ]; then "
-        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --served-model-name {_served_model_name_expr} {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
         f"  nohup env $_VLLM_ENV {_vllm_bin}"
         f"    --model \"$RESOLVED_MODEL\""
-        f"    --served-model-name \"$RESOLVED_MODEL\""
+        f"    --served-model-name {_served_model_name_expr}"
         f"    {_vllm_common_args}"
         f"    >> {home_dir}/{_VLLM_LOG_FILE} 2>&1 & "
         "else "
-        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
+        f"  echo \"[vLLM-cmd] nohup env $_VLLM_ENV {_vllm_bin} --model $RESOLVED_MODEL --served-model-name {_served_model_name_expr} --download-dir ${{LLM_MODEL_PATH:-/vllm_data/hf_cache}} {_vllm_common_args}\" >> {home_dir}/{_VLLM_LOG_FILE}; "
         f"  nohup env $_VLLM_ENV {_vllm_bin}"
         f"    --model \"$RESOLVED_MODEL\""
-        f"    --served-model-name \"$RESOLVED_MODEL\""
+        f"    --served-model-name {_served_model_name_expr}"
         f"    --download-dir \"${{LLM_MODEL_PATH:-/vllm_data/hf_cache}}\""
         f"    {_vllm_common_args}"
         f"    >> {home_dir}/{_VLLM_LOG_FILE} 2>&1 & "
@@ -799,6 +851,9 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         ssh_pass = payload.get("ssh_pass", _SSH_PASS)
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
+        model_type             = payload.get("model_type")
+        max_images_per_request = payload.get("max_images_per_request")
+        vllm_extra_params      = payload.get("vllm_extra_params")
 
         # ── Step 0: Reboot VM ─────────────────────────────────────────────────
         # Fresh clone ke baad GPU drivers properly initialize nahi hote.
@@ -850,7 +905,12 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             logger.warning(f"[{ip}] Ray head wait encountered error (non-fatal): {_ray_err}")
 
         home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
-        vllm_launch, health_poll = _build_vllm_commands(home_dir, tp_size, pp_size)
+        vllm_launch, health_poll = _build_vllm_commands(
+            home_dir, tp_size, pp_size,
+            model_type=model_type,
+            max_images_per_request=max_images_per_request,
+            extra_params=vllm_extra_params,
+        )
 
         try:
             logger.info(f"[{ip}] Executing vLLM launch script over SSH...")
@@ -962,6 +1022,9 @@ def restore_llm_services_activity(payload: dict) -> dict:
     role     = payload.get("role", "head")   # "head" | "worker"
     tp_size  = payload.get("tensor_parallel_size", 1)
     pp_size  = payload.get("pipeline_parallel_size", 1)
+    model_type             = payload.get("model_type")
+    max_images_per_request = payload.get("max_images_per_request")
+    vllm_extra_params      = payload.get("vllm_extra_params")
     home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
     venv_bin = f"{home_dir}/vllm-ray-env/bin"
     service  = "ray-head" if role == "head" else "ray-worker"
@@ -1000,12 +1063,16 @@ def restore_llm_services_activity(payload: dict) -> dict:
         # provisioning launch (launch_vllm_from_template_activity), so a
         # restart can never diverge from how the pool was first launched
         # (single-node vs multi-node branching, env vars, model resolution).
-        vllm_launch, health_poll = _build_vllm_commands(home_dir, tp_size, pp_size)
+        vllm_launch, health_poll = _build_vllm_commands(
+            home_dir, tp_size, pp_size,
+            model_type=model_type,
+            max_images_per_request=max_images_per_request,
+            extra_params=vllm_extra_params,
+        )
         run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
         logger.info(f"[{ip}] vLLM relaunched and healthy")
 
     return {"ip_address": ip, "role": role, "step": "services_restored"}
-
 
 _ACTION_PATH = {
     "start":    "start",

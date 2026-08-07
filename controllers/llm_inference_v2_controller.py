@@ -3,6 +3,7 @@ import ipaddress
 import logging
 import os
 import pytz
+import yaml
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from temporalio.api.enums.v1 import EventType
@@ -177,6 +178,13 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             ipaddress.ip_network(f"{reserved_ips[0]['ip']}/{subnet_cidr}", strict=False)
         )
 
+        # ── Parse the extra vLLM params textarea into a real dict once, here ────
+        # Both create AND every future restart read this same parsed dict back
+        # from the DB -- never re-parsing raw YAML text inside an activity.
+        vllm_extra_params = yaml.safe_load(data.vllmExtraParams) if data.vllmExtraParams else None
+        if vllm_extra_params is not None and not isinstance(vllm_extra_params, dict):
+            raise HTTPException(status_code=400, detail="Extra vLLM params must be a flat mapping of key: value pairs.")
+
         # ── Persist job record ────────────────────────────────────────────────
         record = LLMInferenceJob(
             name=data.poolName,
@@ -185,9 +193,12 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             template=data.template,
             nodes=[n.dict() for n in data.nodes],
             machine_name=data.machine_name,
-            pool_os_type=data.poolOSType,
             storage=data.storage or "local-lvm",
             model=data.model,
+            model_type=data.modelType,
+            model_type_other=data.modelTypeOther,
+            max_images_per_request=data.maxImagesPerRequest,
+            vllm_extra_params=vllm_extra_params,
             status="provisioning",
         )
         db.add(record)
@@ -209,6 +220,9 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "name_template": data.machine_name or None,
             "model":         data.model or "",
             "model_path":    data.model_path or "/vllm_data/hf_cache",
+            "model_type":    data.modelType,
+            "max_images_per_request": data.maxImagesPerRequest,
+            "vllm_extra_params":      vllm_extra_params,
             "ssh_user":      data.ssh_user or _SSH_USER,
             "ssh_pass":      data.ssh_pass or _SSH_PASS,
         }
@@ -298,7 +312,6 @@ def list_llm_inference_jobs(db: Session, page: int = 1, page_size: int = 10):
                 "template":       r.template,
                 "nodes":          r.nodes,
                 "machine_name":   r.machine_name,
-                "pool_os_type":   r.pool_os_type,
                 "storage":        r.storage,
                 "vmids":          r.vmids,
                 "ip_addresses":   r.ip_addresses,
@@ -394,9 +407,12 @@ def get_llm_inference_job(job_id: int, db: Session):
             "template":       record.template,
             "nodes":          record.nodes,
             "machine_name":   record.machine_name,
-            "pool_os_type":   record.pool_os_type,
             "storage":        record.storage,
             "model":          record.model,
+            "model_type":             record.model_type,
+            "model_type_other":       record.model_type_other,
+            "max_images_per_request": record.max_images_per_request,
+            "vllm_extra_params":      record.vllm_extra_params,
             "vmids":          record.vmids,
             "ip_addresses":   record.ip_addresses,
             "head_ip":        record.head_ip,
@@ -511,6 +527,12 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             # tensor parallel size (3)").
             "tensor_parallel_size":   n_gpus_per_node,
             "pipeline_parallel_size": n_nodes,
+            # Read back from the DB (persisted at creation), not re-entered by the
+            # caller -- a restart must relaunch vLLM with the exact same model
+            # type / extra params the pool was originally configured with.
+            "model_type":             record.model_type,
+            "max_images_per_request": record.max_images_per_request,
+            "vllm_extra_params":      record.vllm_extra_params,
         }
 
         client = await TemporalClientManager.get_temporal_client()
