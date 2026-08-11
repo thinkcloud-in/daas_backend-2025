@@ -389,89 +389,95 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
 
 def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) -> dict:
     import re
-    import shlex
-    import paramiko
+    from kubernetes.client.models import V1EnvVar
 
-    # ── Validate OpenWebUI deployment ────────────────────────────────────────
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
         raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
     if ow.deployment_type != "openwebui":
         raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
-    if ow.status != "deployed":
-        raise HTTPException(status_code=409, detail=f"OpenWebUI deployment is currently in '{ow.status}' state — connect after it is deployed")
+    if ow.status not in ("deployed", "failed", "llm_connect_failed"):
+        raise HTTPException(status_code=409, detail=f"OpenWebUI is in '{ow.status}' state — deploy it first")
 
-    # ── Validate VectorDB deployment ─────────────────────────────────────────
     vdb = db.query(AppDeployment).filter(AppDeployment.id == vectordb_deploy_id).first()
     if not vdb:
         raise HTTPException(status_code=404, detail=f"VectorDB deployment id={vectordb_deploy_id} not found")
     if vdb.deployment_type != "vectordb":
         raise HTTPException(status_code=400, detail=f"id={vectordb_deploy_id} is not a VectorDB deployment")
     if vdb.status != "deployed":
-        raise HTTPException(status_code=409, detail=f"VectorDB deployment is currently in '{vdb.status}' state")
+        raise HTTPException(status_code=409, detail=f"VectorDB is in '{vdb.status}' state")
     if not vdb.external_ip:
-        raise HTTPException(status_code=409, detail="VectorDB external_ip is not set — deploy it first")
+        raise HTTPException(status_code=409, detail="VectorDB external_ip not set — deploy it first")
 
-    # ── K8s env inject ───────────────────────────────────────────────────────
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
-    if not cluster or not cluster.control_ip or not cluster.username or not cluster.password:
-        raise HTTPException(status_code=409, detail="OpenWebUI cluster SSH credentials are missing")
+    if not cluster or not cluster.kubeconfig:
+        raise HTTPException(status_code=409, detail="OpenWebUI cluster kubeconfig is missing")
 
-    rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
-    rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
-    dep_name = f"{rname}-openwebui"
-    ns_q     = shlex.quote(ow.namespace or "default")
-    pgurl    = f"postgresql://postgres:postgres123@{vdb.external_ip}:5432/vectordb"
+    rname     = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+    rname     = re.sub(r"-+", "-", rname).strip("-")[:52]
+    dep_name  = f"{rname}-openwebui"
+    namespace = ow.namespace or "default"
+    pgurl     = f"postgresql://postgres:postgres123@{vdb.external_ip}:5432/vectordb"
+
+    # OpenWebUI data persistence: internal service URL for DATABASE_URL (pod-to-pod, no LoadBalancer hop)
+    rname_vdb = re.sub(r"[^a-z0-9-]", "-", vdb.name.lower())
+    rname_vdb = re.sub(r"-+", "-", rname_vdb).strip("-")[:52]
+    svc_vdb   = f"{rname_vdb}-vectordb"
+    vdb_ns    = vdb.namespace or "default"
+    db_url    = f"postgresql://postgres:postgres123@{svc_vdb}.{vdb_ns}.svc.cluster.local:5432/openwebui_data"
+
+    # openwebui_data database create karo agar exist nahi karta (external IP se, backend server se)
+    try:
+        import psycopg2 as _pg2
+        conn = _pg2.connect(
+            host=vdb.external_ip, port=5432,
+            dbname="postgres", user="postgres", password="postgres123",
+            connect_timeout=10,
+        )
+        conn.autocommit = True
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM pg_database WHERE datname='openwebui_data'")
+        if not cur.fetchone():
+            cur.execute("CREATE DATABASE openwebui_data")
+            logger.info("[AppDeploy] 'openwebui_data' database created on vectordb postgres")
+        else:
+            logger.info("[AppDeploy] 'openwebui_data' database already exists")
+        cur.close()
+        conn.close()
+    except Exception as e:
+        logger.warning(f"[AppDeploy] openwebui_data DB creation skipped: {e} — DATABASE_URL set but DB may need manual creation")
 
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(
-            hostname=cluster.control_ip,
-            port=22,
-            username=cluster.username,
-            password=cluster.password,
-            timeout=30,
-        )
+        apps_v1    = _load_k8s_apps_client(cluster)
+        deployment = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
 
-        def _run(cmd: str, timeout: int = 180):
-            _, out, err = ssh.exec_command(cmd, timeout=timeout)
-            out.channel.recv_exit_status()
-            return out.read().decode(errors="replace").strip()
+        for container in (deployment.spec.template.spec.containers or []):
+            if container.name == "openwebui":
+                clean_env = [e for e in (container.env or []) if e.name not in _VECTORDB_ENV_KEYS]
+                clean_env.append(V1EnvVar(name="VECTOR_DB",      value="pgvector"))
+                clean_env.append(V1EnvVar(name="PGVECTOR_DB_URL", value=pgurl))
+                clean_env.append(V1EnvVar(name="DATABASE_URL",    value=db_url))
+                # Pod restart hone par linked LLMs ko env vars me preserve karo
+                clean_env = _inject_llm_env_vars(ow, clean_env, db)
+                container.env = clean_env
+                break
 
-        # Inject env vars into openwebui deployment
-        env_cmd = (
-            f"kubectl set env deployment/{shlex.quote(dep_name)} "
-            f"VECTOR_DB=pgvector "
-            f"PGVECTOR_DB_URL={shlex.quote(pgurl)} "
-            f"-n {ns_q} 2>&1"
-        )
-        set_out = _run(env_cmd)
-        logger.info(f"[AppDeploy] kubectl set env: {set_out}")
-
-        # Wait for rollout to complete
-        rollout_out = _run(
-            f"kubectl rollout status deployment/{shlex.quote(dep_name)} "
-            f"-n {ns_q} --timeout=180s 2>&1",
-            timeout=200,
-        )
-        logger.info(f"[AppDeploy] rollout status: {rollout_out}")
-        ssh.close()
-
+        apps_v1.replace_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment)
+        logger.info(f"[AppDeploy] VectorDB + DATABASE_URL env vars set for {dep_name}")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"K8s env inject failed: {str(e)[:300]}")
+        raise HTTPException(status_code=500, detail=f"K8s patch failed: {str(e)[:300]}")
 
-    # ── DB save ──────────────────────────────────────────────────────────────
     ow.linked_vectordb_id = vectordb_deploy_id
     db.commit()
     db.refresh(ow)
 
     logger.info(f"[AppDeploy] OpenWebUI id={openwebui_id} linked to VectorDB id={vectordb_deploy_id}")
-    return response_format.success_response(200, "VectorDB connected to OpenWebUI successfully", {
-        "openwebui_id":      openwebui_id,
-        "vectordb_id":       vectordb_deploy_id,
-        "pgvector_url":      pgurl,
-        "rollout_output":    rollout_out,
+    return response_format.success_response(200, "VectorDB connected — pod rolling update in progress (~60s)", {
+        "openwebui_id": openwebui_id,
+        "vectordb_id":  vectordb_deploy_id,
+        "pgvector_url": pgurl,
+        "database_url": db_url,
+        "note": "Pod is restarting. VectorDB + OpenWebUI data persistence (openwebui_data DB) active after ~60s.",
     })
 
 
@@ -481,57 +487,42 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
 
 def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
     import re
-    import shlex
-    import paramiko
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
         raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
     if ow.deployment_type != "openwebui":
         raise HTTPException(status_code=400, detail=f"id={openwebui_id} is not an OpenWebUI deployment")
+    if not ow.linked_vectordb_id:
+        raise HTTPException(status_code=404, detail="No VectorDB is connected to this OpenWebUI")
 
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
-    if not cluster or not cluster.control_ip:
-        raise HTTPException(status_code=409, detail="Cluster credentials are missing")
+    if not cluster or not cluster.kubeconfig:
+        raise HTTPException(status_code=409, detail="Cluster kubeconfig is missing")
 
-    rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
-    rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
-    dep_name = f"{rname}-openwebui"
-    ns_q     = shlex.quote(ow.namespace or "default")
+    rname     = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+    rname     = re.sub(r"-+", "-", rname).strip("-")[:52]
+    dep_name  = f"{rname}-openwebui"
+    namespace = ow.namespace or "default"
 
     k8s_warning = None
     try:
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(
-            hostname=cluster.control_ip,
-            port=22,
-            username=cluster.username,
-            password=cluster.password,
-            timeout=30,
-        )
+        apps_v1    = _load_k8s_apps_client(cluster)
+        deployment = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
 
-        def _run(cmd: str, timeout: int = 180):
-            _, out, err = ssh.exec_command(cmd, timeout=timeout)
-            out.channel.recv_exit_status()
-            return out.read().decode(errors="replace").strip()
+        for container in (deployment.spec.template.spec.containers or []):
+            if container.name == "openwebui":
+                clean_env = [e for e in (container.env or []) if e.name not in _VECTORDB_ENV_KEYS]
+                # Pod restart hone par linked LLMs ko env vars me preserve karo
+                clean_env = _inject_llm_env_vars(ow, clean_env, db)
+                container.env = clean_env
+                break
 
-        # Remove env vars (suffix - removes the var)
-        _run(
-            f"kubectl set env deployment/{shlex.quote(dep_name)} "
-            f"VECTOR_DB- PGVECTOR_DB_URL- "
-            f"-n {ns_q} 2>&1"
-        )
-        _run(
-            f"kubectl rollout status deployment/{shlex.quote(dep_name)} "
-            f"-n {ns_q} --timeout=120s 2>&1",
-            timeout=140,
-        )
-        ssh.close()
-
+        apps_v1.replace_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment)
+        logger.info(f"[AppDeploy] VectorDB env vars removed for {dep_name}")
     except Exception as e:
         k8s_warning = str(e)[:300]
-        logger.warning(f"[AppDeploy] disconnect K8s step failed id={openwebui_id}: {e}")
+        logger.warning(f"[AppDeploy] disconnect VectorDB K8s step failed id={openwebui_id}: {e}")
 
     ow.linked_vectordb_id = None
     db.commit()
@@ -539,7 +530,7 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
     result = {"openwebui_id": openwebui_id, "linked_vectordb_id": None}
     if k8s_warning:
         result["k8s_warning"] = f"DB unlinked but K8s env remove failed: {k8s_warning}"
-    return response_format.success_response(200, "VectorDB disconnected successfully", result)
+    return response_format.success_response(200, "VectorDB disconnected — pod rolling update in progress (~60s)", result)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -579,7 +570,10 @@ def _load_k8s_apps_client(cluster: KubernetesCluster):
     return kc.AppsV1Api()
 
 
-_DAAS_OW_API_KEY = "daas-openwebui-api-key"
+_DAAS_OW_API_KEY   = "daas-openwebui-api-key"
+_VECTORDB_ENV_KEYS = {"VECTOR_DB", "PGVECTOR_DB_URL", "DATABASE_URL"}
+_LLM_ENV_KEYS      = {"OPENAI_API_BASE_URL", "OPENAI_API_BASE_URLS",
+                      "OPENAI_API_KEY", "OPENAI_API_KEYS", "WEBUI_API_KEY"}
 
 _KEYCLOAK_ENV_KEYS = {
     "ENABLE_OAUTH_SIGNUP", "OAUTH_PROVIDER_NAME", "OPENID_PROVIDER_URL",
@@ -601,7 +595,44 @@ def _parse_keycloak_config(raw: str | None) -> dict | None:
         return None
 
 
-def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None) -> str | None:
+def _inject_llm_env_vars(ow: AppDeployment, env_list: list, db: Session) -> list:
+    """
+    Pod restart (Keycloak/VectorDB connect) ke time linked LLMs ko env vars me preserve karo.
+    SQLite wipe hone par bhi LLM connections survive karti hain.
+    """
+    import json as _json
+    from kubernetes.client.models import V1EnvVar
+
+    try:
+        llm_ids = _json.loads(ow.linked_llm_ids) if ow.linked_llm_ids else []
+    except Exception:
+        llm_ids = []
+    if not llm_ids:
+        return env_list
+
+    from models.llm_inference_v2_model import LLMInferenceJob
+    llm_urls = []
+    for lid in llm_ids:
+        llm = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == lid).first()
+        if llm:
+            url = llm.endpoint_url or (f"http://{llm.head_ip}:8000" if llm.head_ip else None)
+            if url:
+                if not url.endswith("/v1"):
+                    url = f"{url}/v1"
+                llm_urls.append(url)
+    if not llm_urls:
+        return env_list
+
+    result = [e for e in env_list if e.name not in _LLM_ENV_KEYS]
+    result.append(V1EnvVar(name="OPENAI_API_BASE_URL",  value=llm_urls[0]))
+    result.append(V1EnvVar(name="OPENAI_API_BASE_URLS", value=";".join(llm_urls)))
+    result.append(V1EnvVar(name="OPENAI_API_KEY",       value="none"))
+    result.append(V1EnvVar(name="OPENAI_API_KEYS",      value=";".join(["none"] * len(llm_urls))))
+    result.append(V1EnvVar(name="WEBUI_API_KEY",        value=_DAAS_OW_API_KEY))
+    return result
+
+
+def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None, db: Session) -> str | None:
     """
     OpenWebUI K8s deployment mein Keycloak env vars set (connect) ya remove (disconnect) karo.
     oauth_env_vars=None means disconnect — sab KEYCLOAK env vars hata do.
@@ -610,15 +641,9 @@ def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None) -> str | None:
     import re
     from kubernetes.client.models import V1EnvVar
 
-    cluster = None
-    from db_configuration.config import SessionLocal
-    db = SessionLocal()
-    try:
-        cluster = db.query(KubernetesCluster).filter(
-            KubernetesCluster.id == ow.k8s_cluster_id
-        ).first()
-    finally:
-        db.close()
+    cluster = db.query(KubernetesCluster).filter(
+        KubernetesCluster.id == ow.k8s_cluster_id
+    ).first()
 
     if not cluster or not cluster.kubeconfig:
         return "K8s cluster kubeconfig missing"
@@ -634,12 +659,12 @@ def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None) -> str | None:
 
         for container in (deployment.spec.template.spec.containers or []):
             if container.name == "openwebui":
-                # Remove existing keycloak env vars
                 clean_env = [e for e in (container.env or []) if e.name not in _KEYCLOAK_ENV_KEYS]
-                # Add new ones if connecting
                 if oauth_env_vars:
                     for k, v in oauth_env_vars.items():
                         clean_env.append(V1EnvVar(name=k, value=str(v)))
+                # Pod restart hone par linked LLMs ko env vars me preserve karo
+                clean_env = _inject_llm_env_vars(ow, clean_env, db)
                 container.env = clean_env
                 break
 
@@ -1030,8 +1055,103 @@ async def disconnect_private_llm(openwebui_id: int, llm_id: int | None, db: Sess
 # Connect / Disconnect Keycloak SSO
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _keycloak_admin_token(kc_url: str, admin_user: str, admin_pass: str) -> str:
+    """Keycloak master realm se admin access token lo."""
+    import httpx
+    r = httpx.post(
+        f"{kc_url}/realms/master/protocol/openid-connect/token",
+        data={
+            "grant_type": "password",
+            "client_id":  "admin-cli",
+            "username":   admin_user,
+            "password":   admin_pass,
+        },
+        timeout=15,
+        verify=False,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Keycloak admin login failed ({r.status_code}): {r.text[:200]}")
+    return r.json()["access_token"]
+
+
+def _keycloak_ensure_client(
+    kc_url: str, token: str, realm: str, client_id: str, redirect_uris: list
+) -> tuple:
+    """
+    Keycloak me OpenWebUI client dhundo ya banao.
+    Returns (client_uuid, client_secret).
+    """
+    import httpx
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+    r = httpx.get(
+        f"{kc_url}/admin/realms/{realm}/clients",
+        params={"clientId": client_id},
+        headers=headers, timeout=15, verify=False,
+    )
+    if r.status_code != 200:
+        raise RuntimeError(f"Keycloak clients list failed ({r.status_code}): {r.text[:200]}")
+
+    clients = r.json()
+    if clients:
+        client_uuid = clients[0]["id"]
+        # Redirect URIs update karo
+        updated = dict(clients[0])
+        updated["redirectUris"] = redirect_uris
+        updated["webOrigins"]   = ["*"]
+        httpx.put(
+            f"{kc_url}/admin/realms/{realm}/clients/{client_uuid}",
+            headers=headers, json=updated, timeout=15, verify=False,
+        )
+        logger.info(f"[Keycloak] Client '{client_id}' found, redirect URIs updated")
+    else:
+        # Naya client banao
+        r2 = httpx.post(
+            f"{kc_url}/admin/realms/{realm}/clients",
+            headers=headers,
+            json={
+                "clientId":            client_id,
+                "enabled":             True,
+                "protocol":            "openid-connect",
+                "publicClient":        False,
+                "standardFlowEnabled": True,
+                "redirectUris":        redirect_uris,
+                "webOrigins":          ["*"],
+            },
+            timeout=15, verify=False,
+        )
+        if r2.status_code not in (200, 201):
+            raise RuntimeError(f"Keycloak client creation failed ({r2.status_code}): {r2.text[:200]}")
+        r3 = httpx.get(
+            f"{kc_url}/admin/realms/{realm}/clients",
+            params={"clientId": client_id},
+            headers=headers, timeout=15, verify=False,
+        )
+        client_uuid = r3.json()[0]["id"]
+        logger.info(f"[Keycloak] Client '{client_id}' created (uuid={client_uuid})")
+
+    # Secret get karo
+    r4 = httpx.get(
+        f"{kc_url}/admin/realms/{realm}/clients/{client_uuid}/client-secret",
+        headers=headers, timeout=15, verify=False,
+    )
+    if r4.status_code != 200:
+        raise RuntimeError(f"Keycloak secret fetch failed ({r4.status_code}): {r4.text[:200]}")
+
+    secret = (r4.json() or {}).get("value") or ""
+    if not secret:
+        # Secret regenerate karo
+        r5 = httpx.post(
+            f"{kc_url}/admin/realms/{realm}/clients/{client_uuid}/client-secret",
+            headers=headers, timeout=15, verify=False,
+        )
+        secret = (r5.json() or {}).get("value", "")
+
+    return client_uuid, secret
+
+
 def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
-    import json as _json
+    import os, json as _json
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
@@ -1041,67 +1161,76 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
     if ow.status not in ("deployed", "failed", "llm_connect_failed"):
         raise HTTPException(status_code=409, detail=f"OpenWebUI is in '{ow.status}' state — deploy it first")
 
-    keycloak_url  = (body.get("keycloak_url") or "").rstrip("/")
-    realm         = (body.get("realm") or "").strip()
-    client_id     = (body.get("client_id") or "").strip()
-    client_secret = (body.get("client_secret") or "").strip()
+    # .env se Keycloak credentials read karo
+    kc_url    = (os.getenv("KEYCLOAK_ROOT_URL") or "").strip().rstrip("/")
+    kc_admin  = (os.getenv("KEYCLOAK_ADMIN")    or "admin").strip()
+    kc_pass   = (os.getenv("KEYCLOAK_PASSWORD")  or "admin").strip()
+    # KEYCLOAK_RELAM (typo) + KEYCLOAK_REALM dono support karo
+    kc_realm  = (os.getenv("KEYCLOAK_RELAM") or os.getenv("KEYCLOAK_REALM") or "").strip()
+    # client_id body se le, warna openwebui default
+    client_id = (body.get("client_id") or "openwebui").strip()
 
-    if not keycloak_url:
-        raise HTTPException(status_code=400, detail="keycloak_url is required")
-    if not realm:
-        raise HTTPException(status_code=400, detail="realm is required")
-    if not client_id:
-        raise HTTPException(status_code=400, detail="client_id is required")
-    if not client_secret:
-        raise HTTPException(status_code=400, detail="client_secret is required")
+    if not kc_url:
+        raise HTTPException(status_code=500, detail="KEYCLOAK_ROOT_URL not set in backend .env")
+    if not kc_realm:
+        raise HTTPException(status_code=500, detail="KEYCLOAK_RELAM not set in backend .env")
 
-    provider_name     = body.get("provider_name") or "keycloak"
-    enable_signup     = "true"
-    merge_accounts    = "true"
-    enable_login_form = "true"
-    oauth_scopes      = body.get("oauth_scopes") or "openid email profile"
+    provider_name = (body.get("provider_name") or "Keycloak").strip()
+    oauth_scopes  = (body.get("oauth_scopes")  or "openid email profile").strip()
 
-    openid_provider_url = f"{keycloak_url}/realms/{realm}/.well-known/openid-configuration"
+    # OpenWebUI ka redirect URI — wildcard so any path works
+    base_url      = (ow.service_url or f"http://{ow.external_ip}").rstrip("/")
+    redirect_uris = list(dict.fromkeys([f"{base_url}/*", f"http://{ow.external_ip}/*"]))
+
+    # Keycloak Admin API: client create/find + secret fetch
+    try:
+        token = _keycloak_admin_token(kc_url, kc_admin, kc_pass)
+        client_uuid, client_secret = _keycloak_ensure_client(
+            kc_url, token, kc_realm, client_id, redirect_uris
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Keycloak Admin API error: {str(e)[:400]}")
+
+    openid_provider_url = f"{kc_url}/realms/{kc_realm}/.well-known/openid-configuration"
 
     oauth_env_vars = {
-        "ENABLE_OAUTH_SIGNUP":           enable_signup,
+        "ENABLE_OAUTH_SIGNUP":           "true",
         "OAUTH_PROVIDER_NAME":           provider_name,
         "OPENID_PROVIDER_URL":           openid_provider_url,
         "OAUTH_CLIENT_ID":               client_id,
         "OAUTH_CLIENT_SECRET":           client_secret,
-        "OAUTH_MERGE_ACCOUNTS_BY_EMAIL": merge_accounts,
-        "ENABLE_LOGIN_FORM":             enable_login_form,
+        "OAUTH_MERGE_ACCOUNTS_BY_EMAIL": "true",
+        "ENABLE_LOGIN_FORM":             "false",
         "OAUTH_SCOPES":                  oauth_scopes,
         "DEFAULT_USER_ROLE":             "user",
         "OAUTH_ROLES_CLAIM":             "realm_access.roles",
         "OAUTH_ADMIN_ROLES":             "admin",
     }
 
-    err = _k8s_patch_keycloak(ow, oauth_env_vars)
+    err = _k8s_patch_keycloak(ow, oauth_env_vars, db)
     if err:
         raise HTTPException(status_code=502, detail=f"K8s patch failed: {err}")
 
-    cfg_to_store = {
-        "keycloak_url":      keycloak_url,
-        "realm":             realm,
-        "client_id":         client_id,
-        "client_secret":     client_secret,
-        "provider_name":     provider_name,
-        "enable_signup":     enable_signup,
-        "merge_accounts":    merge_accounts,
-        "enable_login_form": enable_login_form,
-        "oauth_scopes":      oauth_scopes,
-        "admin_roles":       "admin",
-    }
-    ow.keycloak_config = _json.dumps(cfg_to_store)
+    ow.keycloak_config = _json.dumps({
+        "keycloak_url":  kc_url,
+        "realm":         kc_realm,
+        "client_id":     client_id,
+        "client_uuid":   client_uuid,
+        "client_secret": client_secret,
+        "provider_name": provider_name,
+        "oauth_scopes":  oauth_scopes,
+    })
     db.commit()
 
-    logger.info(f"[AppDeploy] Keycloak SSO connected for openwebui id={openwebui_id}, realm={realm}")
+    logger.info(f"[AppDeploy] Keycloak SSO connected for openwebui id={openwebui_id}, realm={kc_realm}, client={client_id}")
     return response_format.success_response(200, "Keycloak SSO connected — pod rolling update in progress (~60s)", {
         "openwebui_id":       openwebui_id,
-        "keycloak_config":    _parse_keycloak_config(ow.keycloak_config),
+        "keycloak_url":       kc_url,
+        "realm":              kc_realm,
+        "client_id":          client_id,
+        "redirect_uris":      redirect_uris,
         "openid_provider_url": openid_provider_url,
-        "note": "Pod is restarting to pick up Keycloak env vars. Login page will show Keycloak SSO option after ~60s.",
+        "note": "Pod is restarting. Keycloak SSO button appears on login page after ~60s.",
     })
 
 
@@ -1114,7 +1243,7 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
     if not ow.keycloak_config:
         raise HTTPException(status_code=404, detail="No Keycloak SSO is connected to this OpenWebUI")
 
-    err = _k8s_patch_keycloak(ow, None)
+    err = _k8s_patch_keycloak(ow, None, db)
     if err:
         raise HTTPException(status_code=502, detail=f"K8s patch failed: {err}")
 

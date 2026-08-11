@@ -122,11 +122,8 @@ async def disconnect_private_llm(
 
 
 class ConnectKeycloakBody(BaseModel):
-    keycloak_url:  str
-    realm:         str
-    client_id:     str
-    client_secret: str
-    provider_name: Optional[str] = "keycloak"
+    client_id:     Optional[str] = None              # Keycloak client ID (default: "openwebui")
+    provider_name: Optional[str] = "Keycloak"        # SSO button label
     oauth_scopes:  Optional[str] = "openid email profile"
 
 
@@ -137,20 +134,14 @@ def connect_keycloak(
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI ke saath Keycloak SSO connect karo (K8s env vars via Python client).
+    OpenWebUI ke saath Keycloak SSO connect karo.
+    Keycloak credentials (.env: KEYCLOAK_ROOT_URL, KEYCLOAK_ADMIN, KEYCLOAK_PASSWORD, KEYCLOAK_RELAM) backend se auto-read.
+    Keycloak me client auto-create (ya find) hota hai, secret auto-fetch hota hai.
 
-    Required fields:
-    - keycloak_url   : Keycloak server URL (e.g. http://172.16.4.10:8080)
-    - realm          : Keycloak realm name (e.g. daas)
-    - client_id      : OAuth client ID configured in Keycloak
-    - client_secret  : OAuth client secret
-
-    Optional fields (defaults shown):
-    - provider_name     : SSO button label (default: keycloak)
-    - enable_signup     : Allow new users via SSO (default: true)
-    - merge_accounts    : Merge SSO accounts by email (default: true)
-    - enable_login_form : Show password login alongside SSO (default: false)
-    - oauth_scopes      : OAuth scopes (default: openid email profile)
+    Optional fields:
+    - client_id    : Keycloak client ID (default: "openwebui" — auto-create hoga)
+    - provider_name: SSO button label on login page (default: "Keycloak")
+    - oauth_scopes : OAuth scopes (default: "openid email profile")
 
     Pod restart ~60s — Keycloak button appears on login page after restart.
     """
