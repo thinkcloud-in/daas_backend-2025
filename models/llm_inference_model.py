@@ -39,6 +39,10 @@ class LLMInferenceJob(Base):
     ip_addresses = Column(ARRAY(String), nullable=True)
     head_ip = Column(String, nullable=True)
     endpoint_url = Column(String, nullable=True)
+    # Bearer token vLLM is launched with (--api-key) -- generated once at
+    # creation, reused on every restart so the credential handed to
+    # OpenWebUI/clients never changes underneath them.
+    api_key = Column(String, nullable=True)
     status = Column(String, nullable=False, default="provisioning")
     workflow_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -129,6 +133,7 @@ class LLMInferenceJobOut(BaseModel):
     ip_addresses: Optional[List[str]]
     head_ip: Optional[str]
     endpoint_url: Optional[str]
+    api_key: Optional[str]
     status: str
     workflow_id: Optional[str]
     created_at: Optional[str]

@@ -161,7 +161,7 @@ async def delete_pool_route(pool_id: str, request: Request, db: Session = Depend
     email = body.get("email")
 
     result = await controller.delete_pool(pool_id_int, email, db)
-    return response_format.success_response(200, "Pool deleted successfully.", result)
+    return response_format.success_response(200, "Pool deletion started successfully.", result)
 
 
 
