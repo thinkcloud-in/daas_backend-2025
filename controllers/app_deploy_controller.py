@@ -610,7 +610,7 @@ def _inject_llm_env_vars(ow: AppDeployment, env_list: list, db: Session) -> list
     if not llm_ids:
         return env_list
 
-    from models.llm_inference_v2_model import LLMInferenceJob
+    from models.llm_inference_model import LLMInferenceJob
     llm_urls = []
     for lid in llm_ids:
         llm = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == lid).first()
