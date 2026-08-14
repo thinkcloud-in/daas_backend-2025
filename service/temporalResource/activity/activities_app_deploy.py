@@ -316,7 +316,8 @@ def _ensure_pull_secret(v1, namespace: str, harbor_host: str, harbor_user: str, 
 
 def _openwebui_manifest(rname: str, namespace: str, image: str,
                         storage_class: str | None = None,
-                        storage_size: str = "1Gi") -> list[dict]:
+                        storage_size: str = "1Gi",
+                        database_url: str | None = None) -> list[dict]:
     svc_name = f"{rname}-openwebui"
     pvc_name = f"{svc_name}-data"
     pvc_spec: dict = {
@@ -325,6 +326,16 @@ def _openwebui_manifest(rname: str, namespace: str, image: str,
     }
     if storage_class:
         pvc_spec["storageClassName"] = storage_class
+
+    env_vars = [
+        {"name": "WEBUI_SECRET_KEY",             "value": "daas-openwebui-secret"},
+        {"name": "WEBUI_API_KEY",                "value": "daas-openwebui-api-key"},
+        {"name": "ENABLE_OAUTH_SIGNUP",          "value": "true"},
+        {"name": "OAUTH_MERGE_ACCOUNTS_BY_EMAIL", "value": "true"},
+    ]
+    if database_url:
+        env_vars.append({"name": "DATABASE_URL", "value": database_url})
+
     return [
         {
             "apiVersion": "v1", "kind": "PersistentVolumeClaim",
@@ -340,7 +351,7 @@ def _openwebui_manifest(rname: str, namespace: str, image: str,
                 "replicas": 1,
                 "strategy": {
                     "type": "RollingUpdate",
-                    "rollingUpdate": {"maxUnavailable": 0, "maxSurge": 1},
+                    "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 0},
                 },
                 "selector": {"matchLabels": {"app": svc_name}},
                 "template": {
@@ -354,10 +365,7 @@ def _openwebui_manifest(rname: str, namespace: str, image: str,
                             "name": "openwebui", "image": image,
                             "imagePullPolicy": "IfNotPresent",
                             "ports": [{"containerPort": 8080}],
-                            "env": [
-                                {"name": "WEBUI_SECRET_KEY", "value": "daas-openwebui-secret"},
-                                {"name": "WEBUI_API_KEY",    "value": "daas-openwebui-api-key"},
-                            ],
+                            "env": env_vars,
                             "volumeMounts": [
                                 {"name": "data", "mountPath": "/app/backend/data"},
                             ],
@@ -390,6 +398,78 @@ def _openwebui_manifest(rname: str, namespace: str, image: str,
                 "type": "LoadBalancer",
                 "selector": {"app": svc_name},
                 "ports": [{"name": "http", "port": 80, "targetPort": 8080}],
+            },
+        },
+    ]
+
+
+def _postgresql_manifest(rname: str, namespace: str, image: str,
+                          storage_class: str | None = None,
+                          storage_size: str = "5Gi") -> list[dict]:
+    svc_name = f"{rname}-postgresql"
+    pvc_name = f"{svc_name}-data"
+    pvc_spec: dict = {
+        "accessModes": ["ReadWriteOnce"],
+        "resources":   {"requests": {"storage": storage_size}},
+    }
+    if storage_class:
+        pvc_spec["storageClassName"] = storage_class
+    return [
+        {
+            "apiVersion": "v1", "kind": "PersistentVolumeClaim",
+            "metadata": {"name": pvc_name, "namespace": namespace,
+                         "labels": {"app": svc_name, "managed-by": "daas"}},
+            "spec": pvc_spec,
+        },
+        {
+            "apiVersion": "apps/v1", "kind": "Deployment",
+            "metadata": {"name": svc_name, "namespace": namespace,
+                         "labels": {"app": svc_name, "managed-by": "daas", "daas-type": "postgresql"}},
+            "spec": {
+                "replicas": 1,
+                "strategy": {"type": "RollingUpdate", "rollingUpdate": {"maxUnavailable": 1, "maxSurge": 0}},
+                "selector": {"matchLabels": {"app": svc_name}},
+                "template": {
+                    "metadata": {"labels": {"app": svc_name, "managed-by": "daas"}},
+                    "spec": {
+                        "imagePullSecrets": [{"name": "harbor-registry-secret"}],
+                        "volumes": [{"name": "data", "persistentVolumeClaim": {"claimName": pvc_name}}],
+                        "containers": [{
+                            "name": "postgresql", "image": image,
+                            "imagePullPolicy": "IfNotPresent",
+                            "ports": [{"containerPort": 5432}],
+                            "env": [
+                                {"name": "POSTGRES_USER",     "value": "postgres"},
+                                {"name": "POSTGRES_PASSWORD", "value": "postgres123"},
+                                {"name": "POSTGRES_DB",       "value": "postgres"},
+                                {"name": "PGDATA",            "value": "/var/lib/postgresql/data/pgdata"},
+                            ],
+                            "volumeMounts": [{"name": "data", "mountPath": "/var/lib/postgresql/data"}],
+                            "resources": {
+                                "requests": {"memory": "256Mi", "cpu": "250m"},
+                                "limits":   {"memory": "2Gi",   "cpu": "1000m"},
+                            },
+                            "readinessProbe": {
+                                "exec":           {"command": ["pg_isready", "-U", "postgres"]},
+                                "initialDelaySeconds": 10, "periodSeconds": 5, "failureThreshold": 12,
+                            },
+                            "livenessProbe": {
+                                "exec":           {"command": ["pg_isready", "-U", "postgres"]},
+                                "initialDelaySeconds": 30, "periodSeconds": 10, "failureThreshold": 3,
+                            },
+                        }],
+                    },
+                },
+            },
+        },
+        {
+            "apiVersion": "v1", "kind": "Service",
+            "metadata": {"name": svc_name, "namespace": namespace,
+                         "labels": {"app": svc_name, "managed-by": "daas"}},
+            "spec": {
+                "type": "LoadBalancer",
+                "selector": {"app": svc_name},
+                "ports": [{"name": "postgres", "port": 5432, "targetPort": 5432}],
             },
         },
     ]
@@ -455,6 +535,10 @@ def _apply_manifest(dyn_client, manifest: dict, namespace: str):
     manifest.setdefault("metadata", {})["namespace"] = namespace
     try:
         existing = resource.get(name=name, namespace=namespace)
+        # PVC spec is immutable once bound — skip replace, keep existing
+        if kind == "PersistentVolumeClaim":
+            logger.info(f"[AppDeploy] PVC/{name} already exists — keeping existing")
+            return
         manifest["metadata"]["resourceVersion"] = existing.metadata.resourceVersion
         resource.replace(body=manifest, name=name, namespace=namespace)
         logger.info(f"[AppDeploy] Updated {kind}/{name}")
@@ -574,11 +658,71 @@ def app_deploy_activity(payload: dict) -> dict:
         _log_step(deploy_id, f"imagePullSecret set for {harbor_host}")
 
         # ── Step 8: Manifest apply ───────────────────────────────────────────
+        from kubernetes.stream import stream as _kstream_exec
+
+        # For OpenWebUI: PostgreSQL link + openwebui_data DB create
+        _pg_svc_name  = None
+        _pg_namespace = None
+        _database_url = None
+
         if deployment_type == "openwebui":
+            postgresql_deploy_id = payload.get("postgresql_deploy_id")
+            # Har OpenWebUI ka apna alag database — deploy_id se guaranteed unique
+            _ow_dbname = f"openwebui_{deploy_id}"
+            if postgresql_deploy_id:
+                db = SessionLocal()
+                try:
+                    pg_dep = db.query(AppDeployment).filter(
+                        AppDeployment.id == postgresql_deploy_id
+                    ).first()
+                    if pg_dep:
+                        _pg_rname     = _k8s_name(pg_dep.name)
+                        _pg_svc_name  = f"{_pg_rname}-postgresql"
+                        _pg_namespace = pg_dep.namespace
+                        _database_url = (
+                            f"postgresql://postgres:postgres123@"
+                            f"{_pg_svc_name}.{_pg_namespace}.svc.cluster.local:5432/{_ow_dbname}"
+                        )
+                        _log_step(deploy_id, f"PostgreSQL linked: {_pg_svc_name}.{_pg_namespace} db={_ow_dbname}")
+                    else:
+                        _log_step(deploy_id, f"postgresql_deploy_id={postgresql_deploy_id} not found")
+                finally:
+                    db.close()
+
+                # OpenWebUI ka dedicated database PostgreSQL pod mein create karo
+                if _pg_svc_name and _pg_namespace:
+                    try:
+                        _pg_pods = v1.list_namespaced_pod(
+                            namespace=_pg_namespace,
+                            label_selector=f"app={_pg_svc_name}",
+                        )
+                        _pg_exec_pod = next(
+                            (p.metadata.name for p in (_pg_pods.items or [])
+                             if p.status.phase == "Running"),
+                            None,
+                        )
+                        if _pg_exec_pod:
+                            _kstream_exec(
+                                v1.connect_get_namespaced_pod_exec,
+                                _pg_exec_pod, _pg_namespace,
+                                command=["createdb", "-U", "postgres", _ow_dbname],
+                                stderr=True, stdin=False, stdout=True, tty=False,
+                            )
+                            _log_step(deploy_id, f"Database '{_ow_dbname}' created in PostgreSQL")
+                        else:
+                            _log_step(deploy_id, "PostgreSQL pod not running — DB create skipped")
+                    except Exception as _dbe:
+                        _log_step(deploy_id, f"DB create warning: {str(_dbe)[:80]}")
+
             manifests = _openwebui_manifest(
                 rname, namespace, image,
                 storage_class=payload.get("storage_class"),
-                storage_size=payload.get("storage_size", "1Gi"),
+                database_url=_database_url,
+            )
+        elif deployment_type == "postgresql":
+            manifests = _postgresql_manifest(
+                rname, namespace, image,
+                storage_class=payload.get("storage_class"),
             )
         else:
             manifests = _vectordb_manifest(rname, namespace, image)
@@ -641,49 +785,205 @@ def app_deploy_activity(payload: dict) -> dict:
             _log_step(deploy_id, "Pod ready timeout (10 min)")
             logger.warning(f"[AppDeploy] id={deploy_id} pod ready timeout")
 
-        # ── Step 10: LoadBalancer IP fetch (max 2 min) ───────────────────────
-        _log_step(deploy_id, "Waiting for LoadBalancer IP ...")
-        lb_deadline = time.time() + 120
-        while time.time() < lb_deadline:
-            time.sleep(5)
-            try:
-                svc    = v1.read_namespaced_service(name=svc_name, namespace=namespace)
-                ingress = (svc.status.load_balancer.ingress or []) \
-                          if svc.status.load_balancer else []
-                lb_ip  = next((i.ip for i in ingress if i.ip), None)
-                if lb_ip:
-                    external_ip = lb_ip
-                    _log_step(deploy_id, f"LoadBalancer IP: {lb_ip}")
-                    break
-            except Exception:
-                pass
-        else:
-            _log_step(deploy_id, f"LB IP timeout — node IP fallback: {external_ip}")
+        # ── Step 10: NodePort + LoadBalancer IP fetch ────────────────────────
+        _log_step(deploy_id, "Fetching service endpoint ...")
 
-        # Service URL build
-        if deployment_type == "openwebui":
-            service_url = f"http://{external_ip}"
-        else:
-            service_url = f"postgresql://postgres:postgres123@{external_ip}/vectordb"
-
-        _log_step(deploy_id, f"Service URL: {service_url}")
-
-        # NodePort (optional, for info)
+        # NodePort pehle fetch karo (hamesha available hota hai)
         node_port = None
         try:
-            svc       = v1.read_namespaced_service(name=svc_name, namespace=namespace)
-            ports     = svc.spec.ports or []
-            node_port = str(ports[0].node_port) if ports and ports[0].node_port else None
+            _svc_obj  = v1.read_namespaced_service(name=svc_name, namespace=namespace)
+            _ports    = _svc_obj.spec.ports or []
+            node_port = str(_ports[0].node_port) if _ports and _ports[0].node_port else None
         except Exception:
             pass
 
-        # ── Step 11: Final DB save ───────────────────────────────────────────
+        # PostgreSQL ke liye internal ClusterIP URL use karo — LB wait skip
+        if deployment_type == "postgresql":
+            service_url = (
+                f"postgresql://postgres:postgres123@"
+                f"{svc_name}.{namespace}.svc.cluster.local:5432/postgres"
+            )
+            lb_found = False
+            # Still try to get LB IP for external_ip (psql admin access)
+            lb_deadline = time.time() + 120
+            while time.time() < lb_deadline:
+                time.sleep(5)
+                try:
+                    _svc_obj = v1.read_namespaced_service(name=svc_name, namespace=namespace)
+                    _ingress = (_svc_obj.status.load_balancer.ingress or []) \
+                               if _svc_obj.status.load_balancer else []
+                    _lb_addr = next((i.ip or i.hostname for i in _ingress if (i.ip or i.hostname)), None)
+                    if _lb_addr:
+                        external_ip = _lb_addr
+                        lb_found    = True
+                        break
+                except Exception:
+                    pass
+            _log_step(deploy_id, f"Service URL (internal): {service_url}")
+        else:
+            # OpenWebUI + VectorDB: LoadBalancer IP wait (max 5 min)
+            lb_deadline = time.time() + 300
+            lb_found    = False
+            while time.time() < lb_deadline:
+                time.sleep(5)
+                try:
+                    _svc_obj = v1.read_namespaced_service(name=svc_name, namespace=namespace)
+                    _ingress = (_svc_obj.status.load_balancer.ingress or []) \
+                               if _svc_obj.status.load_balancer else []
+                    _lb_addr = next((i.ip or i.hostname for i in _ingress if (i.ip or i.hostname)), None)
+                    if _lb_addr:
+                        external_ip = _lb_addr
+                        lb_found    = True
+                        _log_step(deploy_id, f"LoadBalancer IP: {_lb_addr}")
+                        break
+                except Exception:
+                    pass
+            if not lb_found:
+                _log_step(deploy_id, f"LB IP timeout — node IP fallback: {external_ip}")
+
+            # Service URL build
+            if deployment_type == "openwebui":
+                if lb_found:
+                    service_url = f"http://{external_ip}"
+                else:
+                    service_url = f"http://{external_ip}:{node_port}" if node_port else f"http://{external_ip}"
+            else:  # vectordb
+                service_url = f"postgresql://postgres:postgres123@{external_ip}/vectordb"
+
+            _log_step(deploy_id, f"Service URL: {service_url}")
+
+        # ── Step 11: OpenWebUI admin user create + signup disable ────────────
+        admin_email    = None
+        admin_password = None
+        if deployment_type == "openwebui":
+            import secrets
+
+            admin_email    = payload.get("admin_email") or "admin@admin.com"
+            admin_password = payload.get("admin_password") or secrets.token_urlsafe(12)
+
+            _log_step(deploy_id, "Creating admin user via pod exec ...")
+
+            # Running OW pod dhundo
+            _ow_exec_pod = None
+            try:
+                _epods = v1.list_namespaced_pod(
+                    namespace=namespace, label_selector=f"app={svc_name}"
+                )
+                _ow_exec_pod = next(
+                    (p.metadata.name for p in (_epods.items or [])
+                     if p.status.phase == "Running"
+                     and all(cs.ready for cs in (p.status.container_statuses or []))),
+                    None,
+                )
+            except Exception as _pe:
+                logger.warning(f"[AppDeploy] Pod list error: {_pe}")
+
+            if _ow_exec_pod:
+                # Pod ke andar se localhost:8080:
+                #   1. Signup (admin user create)
+                #   2. Signin (JWT lao)
+                #   3. Admin config API: ENABLE_SIGNUP=false, DEFAULT_USER_ROLE=user
+                _ae = admin_email.replace("'", "\\'")
+                _ap = admin_password.replace("'", "\\'")
+                _py_admin_setup = "\n".join([
+                    "import json, urllib.request, urllib.error, time",
+                    "BASE = 'http://localhost:8080'",
+                    f"EMAIL = '{_ae}'",
+                    f"PASS = '{_ap}'",
+                    "",
+                    "# 1. Signup",
+                    "try:",
+                    "    d = json.dumps({'name':'Admin','email':EMAIL,'password':PASS}).encode()",
+                    "    req = urllib.request.Request(BASE+'/api/v1/auths/signup', d, {'Content-Type':'application/json'})",
+                    "    resp = urllib.request.urlopen(req, timeout=15)",
+                    "    print('signup', resp.status)",
+                    "except urllib.error.HTTPError as e:",
+                    "    print('signup_http', e.code, e.read()[:80].decode('utf-8','ignore'))",
+                    "except Exception as e:",
+                    "    print('signup_err', str(e)[:80])",
+                    "",
+                    "time.sleep(1)",
+                    "",
+                    "# 2. Signin — JWT lao",
+                    "token = None",
+                    "for _t in range(3):",
+                    "    try:",
+                    "        d = json.dumps({'email':EMAIL,'password':PASS}).encode()",
+                    "        req = urllib.request.Request(BASE+'/api/v1/auths/signin', d, {'Content-Type':'application/json'})",
+                    "        resp = urllib.request.urlopen(req, timeout=15)",
+                    "        token = json.loads(resp.read()).get('token')",
+                    "        print('signin OK', (token or '')[:30])",
+                    "        break",
+                    "    except Exception as e:",
+                    "        print('signin_err', _t, str(e)[:60])",
+                    "        time.sleep(2)",
+                    "",
+                    "# 3. Signup disable + default role = user",
+                    "if token:",
+                    "    try:",
+                    "        cfg = json.dumps({'ENABLE_SIGNUP': False, 'DEFAULT_USER_ROLE': 'user'}).encode()",
+                    "        req = urllib.request.Request(",
+                    "            BASE+'/api/v1/auths/admin/config', cfg,",
+                    "            {'Content-Type':'application/json','Authorization':'Bearer '+token},",
+                    "            method='POST')",
+                    "        resp = urllib.request.urlopen(req, timeout=15)",
+                    "        print('disable_signup', resp.status)",
+                    "    except Exception as e:",
+                    "        print('disable_signup_err', str(e)[:80])",
+                    "else:",
+                    "    print('no_token_signup_not_disabled')",
+                ])
+                try:
+                    _exec_out = _kstream_exec(
+                        v1.connect_get_namespaced_pod_exec,
+                        _ow_exec_pod, namespace,
+                        command=["python3", "-c", _py_admin_setup],
+                        stderr=True, stdin=False, stdout=True, tty=False,
+                    )
+                    _log_step(deploy_id, f"Admin setup: {str(_exec_out).strip()[:120]}")
+                except Exception as _ee:
+                    _log_step(deploy_id, f"Admin setup exec error: {str(_ee)[:80]}")
+
+                # 4. PostgreSQL me role=admin + active=true set karo
+                if _pg_svc_name and _pg_namespace:
+                    try:
+                        _pg_pods2 = v1.list_namespaced_pod(
+                            namespace=_pg_namespace,
+                            label_selector=f"app={_pg_svc_name}",
+                        )
+                        _pg_exec2 = next(
+                            (p.metadata.name for p in (_pg_pods2.items or [])
+                             if p.status.phase == "Running"),
+                            None,
+                        )
+                        if _pg_exec2:
+                            _sql_role = (
+                                f"UPDATE auth SET active=true WHERE email='{_ae}';"
+                                f'UPDATE "user" SET role=\'admin\' WHERE email=\'{_ae}\';'
+                            )
+                            _kstream_exec(
+                                v1.connect_get_namespaced_pod_exec,
+                                _pg_exec2, _pg_namespace,
+                                command=["psql", "-U", "postgres", "-d", _ow_dbname, "-c", _sql_role],
+                                stderr=True, stdin=False, stdout=True, tty=False,
+                            )
+                            _log_step(deploy_id, f"Admin role=admin + active=true set in '{_ow_dbname}' ✓")
+                        else:
+                            _log_step(deploy_id, "PG pod not found — SQL role fix skipped")
+                    except Exception as _sqle:
+                        _log_step(deploy_id, f"PG role fix warning: {str(_sqle)[:80]}")
+            else:
+                _log_step(deploy_id, "OW pod not found for exec — credentials saved, signup skipped")
+
+        # ── Step 12: Final DB save ───────────────────────────────────────────
         _db_update(
             deploy_id,
-            status      = "deployed",
-            external_ip = external_ip,
-            node_port   = node_port,
-            service_url = service_url,
+            status         = "deployed",
+            external_ip    = external_ip,
+            node_port      = node_port,
+            service_url    = service_url,
+            admin_email    = admin_email,
+            admin_password = admin_password,
         )
         _log_step(deploy_id, "Deployment complete ✓")
         logger.info(f"[AppDeploy] id={deploy_id} DONE — {service_url}")

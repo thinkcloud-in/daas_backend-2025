@@ -11,6 +11,7 @@ LIBRARY_TYPES = {
     "base_os", "container",
     "llm_model", "llm_template",
     "podman", "devraq_agent", "general",
+    "postgresql",
 }
 
 # type → pod subdirectory under /data/library/
@@ -24,10 +25,11 @@ TYPE_SUBDIR = {
     "podman":          "podman",
     "devraq_agent":    "general",
     "general":         "general",
+    "postgresql":      "container",   # container subdir use karo
 }
 
 # All directories present in the pod
-POD_DIRS = {"harbor", "os", "container", "llm_model", "llm_template", "podman", "general"}
+POD_DIRS = {"harbor", "os", "container", "llm_model", "llm_template", "podman", "general", "postgresql"}
 
 
 class LibraryItem(Base):

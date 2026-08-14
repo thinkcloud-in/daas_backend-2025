@@ -4,7 +4,7 @@ from sqlalchemy.ext.declarative import declarative_base
 
 Base = declarative_base()
 
-VALID_DEPLOY_TYPES = {"openwebui", "vectordb"}
+VALID_DEPLOY_TYPES = {"openwebui", "vectordb", "postgresql"}
 
 
 class AppDeployment(Base):
@@ -27,11 +27,18 @@ class AppDeployment(Base):
     node_port           = Column(String, nullable=True)
     service_url         = Column(String, nullable=True)
 
+    # PostgreSQL integration (openwebui only) — main DB, set at deploy time
+    postgresql_deploy_id = Column(Integer, nullable=True)  # app_deployments.id of postgresql
+
     # VectorDB integration (openwebui only)
     linked_vectordb_id  = Column(Integer, nullable=True)   # app_deployments.id of vectordb
 
     # Private LLM integration (openwebui only) — JSON array of llm_inferences.id
     linked_llm_ids      = Column(Text, nullable=True)      # e.g. "[1, 3, 5]"
+
+    # Default admin credentials (openwebui only) — set once at deploy time
+    admin_email         = Column(String, nullable=True)
+    admin_password      = Column(String, nullable=True)
 
     # Keycloak SSO integration (openwebui only) — JSON object
     keycloak_config     = Column(Text, nullable=True)

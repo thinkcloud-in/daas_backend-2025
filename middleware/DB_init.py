@@ -9,7 +9,6 @@ from models.IPs_model import Base as IPs_Base
 from models.request_logger_model import Base as RequestLog_Base
 from models import task_models
 from models.llm_inference_model import Base as LLMInference_Base
-from models.llm_inference_v2_model import Base as LLMInferenceV2_Base
 from models.app_deploy_model import Base as AppDeploy_Base
 
 logger = logging.getLogger(__name__)
@@ -36,5 +35,4 @@ def create_tables():
     _safe_create(IPMI_Base,         "IPMI")
     _safe_create(RequestLog_Base,   "request_log")
     _safe_create(LLMInference_Base, "llm_inference")
-    _safe_create(LLMInferenceV2_Base, "llm_inference_v2")
     _safe_create(AppDeploy_Base,    "app_deploy")

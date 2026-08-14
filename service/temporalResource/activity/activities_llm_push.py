@@ -32,7 +32,14 @@ logger = logging.getLogger(__name__)
 
 LLM_PUSH_TASK_QUEUE = "llm-push-queue"
 
-_PUSH_IMAGE_BASE_URL = os.getenv("PUSH_IMAGE_BASE_URL", "").rstrip("/")
+
+def _clean_env_url(value: str | None) -> str:
+    if value is None:
+        return ""
+    return value.split("#", 1)[0].strip().rstrip("/")
+
+
+_PUSH_IMAGE_BASE_URL = _clean_env_url(os.getenv("PUSH_IMAGE_BASE_URL", ""))
 
 
 def _sanitize(name: str) -> str:

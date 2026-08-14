@@ -66,13 +66,18 @@ async def upload_library_file(
 
 @library_router.get("/list", response_model=APIResponse[Any])
 def list_library_items(
-    type:      Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | ..."),
-    owner:     Optional[str] = Query(None, description="Filter by harbor_owner (partial match, case-insensitive)"),
-    page:      int           = Query(1,  ge=1),
-    page_size: int           = Query(10, ge=1, le=100),
-    db:        Session       = Depends(get_db),
+    type:               Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | postgresql | ..."),
+    owner:              Optional[str] = Query(None, description="Filter by harbor_owner (partial match, case-insensitive)"),
+    harbor_registry_id: Optional[int] = Query(None, description="Filter by harbor registry (kubernetes_deployments.id)"),
+    page:               int           = Query(1,  ge=1),
+    page_size:          int           = Query(10, ge=1, le=100),
+    db:                 Session       = Depends(get_db),
 ):
-    return library_controller.list_library_items(type, page, page_size, db, owner_filter=owner)
+    return library_controller.list_library_items(
+        type, page, page_size, db,
+        owner_filter=owner,
+        harbor_registry_id=harbor_registry_id,
+    )
 
 
 # ── Deployment list/detail — static routes BEFORE /{item_id} so FastAPI

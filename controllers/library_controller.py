@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 LIBRARY_BASE_PATH  = os.getenv("LIBRARY_BASE_PATH", "/data/library")
 LIBRARY_TEMP_PATH  = os.getenv("LIBRARY_TEMP_PATH", "/tmp/library_uploads")
-_HARBOR_PUSH_TYPES = {"container", "llm_model", "llm_template"}  # Harbor push types
+_HARBOR_PUSH_TYPES = {"container", "llm_model", "llm_template", "postgresql"}  # Harbor push types
 
 
 def _extract_username(request: Request) -> str:
@@ -777,14 +777,19 @@ _TYPE_LABELS = {
 
 # Virtual types — DB mein stored nahi, query-time filter hain
 # name ya harbor_owner mein in keywords mein se koi bhi match hona chahiye
+# db_types: list of actual DB types to include in query (supports items uploaded as container OR postgresql)
 _VIRTUAL_TYPE_MAP = {
     "openwebui": {
-        "db_type":  "container",
+        "db_types": ["container"],
         "keywords": ["openwebui", "open-webui", "open_webui"],
     },
     "vectordb": {
-        "db_type":  "container",
+        "db_types": ["container"],
         "keywords": ["vectordb", "vector-db", "vector_db", "pgvector", "chroma", "qdrant", "weaviate"],
+    },
+    "postgresql": {
+        "db_types": ["container", "postgresql"],   # purane container uploads + naye postgresql type
+        "keywords": ["postgres", "postgresql"],
     },
 }
 
@@ -809,11 +814,12 @@ def _build_filters(db: Session) -> list:
 
 
 def list_library_items(
-    type_filter:  str | None,
-    page:         int,
-    page_size:    int,
-    db:           Session,
-    owner_filter: str | None = None,
+    type_filter:        str | None,
+    page:               int,
+    page_size:          int,
+    db:                 Session,
+    owner_filter:       str | None = None,
+    harbor_registry_id: int | None = None,
 ):
     from sqlalchemy import func
 
@@ -823,7 +829,8 @@ def list_library_items(
         if type_filter in _VIRTUAL_TYPE_MAP:
             from sqlalchemy import or_
             vt = _VIRTUAL_TYPE_MAP[type_filter]
-            query = query.filter(LibraryItem.type == vt["db_type"])
+            db_types = vt.get("db_types", [vt.get("db_type", "container")])
+            query = query.filter(LibraryItem.type.in_(db_types))
             # name ya harbor_owner mein se koi bhi keyword match kare
             keyword_conditions = []
             for kw in vt["keywords"]:
@@ -845,11 +852,21 @@ def list_library_items(
     if owner_filter:
         query = query.filter(LibraryItem.harbor_owner.ilike(f"%{owner_filter}%"))
 
+    # harbor_registry_id filter — specific harbor registry ke items
+    if harbor_registry_id is not None:
+        query = query.filter(LibraryItem.harbor_registry_id == harbor_registry_id)
+
     total  = query.count()
     offset = (page - 1) * page_size
     items  = query.order_by(LibraryItem.created_at.desc()).offset(offset).limit(page_size).all()
 
     enriched = _attach_deployments([_item_to_dict(i) for i in items], db)
+
+    # Virtual type filter hone par directory override karo
+    # e.g. type=postgresql → container type items bhi "postgresql" directory mein dikhenge
+    if type_filter and type_filter in _VIRTUAL_TYPE_MAP:
+        for item in enriched:
+            item["directory"] = type_filter
 
     # Group by directory
     grouped: dict = {d: [] for d in sorted(POD_DIRS)}
