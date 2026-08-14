@@ -605,6 +605,19 @@ def harbor_push_activity(params: dict) -> dict:
         source_type    = meta["source_type"]
         is_oci_dir_zip = meta["is_oci_dir_zip"]
 
+        # ── Explicit user overrides (container upload mein name/owner_name/version diya) ──
+        # User-provided values always win over auto-derived tar/zip metadata
+        _file_stem = os.path.splitext(os.path.basename(item.file_name or ""))[0]
+        if item.harbor_owner:
+            image_owner = _sanitize(item.harbor_owner)
+            logger.info(f"[HarborPush] owner override from upload → '{image_owner}'")
+        if item.name and item.name != _file_stem:
+            image_name = _sanitize(item.name)
+            logger.info(f"[HarborPush] image_name override from upload → '{image_name}'")
+        if item.version and item.version not in ("", "latest"):
+            image_version = _sanitize(item.version)
+            logger.info(f"[HarborPush] version override from upload → '{image_version}'")
+
         # Agar owner == harbor project → double prefix bachao
         if image_owner and image_owner == project:
             logger.warning(

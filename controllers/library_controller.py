@@ -103,6 +103,7 @@ async def create_library_item(
     request:            Request,
     harbor_registry_id: int | None = None,
     harbor_owner:       str | None = None,
+    owner_name:         str | None = None,
     metadata:           dict | None = None,
 ):
     """
@@ -164,8 +165,18 @@ async def create_library_item(
         k8s_cluster_id = harbor_dep.cluster_id   # backend derive karta hai
         logger.info(f"[Library] harbor_registry={harbor_registry_id} → k8s_cluster={k8s_cluster_id} derived")
 
+    # container ke liye: owner_name field harbor_owner se override karta hai
+    if effective_type == "container" and owner_name:
+        harbor_owner = owner_name.strip() or harbor_owner
+
     # Harbor push types ke liye version image inspect se aayega
-    effective_version = None if (effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id) else (version or None)
+    # Exception: container type mein user ne explicitly version diya to use karo (tag banega Harbor mein)
+    if effective_type == "container" and version:
+        effective_version = version.strip() or None
+    elif effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id:
+        effective_version = None
+    else:
+        effective_version = version or None
 
     import json as _json
     _meta_json = None
