@@ -633,6 +633,7 @@ def _build_vllm_commands(
     model_type: str | None = None,
     max_images_per_request: int | None = None,
     extra_params: dict | None = None,
+    api_key: str | None = None,
 ) -> tuple[str, str]:
     """
     Build the vLLM launch + health-poll shell commands. Shared by
@@ -681,6 +682,18 @@ def _build_vllm_commands(
         # object, not the old "image=4" key=value shorthand.
         base_args["limit_mm_per_prompt"] = json.dumps({"image": int(max_images_per_request)})
 
+    # ── TLS + bearer-auth: vLLM's uvicorn server does both natively, no
+    # separate reverse proxy needed. Cert is self-signed and generated (once,
+    # on first launch -- restarts reuse the existing files) directly on the
+    # VM, so the endpoint is served as https://<ip>:8000/v1.
+    _ssl_dir = f"{home_dir}/.vllm_ssl"
+    _ssl_keyfile = f"{_ssl_dir}/key.pem"
+    _ssl_certfile = f"{_ssl_dir}/cert.pem"
+    base_args["ssl_keyfile"] = _ssl_keyfile
+    base_args["ssl_certfile"] = _ssl_certfile
+    if api_key:
+        base_args["api_key"] = api_key
+
     served_model_name_override = None
     if extra_params:
         extra_params = dict(extra_params)  # don't mutate the caller's dict
@@ -714,6 +727,18 @@ def _build_vllm_commands(
         "  export \"$_k=$_v\"; "
         "done < /etc/environment; "
         + _vllm_env_setup +
+        # ── 1.5: Ensure a self-signed TLS cert exists for vLLM's HTTPS server ──
+        # Generated once and reused across restarts (same cert => no new
+        # browser/client trust prompt every relaunch). 10-year validity since
+        # this is an internal, self-signed cert with no rotation process.
+        f"mkdir -p {_ssl_dir}; "
+        f"if [ ! -f {_ssl_certfile} ] || [ ! -f {_ssl_keyfile} ]; then "
+        f"  echo '[vLLM] Generating self-signed TLS cert...'; "
+        f"  openssl req -x509 -newkey rsa:2048 -nodes "
+        f"    -keyout {_ssl_keyfile} -out {_ssl_certfile} "
+        f"    -days 3650 -subj \"/CN=$(hostname -I | awk '{{print $1}}')\"; "
+        f"  chmod 600 {_ssl_keyfile}; "
+        f"fi; "
         # ── 2. Resolve model path from LLM_MODEL_PATH + LLM_MODEL_NAME ────
         # LLM_MODEL_PATH = base dir  e.g. /vllm_data/hf_cache
         # LLM_MODEL_NAME = model dir e.g. ArtLLM
@@ -820,12 +845,13 @@ def _build_vllm_commands(
         "echo \"[vLLM] Process launched in background\""
     )
 
+    _health_curl_auth = f' -H "Authorization: Bearer {api_key}"' if api_key else ""
     health_poll = (
         "source /etc/profile || true; "
         "source ~/.bash_profile || true; "
         "source ~/.bashrc || true; "
         "for i in $(seq 1 90); do "
-        "  curl -sf http://localhost:8000/health && echo 'vllm ready' && exit 0; "
+        f"  curl -sfk{_health_curl_auth} https://localhost:8000/health && echo 'vllm ready' && exit 0; "
         "  echo \"Waiting for vllm... $i/90\"; "
         "  pgrep -f 'vllm.entrypoints.openai.api_server' > /dev/null || { echo 'ERROR: vLLM process died' >&2; break; }; "
         "  sleep 10; "
@@ -841,6 +867,79 @@ def _build_vllm_commands(
 
     return vllm_launch, health_poll
 
+def _sed_escape(value: str) -> str:
+    """Escape a value for safe use as a sed s|||  replacement (delimiter '|')."""
+    return value.replace("\\", "\\\\").replace("|", "\\|").replace("&", "\\&")
+
+
+_TELEGRAF_CONF_PATH = os.getenv("LLM_VM_TELEGRAF_CONF_PATH", "/etc/telegraf/telegraf.conf")
+
+
+@activity.defn
+def lunch_configure_influxdb_activity(payload: dict) -> dict:
+    """
+    Points this VM's pre-installed Telegraf agent (baked into the template's
+    .deb alongside the user's own Python service) at this environment's
+    InfluxDB by rewriting the [[outputs.influxdb_v2]] stanza in
+    /etc/telegraf/telegraf.conf, then restarts telegraf.service to pick it
+    up. Runs once per VM -- the workflow fans this out over every node in
+    the pool (head + workers), same pattern as install_ray_vllm_activity, so
+    Task Manager's CPU/process monitoring works for all machines, not just
+    the head node.
+    """
+    ip       = payload["ip_address"]
+    ssh_user = payload.get("ssh_user", _SSH_USER)
+    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+
+    influxdb_url    = payload.get("influxdb_url")
+    influxdb_token  = payload.get("influxdb_token")
+    influxdb_org    = payload.get("influxdb_org")
+    influxdb_bucket = payload.get("influxdb_bucket")
+
+    missing = [
+        name for name, val in (
+            ("influxdb_url", influxdb_url),
+            ("influxdb_token", influxdb_token),
+            ("influxdb_org", influxdb_org),
+            ("influxdb_bucket", influxdb_bucket),
+        ) if not val
+    ]
+    if missing:
+        raise RuntimeError(
+            f"[{ip}] Missing InfluxDB config: {', '.join(missing)} -- check "
+            f"INFLUXDB_URL / INFLUXDB_TOKEN / INFLUXDB_ORG / "
+            f"INFLUXDB_LINUX_METRICS_BUCKET env vars on the backend."
+        )
+
+    # Only touches keys inside the [[outputs.influxdb_v2]] stanza (range-bound
+    # between that header and the next [[...]] header or EOF) so a same-named
+    # key under a different plugin stanza is never accidentally rewritten.
+    sed_script = (
+        r'/^\[\[outputs\.influxdb_v2\]\]/,/^\[\[/{'
+        rf's|^\([[:space:]]*urls[[:space:]]*=\).*|\1 ["{_sed_escape(influxdb_url)}"]|; '
+        rf's|^\([[:space:]]*token[[:space:]]*=\).*|\1 "{_sed_escape(influxdb_token)}"|; '
+        rf's|^\([[:space:]]*organization[[:space:]]*=\).*|\1 "{_sed_escape(influxdb_org)}"|; '
+        rf's|^\([[:space:]]*bucket[[:space:]]*=\).*|\1 "{_sed_escape(influxdb_bucket)}"|'
+        r'}'
+    )
+
+    cmd = (
+        f"grep -q '\\[\\[outputs.influxdb_v2\\]\\]' {_TELEGRAF_CONF_PATH} "
+        f"|| {{ echo 'ERROR: [[outputs.influxdb_v2]] stanza not found in {_TELEGRAF_CONF_PATH} "
+        f"-- is the Telegraf .deb actually installed on this template?' >&2; exit 1; }}; "
+        f"cp {_TELEGRAF_CONF_PATH} {_TELEGRAF_CONF_PATH}.bak.$(date +%s); "
+        f"sed -i {shlex.quote(sed_script)} {_TELEGRAF_CONF_PATH} && "
+        f"systemctl restart telegraf && "
+        f"sleep 2 && "
+        f"systemctl is-active --quiet telegraf"
+    )
+
+    try:
+        run_commands(ip, ssh_user, ssh_pass, [cmd], timeout=60)
+        logger.info(f"[{ip}] Telegraf configured -- org={influxdb_org} bucket={influxdb_bucket}")
+        return {"ip_address": ip, "status": "configured"}
+    except Exception as e:
+        raise RuntimeError(f"[{ip}] Failed to configure Telegraf InfluxDB output: {e}")
 
 @activity.defn
 def launch_vllm_from_template_activity(payload: dict) -> dict:
@@ -855,6 +954,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         model_type             = payload.get("model_type")
         max_images_per_request = payload.get("max_images_per_request")
         vllm_extra_params      = payload.get("vllm_extra_params")
+        api_key                = payload.get("api_key")
 
         # ── Step 0: Reboot VM ─────────────────────────────────────────────────
         # Fresh clone ke baad GPU drivers properly initialize nahi hote.
@@ -911,6 +1011,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
             model_type=model_type,
             max_images_per_request=max_images_per_request,
             extra_params=vllm_extra_params,
+            api_key=api_key,
         )
 
         try:
@@ -1001,7 +1102,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
 
         run_commands(ip, ssh_user, ssh_pass, [health_poll], timeout=960)
 
-        endpoint = f"http://{ip}:8000/v1"
+        endpoint = f"https://{ip}:8000/v1"
         logger.info(f"vLLM started on {ip} — endpoint: {endpoint}")
         return {"endpoint_url": endpoint}
 
@@ -1026,6 +1127,7 @@ def restore_llm_services_activity(payload: dict) -> dict:
     model_type             = payload.get("model_type")
     max_images_per_request = payload.get("max_images_per_request")
     vllm_extra_params      = payload.get("vllm_extra_params")
+    api_key                = payload.get("api_key")
     home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
     venv_bin = f"{home_dir}/vllm-ray-env/bin"
     service  = "ray-head" if role == "head" else "ray-worker"
@@ -1069,6 +1171,7 @@ def restore_llm_services_activity(payload: dict) -> dict:
             model_type=model_type,
             max_images_per_request=max_images_per_request,
             extra_params=vllm_extra_params,
+            api_key=api_key,
         )
         run_commands(ip, ssh_user, ssh_pass, [vllm_launch, health_poll], timeout=960)
         logger.info(f"[{ip}] vLLM relaunched and healthy")

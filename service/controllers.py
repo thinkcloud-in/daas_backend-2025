@@ -282,24 +282,23 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
     pool_name = pool.pool_name
     userName = email if email else "Unknown User"  # Use email from frontend
     workflow_id = f"{pool_name}-deleting-{uniqueId}"
+    # Fire-and-forget, same as delete_llm_inference_job -- don't await
+    # handle.result() here. That previously blocked this HTTP request (and
+    # therefore the UI) until the entire deletion workflow finished (real
+    # Proxmox VM destroy calls etc, which can take a while), instead of
+    # letting the frontend show a "deleting" toast and move on immediately.
     handle = await client.start_workflow(
         workflows_pool.PoolDeletionWorkflow.run,
         pool_id,
         id=workflow_id,
         task_queue="Deletepool-task-queue",
         search_attributes={
-            "Entity": [pool_name],  
+            "Entity": [pool_name],
             "Action": ["Pool-Deletion"],
             "UserName": [userName]  # Now uses the frontend email
         },
     )
-    result = await handle.result()
-    if isinstance(result, dict) and result.get("status") == "error":
-        raise HTTPException(
-            status_code=400,
-            detail=result.get("error") or result.get("msg") or "Pool deletion failed"
-        )
-    return result  
+    return {"pool_id": pool_id, "workflow_id": handle.id, "status": "deleting"}
         
 async def add_user_to_machine( machine_identifier: str, username: str):
     uniqueId = unique_id()

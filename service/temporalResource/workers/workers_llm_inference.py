@@ -36,6 +36,7 @@ async def llm_inference_worker():
             activities_llm_inference.add_affinity_rule_activity,
             activities_llm_inference.configure_ray_activity,
             activities_llm_inference.install_ray_vllm_activity,
+            activities_llm_inference.lunch_configure_influxdb_activity
         ],
         activity_executor=activity_executor,
         max_concurrent_activities=50,

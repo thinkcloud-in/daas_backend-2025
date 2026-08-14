@@ -1,10 +1,12 @@
 import asyncio
 import logging
 from datetime import timedelta
-
+from urllib.parse import urlsplit
 from temporalio import workflow
 from temporalio.common import RetryPolicy
-
+import os
+from dotenv import load_dotenv
+load_dotenv()
 from service.temporalResource.activity import activities_llm_inference
 
 _RETRY_ONCE = RetryPolicy(maximum_attempts=1)
@@ -248,8 +250,47 @@ class CreateMultiNodeLLMWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=1),
             start_to_close_timeout=timedelta(minutes=2),
         )
+        # ── Phase 6: Configure Telegraf -> InfluxDB on every VM (parallel) ─────
 
-        # ── Phase 6: Launch vLLM on head node ────────────────────────────────
+        # Production sets URL and PORT as two separate env vars (INFLUXDB_URL
+        # has no port baked in) -- combine them here into the one full URL
+        # Telegraf's config actually needs. If INFLUXDB_URL already has an
+        # explicit port (someone sets it combined), that's left alone rather
+        # than double-appending.
+        _influxdb_url_raw  = os.getenv("INFLUXDB_URL")
+        _influxdb_port     = os.getenv("INFLUXDB_PORT")
+        if _influxdb_url_raw and _influxdb_port and urlsplit(_influxdb_url_raw).port is None:
+            influxdb_url = f"{_influxdb_url_raw.rstrip('/')}:{_influxdb_port}"
+        else:
+            influxdb_url = _influxdb_url_raw
+
+        influxdb_token  = os.getenv("INFLUXDB_TOKEN")
+        influxdb_org    = os.getenv("INFLUXDB_ORG")
+        # Deliberately NOT the same as INFLUXDB_BUCKET -- that one is used
+        # for Proxmox host-level metrics (a separate, pre-existing feature).
+        # LLM pool VMs need their own bucket, added to the deployment env
+        # specifically for this purpose.
+        influxdb_bucket = os.getenv("INFLUXDB_LINUX_METRICS_BUCKET")
+
+        influx_tasks = [
+            workflow.execute_activity(
+                activities_llm_inference.lunch_configure_influxdb_activity,
+                args=[{
+                    "ip_address":      ip,
+                    "influxdb_url":    influxdb_url,
+                    "influxdb_token":  influxdb_token,
+                    "influxdb_org":    influxdb_org,
+                    "influxdb_bucket": influxdb_bucket,
+                    **ssh_creds,
+                }],
+                retry_policy=RetryPolicy(maximum_attempts=2),
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+            for ip in ip_addrs
+        ]
+        await asyncio.gather(*influx_tasks)
+
+        # ── Phase 7: Launch vLLM on head node ────────────────────────────────
         # tensor_parallel_size  = GPUs per node (within-node, NVLink/PCIe)
         # pipeline_parallel_size = number of nodes (cross-node pipeline stages)
         launch_result = await workflow.execute_activity(
@@ -261,6 +302,7 @@ class CreateMultiNodeLLMWorkflow:
                 "model_type":             payload.get("model_type"),
                 "max_images_per_request": payload.get("max_images_per_request"),
                 "vllm_extra_params":      payload.get("vllm_extra_params"),
+                "api_key":                payload.get("api_key"),
                 **ssh_creds,
             }],
             retry_policy=RetryPolicy(maximum_attempts=1),
@@ -268,7 +310,7 @@ class CreateMultiNodeLLMWorkflow:
         )
         endpoint_url = launch_result.get("endpoint_url")  # None if vLLM was skipped (no model)
 
-        # ── Phase 7: Final DB update ──────────────────────────────────────────
+        # ── Phase 8: Final DB update ──────────────────────────────────────────
         await workflow.execute_activity(
             activities_llm_inference.update_llm_inference_job_activity,
             args=[{"job_id": job_id, "endpoint_url": endpoint_url, "status": "running"}],
@@ -392,6 +434,7 @@ class PoolVMActionWorkflow:
                     "model_type":             payload.get("model_type"),
                     "max_images_per_request": payload.get("max_images_per_request"),
                     "vllm_extra_params":      payload.get("vllm_extra_params"),
+                    "api_key":                payload.get("api_key"),
                     **ssh_creds,
                 }],
                 retry_policy=RetryPolicy(maximum_attempts=1),

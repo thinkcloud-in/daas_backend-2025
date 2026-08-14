@@ -2,6 +2,7 @@ import asyncio
 import ipaddress
 import logging
 import os
+import secrets
 import pytz
 import yaml
 from fastapi import HTTPException
@@ -185,6 +186,11 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
         if vllm_extra_params is not None and not isinstance(vllm_extra_params, dict):
             raise HTTPException(status_code=400, detail="Extra vLLM params must be a flat mapping of key: value pairs.")
 
+        # ── Generate the bearer token once, at creation ─────────────────────────
+        # Reused on every future restart (read back from the DB) so the
+        # credential handed to OpenWebUI/clients never rotates underneath them.
+        api_key = f"sk-{secrets.token_urlsafe(32)}"
+
         # ── Persist job record ────────────────────────────────────────────────
         record = LLMInferenceJob(
             name=data.poolName,
@@ -203,6 +209,7 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             model_type_other=data.modelTypeOther,
             max_images_per_request=data.maxImagesPerRequest,
             vllm_extra_params=vllm_extra_params,
+            api_key=api_key,
             status="provisioning",
         )
         db.add(record)
@@ -227,6 +234,7 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "model_type":    data.modelType,
             "max_images_per_request": data.maxImagesPerRequest,
             "vllm_extra_params":      vllm_extra_params,
+            "api_key":       api_key,
             "ssh_user":      data.ssh_user or _SSH_USER,
             "ssh_pass":      data.ssh_pass or _SSH_PASS,
         }
@@ -483,6 +491,7 @@ def get_llm_inference_job(job_id: int, db: Session):
             "ip_addresses":   record.ip_addresses,
             "head_ip":        record.head_ip,
             "endpoint_url":   record.endpoint_url,
+            "api_key":        record.api_key,
             "status":         record.status,
             "workflow_id":    record.workflow_id,
             "created_at":     str(record.created_at),
@@ -599,6 +608,7 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             "model_type":             record.model_type,
             "max_images_per_request": record.max_images_per_request,
             "vllm_extra_params":      record.vllm_extra_params,
+            "api_key":                record.api_key,
         }
 
         client = await TemporalClientManager.get_temporal_client()
