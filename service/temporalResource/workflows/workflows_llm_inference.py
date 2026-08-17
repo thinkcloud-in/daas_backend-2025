@@ -156,7 +156,13 @@ class CreateMultiNodeLLMWorkflow:
                 activities_llm_inference.install_ray_vllm_activity,
                 args=[{
                     "ip_address": ip,
-                    "name":       f"{payload['name']}-{i}",
+                    # The VM's actual reserved name (e.g. "lucky-001") --
+                    # must match machines_name / what's shown as "Machine
+                    # Name" in the UI, since this becomes the OS hostname,
+                    # and Telegraf's "host" tag (what the Grafana dashboard's
+                    # host variable filters on) is the OS hostname. Was
+                    # previously "<pool_name>-<index>", which never matched.
+                    "name":       reserved_names[i],
                     "subnet":     payload["subnet"],
                     "net_iface":  payload.get("net_iface"),  # None -> activity auto-detects the VM's real interface
                     "model":      payload.get("model", ""),

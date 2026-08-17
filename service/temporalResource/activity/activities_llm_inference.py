@@ -1558,8 +1558,21 @@ def install_ray_vllm_activity(payload: dict) -> dict:
         f"model_path={model_path!r} (will_overwrite_path={bool(model_path and model_path != '/vllm_data/hf_cache')})"
     )
 
-    # Always set hostname
-    run_commands(ip, ssh_user, ssh_pass, [f"sudo hostnamectl set-hostname '{hostname}'"], timeout=30)
+    # Always set hostname -- and a matching /etc/hosts entry. hostnamectl
+    # alone only sets the kernel hostname; it never touches /etc/hosts. NSS
+    # resolution order (nsswitch.conf) checks /etc/hosts ("files") before
+    # DNS, so without this entry, any FQDN lookup (socket.getfqdn(), used
+    # internally by vLLM/Ray's Prometheus exporters for their "instance"
+    # label) falls through to DNS -- which was producing a doubled
+    # "host.host" tag value in InfluxDB (e.g. "lucky001.lucky001") instead
+    # of the plain hostname every other Telegraf input tags metrics with.
+    # sed first removes any stale line for this hostname so re-running this
+    # (idempotent) activity never appends duplicate /etc/hosts lines.
+    run_commands(ip, ssh_user, ssh_pass, [
+        f"sudo hostnamectl set-hostname '{hostname}'",
+        f"sudo sed -i '/\\b{hostname}\\b/d' /etc/hosts",
+        f"echo '{ip} {hostname}' | sudo tee -a /etc/hosts > /dev/null",
+    ], timeout=30)
 
     # ── SELinux → permissive ──────────────────────────────────────────────────
     # Enforcing SELinux blocks systemd from exec'ing the Ray binary in /home
