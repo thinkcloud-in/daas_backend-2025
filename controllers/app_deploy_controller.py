@@ -2399,23 +2399,34 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
     try:
         kc_url, kc_realm, headers = _kc_setup(ow)
 
-        # Admin aur User role objects Keycloak se fetch karo (id + name chahiye)
-        roles_r = httpx.get(
-            f"{kc_url}/admin/realms/{kc_realm}/roles",
-            headers=headers, timeout=15, verify=False,
-        )
-        if roles_r.status_code != 200:
-            raise HTTPException(status_code=502, detail=f"Keycloak roles fetch failed ({roles_r.status_code})")
+        # Hardcoded role name map: "admin" → "Admin", "user" → "user"
+        _ROLE_NAME = {"admin": "Admin", "user": "user"}
 
-        role_objs = {}   # "admin" → {id, name},  "user" → {id, name}
-        for r in roles_r.json():
-            name_lower = r.get("name", "").lower()
-            if name_lower in ("admin", "user") and name_lower not in role_objs:
-                role_objs[name_lower] = {"id": r["id"], "name": r["name"]}
+        def _get_or_create_role(key: str) -> dict:
+            kc_name = _ROLE_NAME[key]
+            r = httpx.get(
+                f"{kc_url}/admin/realms/{kc_realm}/roles/{kc_name}",
+                headers=headers, timeout=10, verify=False,
+            )
+            if r.status_code == 200:
+                return {"id": r.json()["id"], "name": r.json()["name"]}
+            # 404 → role nahi hai, create karo
+            cr = httpx.post(
+                f"{kc_url}/admin/realms/{kc_realm}/roles",
+                headers={**headers, "Content-Type": "application/json"},
+                json={"name": kc_name},
+                timeout=10, verify=False,
+            )
+            if cr.status_code not in (200, 201):
+                raise HTTPException(status_code=502, detail=f"Keycloak role '{kc_name}' create failed ({cr.status_code})")
+            # Create ke baad GET karo (id milta hai tabhi)
+            r2 = httpx.get(
+                f"{kc_url}/admin/realms/{kc_realm}/roles/{kc_name}",
+                headers=headers, timeout=10, verify=False,
+            )
+            return {"id": r2.json()["id"], "name": r2.json()["name"]}
 
-        for target in valid_roles:
-            if target not in role_objs:
-                raise HTTPException(status_code=502, detail=f"Keycloak realm mein '{target}' role nahi mila — pehle role create karo")
+        role_objs = {key: _get_or_create_role(key) for key in ("admin", "user")}
 
         succeeded = []
         failed    = []
