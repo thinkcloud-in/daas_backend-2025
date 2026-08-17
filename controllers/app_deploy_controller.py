@@ -1360,6 +1360,9 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
             raise HTTPException(status_code=409, detail=f"LLM id={llm.id} has no endpoint_url or head_ip")
         return url if url.endswith("/v1") else f"{url}/v1"
 
+    def _llm_key(llm) -> str:
+        return (llm.api_key or "").strip() or "sk-EMPTY"
+
     try:
         current_ids = _json.loads(ow.linked_llm_ids) if ow.linked_llm_ids else []
         if not isinstance(current_ids, list):
@@ -1408,10 +1411,12 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
 
     new_ids  = current_ids + to_add
     all_urls = []
+    all_keys = []
     for lid in new_ids:
         llm = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == lid).first()
         if llm:
             all_urls.append(_llm_url(llm))
+            all_keys.append(_llm_key(llm))
 
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
     if not cluster or not cluster.kubeconfig:
@@ -1433,6 +1438,7 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
                 "llm_ids":               to_add,
                 "new_ids":               new_ids,
                 "base_urls":             all_urls,
+                "api_keys":              all_keys,
                 "k8s_cluster_id":        ow.k8s_cluster_id,
                 "dep_name":              dep_name,
                 "namespace":             namespace,
