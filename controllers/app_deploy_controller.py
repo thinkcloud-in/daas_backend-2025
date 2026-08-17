@@ -1807,7 +1807,10 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Keycloak Admin API error: {str(e)[:400]}")
 
-    openid_provider_url = f"{kc_url}/realms/{kc_realm}/.well-known/openid-configuration"
+    # OW pod ke liye public URL — multinode cluster se reachable hona chahiye.
+    # KEYCLOAK_PUBLIC_URL set hai to wahi use karo, warna KEYCLOAK_ROOT_URL fallback.
+    _kc_public = (os.getenv("KEYCLOAK_PUBLIC_URL") or kc_url).strip().rstrip("/")
+    openid_provider_url = f"{_kc_public}/realms/{kc_realm}/.well-known/openid-configuration"
 
     oauth_env_vars = {
         "ENABLE_OAUTH_SIGNUP":           "false",
