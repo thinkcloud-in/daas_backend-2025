@@ -12,14 +12,15 @@ library_router = APIRouter(prefix="/v1/library", tags=["library"])
 
 
 class LibraryUploadInit(BaseModel):
-    name:      Optional[str] = None   # container type: metadata se auto-set hoga; baaki ke liye required
+    name:      Optional[str] = None   # container type: Harbor image name; baaki ke liye required
     file_name: str
     file_size: Optional[int] = None
     type:      Optional[str] = None   # container | llm_model | llm_template | base_os | ...
-    version:   Optional[str] = None
+    version:   Optional[str] = None   # container ke liye: Harbor image tag
     # Harbor push — container / llm_model / llm_template ke liye
     harbor_registry_id: Optional[int] = None  # kubernetes_deployments.id (Harbor instance)
     harbor_owner:       Optional[str] = None  # fallback owner segment (optional)
+    owner_name:         Optional[str] = None  # container ke liye: Harbor owner/org segment
     # Optional metadata JSON — yahan pass karo to ZIP ke andar rakhne ki zaroorat nahi
     # Saare fields Harbor Overview mein annotations ke roop mein jayenge
     metadata: Optional[dict] = None
@@ -45,6 +46,7 @@ async def create_library_item(
         db, request,
         harbor_registry_id=body.harbor_registry_id,
         harbor_owner=body.harbor_owner,
+        owner_name=body.owner_name,
         metadata=body.metadata,
     )
 
@@ -66,13 +68,18 @@ async def upload_library_file(
 
 @library_router.get("/list", response_model=APIResponse[Any])
 def list_library_items(
-    type:      Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | ..."),
-    owner:     Optional[str] = Query(None, description="Filter by harbor_owner (partial match, case-insensitive)"),
-    page:      int           = Query(1,  ge=1),
-    page_size: int           = Query(10, ge=1, le=100),
-    db:        Session       = Depends(get_db),
+    type:               Optional[str] = Query(None, description="Filter: base_os | container | llm_model | llm_template | openwebui | vectordb | postgresql | ..."),
+    owner:              Optional[str] = Query(None, description="Filter by harbor_owner (partial match, case-insensitive)"),
+    harbor_registry_id: Optional[int] = Query(None, description="Filter by harbor registry (kubernetes_deployments.id)"),
+    page:               int           = Query(1,  ge=1),
+    page_size:          int           = Query(10, ge=1, le=100),
+    db:                 Session       = Depends(get_db),
 ):
-    return library_controller.list_library_items(type, page, page_size, db, owner_filter=owner)
+    return library_controller.list_library_items(
+        type, page, page_size, db,
+        owner_filter=owner,
+        harbor_registry_id=harbor_registry_id,
+    )
 
 
 # ── Deployment list/detail — static routes BEFORE /{item_id} so FastAPI

@@ -358,7 +358,7 @@ def list_deployed_llm_jobs(db: Session, page: int = 1, page_size: int = 10):
         page_size = max(1, min(page_size, 100))
         offset    = (page - 1) * page_size
 
-        base_q  = db.query(LLMInferenceJob).filter(LLMInferenceJob.status == "vms_ready")
+        base_q  = db.query(LLMInferenceJob).filter(LLMInferenceJob.status == "running")
         total   = base_q.count()
         records = (
             base_q

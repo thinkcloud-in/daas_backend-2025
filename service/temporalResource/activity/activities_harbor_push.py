@@ -35,10 +35,18 @@ logger = logging.getLogger(__name__)
 
 HARBOR_PUSH_TASK_QUEUE = "harbor-push-queue"
 
-_PUSH_IMAGE_BASE_URL  = os.getenv("PUSH_IMAGE_BASE_URL",  "").rstrip("/")
-_STORAGE_BASE_URL     = os.getenv("STORAGE_BASE_URL",     "").rstrip("/")
-_STORAGE_INTERNAL_URL = os.getenv("STORAGE_INTERNAL_URL", "").rstrip("/")
-_POD_LIBRARY_PATH     = "/data/library"  # Pod ka WebDAV root mount path
+
+def _clean_env_url(value: str | None) -> str:
+    if value is None:
+        return ""
+    return value.split("#", 1)[0].strip().rstrip("/")
+
+
+_PUSH_IMAGE_BASE_URL  = _clean_env_url(os.getenv("PUSH_IMAGE_BASE_URL",  ""))
+_STORAGE_BASE_URL     = _clean_env_url(os.getenv("STORAGE_BASE_URL",     ""))
+_STORAGE_INTERNAL_URL = _clean_env_url(os.getenv("STORAGE_INTERNAL_URL", ""))
+_POD_LIBRARY_PATH     = os.getenv("POD_LIBRARY_PATH", "/data/library")
+
 
 _REGISTRIES = (
     "docker.io/", "ghcr.io/", "quay.io/",
@@ -62,12 +70,13 @@ def _strip_reg(s: str) -> str:
 def _webdav_upload_file(local_path: str, uid: str) -> tuple:
     """
     Single file ko WebDAV pe upload karo.
-    STORAGE_BASE_URL (APISIX) use karo — large files ke liye no size limit.
+    Push-image wrapper pod ke liye internal storage path prefer karo,
+    kyunki woh /data/library mount ke same shared PV se source file dekhta hai.
     Returns: (pod_path, cleanup_url)
     """
-    storage_url = _STORAGE_BASE_URL or _STORAGE_INTERNAL_URL
+    storage_url = _STORAGE_INTERNAL_URL or _STORAGE_BASE_URL
     if not storage_url:
-        raise RuntimeError("STORAGE_BASE_URL env var is not set")
+        raise RuntimeError("STORAGE_INTERNAL_URL / STORAGE_BASE_URL env vars are not set")
     fname       = os.path.basename(local_path)
     remote_name = f"harbor-push-{uid}-{fname}"
     upload_url  = f"{storage_url}/{remote_name}"
@@ -79,7 +88,13 @@ def _webdav_upload_file(local_path: str, uid: str) -> tuple:
         )
     if not r.ok:
         raise RuntimeError(f"WebDAV upload failed: {r.status_code} {r.text[:200]}")
-    pod_path = f"{_POD_LIBRARY_PATH}/{remote_name}"
+
+    # pod_path: WebDAV root (_POD_LIBRARY_PATH) + URL subpath + filename
+    # e.g. STORAGE_BASE_URL=http://host:port/library → URL subpath=/library
+    #      pod_path = /data/library/library/{remote_name}
+    from urllib.parse import urlparse as _urlparse
+    _url_subpath = _urlparse(storage_url).path.rstrip("/")  # e.g. "/library"
+    pod_path = f"{_POD_LIBRARY_PATH}{_url_subpath}/{remote_name}"
     logger.info(f"[HarborPush] WebDAV upload OK → {upload_url} (pod: {pod_path})")
     return pod_path, upload_url
 
@@ -110,7 +125,9 @@ def _webdav_upload_dir(local_dir: str, uid: str) -> tuple:
                 )
             if not r.ok:
                 logger.warning(f"[HarborPush] WebDAV {rel_path}: HTTP {r.status_code}")
-    pod_path = f"{_POD_LIBRARY_PATH}/{dir_name}"
+    from urllib.parse import urlparse as _urlparse
+    _url_subpath = _urlparse(_STORAGE_INTERNAL_URL).path.rstrip("/")
+    pod_path = f"{_POD_LIBRARY_PATH}{_url_subpath}/{dir_name}"
     logger.info(f"[HarborPush] WebDAV dir upload OK → {base_url}")
     return pod_path, base_url
 
@@ -121,6 +138,174 @@ def _webdav_delete(url: str) -> None:
         logger.info(f"[HarborPush] WebDAV cleanup OK: {url}")
     except Exception as e:
         logger.warning(f"[HarborPush] WebDAV cleanup failed ({url}): {e}")
+
+
+def _detect_tar_source_type(tar_path: str) -> str:
+    """
+    Tar ke andar peek karo: manifest.json → docker-archive, index.json → oci-archive.
+    `docker save` tars mein manifest.json hoti hai; `skopeo copy --format oci` tars mein index.json.
+    """
+    try:
+        with tarfile.open(tar_path, "r:*") as tf:
+            names = tf.getnames()
+        if "manifest.json" in names:
+            return "docker-archive"
+        if "index.json" in names:
+            return "oci-archive"
+        logger.warning(f"[HarborPush] Tar mein na manifest.json na index.json — defaulting docker-archive. Names: {names[:10]}")
+    except Exception as e:
+        logger.warning(f"[HarborPush] tar format detection failed ({tar_path}): {e}")
+    return "docker-archive"
+
+
+def _read_docker_archive_labels(tar_path: str) -> dict:
+    """
+    docker-archive image config se OCI labels padho.
+    manifest.json → Config blob path → config JSON → Labels dict.
+    """
+    try:
+        with tarfile.open(tar_path, "r:*") as tf:
+            with tf.extractfile("manifest.json") as f:
+                manifests = json.loads(f.read())
+            config_path = manifests[0].get("Config", "")
+            if config_path:
+                with tf.extractfile(config_path) as f:
+                    config = json.loads(f.read())
+                return config.get("config", {}).get("Labels") or {}
+    except Exception as e:
+        logger.warning(f"[HarborPush] docker-archive labels read failed ({tar_path}): {e}")
+    return {}
+
+
+def _owner_from_url(url: str) -> str:
+    """
+    org.opencontainers.image.url se owner naam nikalo.
+    https://hub.docker.com/_/postgres → "postgres"
+    https://github.com/open-webui/open-webui → "open-webui"
+    """
+    last = url.rstrip("/").split("/")[-1]
+    return _sanitize(last) if last else ""
+
+
+def _read_docker_archive_ref(tar_path: str) -> tuple[str, str] | None:
+    """
+    docker-archive tar ke manifest.json se actual RepoTag read karo.
+    `docker save image:tag -o file.tar` ke baad manifest.json mein RepoTags hota hai.
+    Returns: (image_without_tag, tag) — e.g. ("ghcr.io/open-webui/open-webui", "v0.11.0")
+    None agar koi RepoTag nahi mila.
+    """
+    try:
+        with tarfile.open(tar_path, "r:*") as tf:
+            with tf.extractfile("manifest.json") as f:
+                data = json.loads(f.read())
+        for entry in data:
+            repo_tags = entry.get("RepoTags") or []
+            for tag in repo_tags:
+                if tag and ":" in tag:
+                    img, ver = tag.rsplit(":", 1)
+                    logger.info(f"[HarborPush] docker-archive RepoTag: {img}:{ver}")
+                    return img, ver
+    except Exception as e:
+        logger.warning(f"[HarborPush] manifest.json RepoTag read failed ({tar_path}): {e}")
+    return None
+
+
+def _patch_docker_archive_ref(tar_path: str, new_ref: str) -> str:
+    """
+    docker-archive tar ke manifest.json mein new_ref add karo.
+    Disk extraction se bachta hai (Windows mein sha256:... colon path issue hota hai).
+    Source tar se stream mein copy karta hai — sirf manifest.json memory mein modify hota hai.
+    """
+    import io as _io
+
+    new_tar = tar_path + ".patched.tar"
+    with tarfile.open(tar_path, "r:*") as src:
+        mf_member = src.getmember("manifest.json")
+        mf_bytes  = src.extractfile(mf_member).read()
+        manifests = json.loads(mf_bytes)
+
+        if manifests:
+            repo_tags = list(manifests[0].get("RepoTags") or [])
+            if new_ref not in repo_tags:
+                repo_tags.insert(0, new_ref)
+                manifests[0]["RepoTags"] = repo_tags
+
+        new_mf_bytes = json.dumps(manifests).encode()
+
+        # Rewind source tar to stream members
+        src_members = src.getmembers()
+
+    # Second pass: copy with manifest.json replaced
+    with tarfile.open(tar_path, "r:*") as src, tarfile.open(new_tar, "w:") as dst:
+        for member in src.getmembers():
+            if member.name == "manifest.json":
+                info      = tarfile.TarInfo(name="manifest.json")
+                info.size = len(new_mf_bytes)
+                dst.addfile(info, _io.BytesIO(new_mf_bytes))
+            else:
+                fobj = src.extractfile(member)
+                if fobj is not None:
+                    dst.addfile(member, fobj)
+                else:
+                    dst.addfile(member)  # directory / symlink
+
+    logger.info(f"[HarborPush] docker-archive patched: RepoTag '{new_ref}' added → {new_tar}")
+    return new_tar
+
+
+def _patch_oci_index_ref(oci_dir: str, image_ref: str) -> None:
+    """
+    OCI directory ke index.json mein har manifest pe
+    org.opencontainers.image.ref.name annotation set karo.
+    Push-image API source command = oci:{path}:{image_ref} —
+    skopeo isi annotation se match karta hai.
+    """
+    idx_path = os.path.join(oci_dir, "index.json")
+    with open(idx_path) as f:
+        data = json.load(f)
+    for manifest in data.get("manifests", []):
+        manifest.setdefault("annotations", {})["org.opencontainers.image.ref.name"] = image_ref
+    with open(idx_path, "w") as f:
+        json.dump(data, f)
+    logger.info(f"[HarborPush] OCI index.json patched → ref={image_ref}")
+
+
+def _read_oci_archive_ref(tar_path: str) -> tuple[str, str] | None:
+    """
+    OCI archive ke index.json se actual manifest reference nikalo.
+    1. org.opencontainers.image.ref.name → direct use
+    2. org.opencontainers.image.url → last path segment as owner
+       e.g. https://hub.docker.com/_/postgres → "postgres"
+    Returns (image_ref_without_tag, tag) or None.
+    """
+    try:
+        with tarfile.open(tar_path, "r:*") as tf:
+            with tf.extractfile("index.json") as f:
+                data = json.loads(f.read())
+        for manifest in data.get("manifests", []):
+            ann = manifest.get("annotations", {})
+
+            # 1. Direct ref annotation
+            ref = ann.get("org.opencontainers.image.ref.name", "")
+            if ref:
+                if ":" in ref.rsplit("/", 1)[-1]:
+                    img, tag = ref.rsplit(":", 1)
+                else:
+                    img, tag = ref, "latest"
+                logger.info(f"[HarborPush] OCI ref.name: {img}:{tag}")
+                return img, tag
+
+            # 2. URL annotation → last segment as owner name
+            url = ann.get("org.opencontainers.image.url", "")
+            if url:
+                last = url.rstrip("/").split("/")[-1]  # e.g. "postgres" from ".../_/postgres"
+                if last:
+                    logger.info(f"[HarborPush] OCI image.url={url} → owner='{last}'")
+                    return last, "latest"   # tag baad mein version se override hoga
+
+    except Exception as e:
+        logger.warning(f"[HarborPush] OCI index.json ref read failed ({tar_path}): {e}")
+    return None
 
 
 def _extract_image_metadata_local(local_path: str, item) -> dict:
@@ -253,11 +438,19 @@ def _extract_image_metadata_local(local_path: str, item) -> dict:
 def _push_image_via_api(
     harbor_host: str, harbor_user: str, harbor_pass: str,
     project: str, image_name: str, tag: str,
-    source_path: str, source_type: str,
+    source_type: str,
+    local_file: str | None = None,    # local file on this machine → multipart (no PV needed)
+    webdav_path: str | None = None,   # path on push-image pod's PV → JSON fallback
 ) -> None:
-    """POST → push-image wrapper → skopeo → Harbor."""
+    """POST → push-image wrapper → skopeo → Harbor.
+
+    Priority:
+    1. local_file exists → multipart upload (no PV required — push-image receives file directly)
+    2. webdav_path set   → JSON payload with source_path (push-image reads from its PV mount)
+    """
     if not _PUSH_IMAGE_BASE_URL:
         raise RuntimeError("PUSH_IMAGE_BASE_URL env var is not set")
+
     payload = {
         "harbor_url":  harbor_host,
         "username":    harbor_user,
@@ -265,18 +458,53 @@ def _push_image_via_api(
         "project":     project,
         "image_name":  image_name,
         "tag":         tag,
-        "source_path": source_path,
         "source_type": source_type,
         "tls_verify":  False,
     }
-    logger.info(f"[HarborPush] POST {_PUSH_IMAGE_BASE_URL}/push/image → {harbor_host}/{project}/{image_name}:{tag}")
-    resp = requests.post(
-        f"{_PUSH_IMAGE_BASE_URL}/push/image",
-        json=payload, timeout=900, verify=False,
-    )
+    if webdav_path:
+        payload["source_path"] = webdav_path
+
+    endpoint = f"{_PUSH_IMAGE_BASE_URL}/push/image"
+    logger.info(f"[HarborPush] POST {endpoint} → {harbor_host}/{project}/{image_name}:{tag}")
+
+    resp = None
+    file_handle = None
+    try:
+        if local_file and os.path.exists(local_file):
+            # Multipart: file sent directly → no shared PV required
+            logger.info(f"[HarborPush] multipart upload: {local_file}")
+            file_handle = open(local_file, "rb")
+            resp = requests.post(
+                endpoint,
+                data=payload,
+                files={"file": (os.path.basename(local_file), file_handle, "application/octet-stream")},
+                timeout=900,
+                verify=False,
+            )
+        else:
+            # JSON only — push-image reads file from its own PV via webdav_path
+            logger.info(f"[HarborPush] JSON push (source_path={webdav_path})")
+            resp = requests.post(
+                endpoint,
+                json=payload,
+                timeout=900,
+                verify=False,
+            )
+    except Exception as _req_err:
+        raise RuntimeError(f"push/image request failed: {_req_err}") from _req_err
+    finally:
+        if file_handle is not None:
+            file_handle.close()
+
+    # resp is always set here (exception raised above if not)
     if not resp.ok:
-        raise RuntimeError(f"push/image API failed (HTTP {resp.status_code}): {resp.text[:1000]}")
+        raise RuntimeError(
+            f"push/image API failed (HTTP {resp.status_code}): {resp.text[:1000]}"
+        )
+
     logger.info(f"[HarborPush] push/image OK: {resp.text[:200]}")
+
+
 
 
 # ── main activity ─────────────────────────────────────────────────────────────
@@ -341,12 +569,35 @@ def harbor_push_activity(params: dict) -> dict:
 
         # ── 3. Local metadata extraction ─────────────────────────────────────
         meta = _extract_image_metadata_local(temp_path, item)
+
+        # OCI archive ke liye: annotation se actual owner/name try karo pehle
+        if not meta["image_owner"] and os.path.isfile(temp_path):
+            oci_annotation = _read_oci_archive_ref(temp_path)
+            if oci_annotation:
+                full_img = _strip_reg(oci_annotation[0])  # registry prefix hatao
+                comps = [c for c in full_img.split("/") if c]
+                if len(comps) >= 2:
+                    # e.g. "library/postgres" → owner=library, name=postgres
+                    meta["image_owner"] = _sanitize(comps[-2])
+                    meta["image_name"]  = meta["image_name"] or _sanitize(comps[-1])
+                elif len(comps) == 1:
+                    # e.g. URL se mila "postgres" → directly owner set karo
+                    meta["image_owner"] = _sanitize(comps[0])
+                if oci_annotation[1] and oci_annotation[1] != "latest":
+                    meta["image_version"] = oci_annotation[1]
+                logger.info(
+                    f"[HarborPush] OCI annotation → owner={meta['image_owner']} "
+                    f"name={meta['image_name']} version={meta['image_version']}"
+                )
+
+        # image_owner last resort: item.harbor_owner (user ne upload mein diya)
+        # harbor_project mat copy karo — same hone par double prefix banta hai
         if not meta["image_owner"]:
-            meta["image_owner"] = _sanitize(item.harbor_project or "library")
-            logger.warning(
-                f"[HarborPush] image_owner not found — defaulting to '{meta['image_owner']}'. "
-                "Docker tar mein proper RepoTag rakho ya upload request mein harbor_owner pass karo."
-            )
+            meta["image_owner"] = _sanitize(item.harbor_owner or "")
+            if meta["image_owner"]:
+                logger.info(f"[HarborPush] image_owner: item.harbor_owner se liya → '{meta['image_owner']}'")
+            else:
+                logger.warning("[HarborPush] image_owner nahi mila — harbor path mein owner nahi hoga")
 
         image_owner    = meta["image_owner"]
         image_name     = meta["image_name"]
@@ -354,17 +605,40 @@ def harbor_push_activity(params: dict) -> dict:
         source_type    = meta["source_type"]
         is_oci_dir_zip = meta["is_oci_dir_zip"]
 
+        # ── Explicit user overrides (container upload mein name/owner_name/version diya) ──
+        # User-provided values always win over auto-derived tar/zip metadata
+        _file_stem = os.path.splitext(os.path.basename(item.file_name or ""))[0]
+        if item.harbor_owner:
+            image_owner = _sanitize(item.harbor_owner)
+            logger.info(f"[HarborPush] owner override from upload → '{image_owner}'")
+        if item.name and item.name != _file_stem:
+            image_name = _sanitize(item.name)
+            logger.info(f"[HarborPush] image_name override from upload → '{image_name}'")
+        if item.version and item.version not in ("", "latest"):
+            image_version = _sanitize(item.version)
+            logger.info(f"[HarborPush] version override from upload → '{image_version}'")
+
+        # Agar owner == harbor project → double prefix bachao
+        if image_owner and image_owner == project:
+            logger.warning(
+                f"[HarborPush] image_owner='{image_owner}' == project='{project}' → "
+                "double prefix hoga. Upload mein alag harbor_owner specify karo."
+            )
+
         logger.info(
             f"[HarborPush] meta → owner={image_owner} name={image_name} "
             f"version={image_version} source_type={source_type}"
         )
 
-        # ── 4. WebDAV upload → push-image API (skopeo) → Harbor ────────────────
-        # docker-archive (.tar) → WebDAV → push/image (source_type=docker-archive)
-        # OCI dir ZIP   (.zip)  → extract → WebDAV dir → push/image (source_type=oci)
-        dest_image  = f"{harbor_host}/{project}/{image_owner}/{image_name}:{image_version}"
-        extract_tmp = None
-        webdav_url  = None
+        # ── 4. WebDAV upload → push-image API (skopeo) → Harbor ─────────────────
+        # owner == project → double prefix bachao: sirf image_name use karo
+        _owner_prefix = f"{image_owner}/" if (image_owner and image_owner != project) else ""
+        dest_image    = f"{harbor_host}/{project}/{_owner_prefix}{image_name}:{image_version}"
+        extract_tmp   = None
+        webdav_url    = None
+        patched_tar   = None   # docker-archive patch → temp file, cleanup needed
+        api_image     = f"{_owner_prefix}{image_name}"
+        api_tag       = image_version
         try:
             uid = uuid.uuid4().hex[:8]
             if is_oci_dir_zip:
@@ -376,17 +650,155 @@ def harbor_push_activity(params: dict) -> dict:
                     if "oci-layout" in files:
                         oci_dir = root
                         break
+                _patch_oci_index_ref(oci_dir, f"{api_image}:{image_version}")
                 source_path, webdav_url = _webdav_upload_dir(oci_dir, uid)
                 source_type = "oci"
             else:
-                source_path, webdav_url = _webdav_upload_file(temp_path, uid)
-                source_type = "docker-archive"
+                detected_type = _detect_tar_source_type(temp_path)
+                if detected_type == "oci-archive":
+                    if extract_tmp is None:
+                        extract_tmp = tempfile.mkdtemp(prefix="harbor-oci-")
+                    with tarfile.open(temp_path, "r:*") as tf:
+                        tf.extractall(extract_tmp)
+                    oci_dir = extract_tmp
+                    for root, dirs, files in os.walk(extract_tmp):
+                        if "oci-layout" in files:
+                            oci_dir = root
+                            break
+                    _patch_oci_index_ref(oci_dir, f"{api_image}:{image_version}")
+                    source_path, webdav_url = _webdav_upload_dir(oci_dir, uid)
+                    source_type = "oci"
+                    logger.info(f"[HarborPush] oci-archive extracted + patched → oci dir")
+                else:
+                    source_type = detected_type  # "docker-archive"
+
+                    # ── docker-archive owner/name derivation ─────────────────
+                    # Step 1: RepoTag se registry strip karke owner/name nikalo
+                    # Step 2: Agar owner Docker Hub official namespace ("library","_")
+                    #         ya harbor project hi hai → image config labels se real
+                    #         owner/name nikalo (org.opencontainers.image.url).
+                    # Step 3: Agar reference badal gaya → tar patch karke desired
+                    #         RepoTag add karo taaki skopeo source match ho sake.
+                    _DOCKER_OFFICIAL_NS = {"library", "_"}
+                    docker_ref = _read_docker_archive_ref(temp_path)
+                    push_tar = temp_path  # default: original tar upload karo
+                    if docker_ref:
+                        stripped  = _strip_reg(docker_ref[0])
+                        comps     = [c for c in stripped.split("/") if c]
+                        raw_owner = comps[-2] if len(comps) >= 2 else ""
+                        raw_name  = comps[-1] if comps else image_name
+
+                        # Official namespace ya harbor project → real owner labels se nikalo
+                        if not raw_owner or raw_owner in _DOCKER_OFFICIAL_NS or raw_owner == project:
+                            # Reset karo — official NS ya project naam real owner nahi hai
+                            raw_owner = ""
+                            labels    = _read_docker_archive_labels(temp_path)
+                            # url ya source dono check karo (ghcr.io images mein source hota hai)
+                            url = (
+                                labels.get("org.opencontainers.image.url", "")
+                                or labels.get("org.opencontainers.image.source", "")
+                            )
+                            if url:
+                                from urllib.parse import urlparse as _up
+                                path_parts = [c for c in _up(url).path.split("/") if c]
+                                if len(path_parts) >= 2 and path_parts[0] not in _DOCKER_OFFICIAL_NS:
+                                    # e.g. github.com/open-webui/open-webui → owner=open-webui name=open-webui
+                                    raw_owner = path_parts[-2]
+                                    raw_name  = path_parts[-1]
+                                elif path_parts:
+                                    # e.g. hub.docker.com/_/postgres → name=postgres (no real org)
+                                    raw_owner = path_parts[-1]
+                                logger.info(f"[HarborPush] docker-archive label URL='{url}' → owner={raw_owner} name={raw_name}")
+                            if not raw_owner:
+                                raw_owner = _sanitize(item.harbor_owner or "")
+
+                        final_owner = _sanitize(raw_owner) if raw_owner else ""
+                        final_name  = _sanitize(raw_name)  if raw_name  else image_name
+                        final_tag   = image_version  # item.version ko priority do
+
+                        # Agar owner/name/tag change hua → tar patch karo taaki skopeo ref match ho
+                        desired_ref  = f"{final_owner}/{final_name}:{final_tag}" if final_owner else f"{final_name}:{final_tag}"
+                        existing_ref = f"{stripped}:{docker_ref[1]}"
+                        need_patch   = desired_ref != existing_ref and final_owner not in _DOCKER_OFFICIAL_NS
+                        if need_patch:
+                            try:
+                                patched_tar = _patch_docker_archive_ref(temp_path, desired_ref)
+                                push_tar    = patched_tar
+                            except Exception as _pe:
+                                logger.warning(f"[HarborPush] docker-archive patch failed: {_pe} — original use")
+
+                        _owner_prefix = f"{final_owner}/" if (final_owner and final_owner != project) else ""
+                        api_image    = f"{_owner_prefix}{final_name}"
+                        api_tag      = final_tag
+                        dest_image   = f"{harbor_host}/{project}/{api_image}:{api_tag}"
+                        # DB update ke liye bhi sync karo
+                        image_owner  = final_owner
+                        image_name   = final_name
+                        image_version = final_tag
+                        logger.info(f"[HarborPush] docker-archive → owner={final_owner} name={final_name} tag={api_tag} dest={dest_image}")
+
+                    if not docker_ref:
+                        # RepoTags empty → config blob ke labels se owner/name/tag nikalo
+                        # (yahi data Harbor Overview mein dikhta hai)
+                        labels  = _read_docker_archive_labels(temp_path)
+                        url     = (
+                            labels.get("org.opencontainers.image.url", "")
+                            or labels.get("org.opencontainers.image.source", "")
+                        )
+                        title   = labels.get("org.opencontainers.image.title", "")
+                        ver_lbl = labels.get("org.opencontainers.image.version", "")
+
+                        final_owner = ""
+                        final_name  = ""
+
+                        if url:
+                            from urllib.parse import urlparse as _up2
+                            _parts = [c for c in _up2(url).path.split("/") if c]
+                            if len(_parts) >= 2 and _parts[0] not in _DOCKER_OFFICIAL_NS:
+                                # e.g. github.com/open-webui/open-webui → owner=open-webui name=open-webui
+                                final_owner = _sanitize(_parts[-2])
+                                final_name  = _sanitize(_parts[-1])
+                            elif _parts:
+                                final_owner = _sanitize(_parts[-1])
+
+                        # title label naam se zyada accurate hota hai
+                        if title:
+                            final_name = _sanitize(title) or final_name
+
+                        # version label se tag
+                        final_tag = _sanitize(ver_lbl) if ver_lbl else image_version
+
+                        # Fallbacks: agar labels se nahi mila
+                        if not final_owner:
+                            final_owner = _sanitize(item.harbor_owner or "")
+                        if not final_name:
+                            final_name = image_name or _sanitize(item.name or "")
+
+                        logger.info(f"[HarborPush] docker-archive (no RepoTags) labels → owner={final_owner} name={final_name} tag={final_tag}")
+
+                        desired_ref = f"{final_owner}/{final_name}:{final_tag}" if final_owner else f"{final_name}:{final_tag}"
+                        try:
+                            patched_tar = _patch_docker_archive_ref(temp_path, desired_ref)
+                            push_tar    = patched_tar
+                        except Exception as _pe:
+                            logger.warning(f"[HarborPush] no-RepoTag tar patch failed: {_pe} — original use")
+                        _owner_prefix  = f"{final_owner}/" if (final_owner and final_owner != project) else ""
+                        api_image      = f"{_owner_prefix}{final_name}"
+                        api_tag        = final_tag
+                        dest_image     = f"{harbor_host}/{project}/{api_image}:{api_tag}"
+                        image_owner    = final_owner
+                        image_name     = final_name
+                        image_version  = final_tag
+                        logger.info(f"[HarborPush] docker-archive (no RepoTags) → ref='{desired_ref}' dest={dest_image}")
+
+                    source_path, webdav_url = _webdav_upload_file(push_tar, uid)
 
             logger.info(f"[HarborPush] pushing → {dest_image}")
             _push_image_via_api(
                 harbor_host, harbor_user, harbor_pass,
-                project, f"{image_owner}/{image_name}", image_version,
-                source_path, source_type,
+                project, api_image, api_tag,
+                source_type=source_type,
+                webdav_path=source_path,
             )
             logger.info(f"[HarborPush] push OK → {dest_image}")
 
@@ -395,6 +807,11 @@ def harbor_push_activity(params: dict) -> dict:
                 _webdav_delete(webdav_url)
             if extract_tmp:
                 shutil.rmtree(extract_tmp, ignore_errors=True)
+            if patched_tar and os.path.isfile(patched_tar):
+                try:
+                    os.remove(patched_tar)
+                except OSError:
+                    pass
             if temp_path and os.path.isfile(temp_path):
                 try:
                     os.remove(temp_path)
