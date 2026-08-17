@@ -43,7 +43,14 @@ def get_ips(db: Session, Ips_id: int):
     return db.query(IPSModel).filter(IPSModel.id == Ips_id).first()
 
 def get_all_ips(db, skip, limit):
-    return db.query(IPSModel).offset(skip).limit(limit).all()
+    # Previously .all() had no total-count -- the caller was faking "total"
+    # as len(page_of_results), which is wrong on every page but the last.
+    # Return the real total alongside the page so pagination metadata is
+    # actually correct.
+    query = db.query(IPSModel).order_by(IPSModel.Pool_name.asc())
+    total = query.count()
+    items = query.offset(skip).limit(limit).all()
+    return items, total
 
 def get_all_pool_names(db: Session):
     return [row[0] for row in db.query(IPSModel.Pool_name).distinct().all()]

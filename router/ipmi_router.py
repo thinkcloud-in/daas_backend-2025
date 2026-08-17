@@ -12,8 +12,8 @@ async def add_ipmi_server(ipmi_data: IPMIDeviceRequest, db: Session = Depends(ge
     return await ipmi_controller.create_ipmi_server_route(ipmi_data, db)
 
 @ipmi_router.get("/get_all_ipmi_servers")
-async def get_all_ipmi_servers_route(db: Session = Depends(get_db)):
-    return await ipmi_controller.get_all_ipmi_servers_route(db)
+async def get_all_ipmi_servers_route(page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
+    return await ipmi_controller.get_all_ipmi_servers_route(db, page, page_size)
 
 @ipmi_router.get("/get_ipmi_server/{ipmi_id}", response_model=APIResponse[IPMIDeviceRequest])
 async def get_ipmi_server(ipmi_id: int, db: Session = Depends(get_db)):

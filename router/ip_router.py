@@ -17,8 +17,8 @@ def get_ip_pool(ips_id: int):
     return ip_controller.read_ips(ips_id)
 
 @ip_router.get("/get_all_ips")
-def get_all_ip_pools(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
-    return ip_controller.read_all_ips(skip, limit, db)
+def get_all_ip_pools(page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
+    return ip_controller.read_all_ips(page, page_size, db)
 
 @ip_router.get("/ip_pool_names", response_model=APIResponse[List[str]])
 def get_pool_names(db: Session = Depends(get_db)):
