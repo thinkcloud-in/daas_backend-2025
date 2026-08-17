@@ -1,8 +1,9 @@
-import requests, json, os
+import requests, json, os, urllib3
 from fastapi import Request, APIRouter
 router = APIRouter(prefix='/v1/grafana', tags=['Grafana'])
 from dotenv import load_dotenv
 load_dotenv()
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 GRAFANA_URL = os.getenv('GRAFANA_URL')
 TOKEN = os.getenv('GRAFANA_TOKEN')
  
@@ -87,7 +88,8 @@ async def query_grafana(request: Request):
             headers={
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {TOKEN}"
-            }
+            },
+            verify=False
         )
         response.raise_for_status()
         return response.json()
@@ -112,7 +114,8 @@ def get_dashboard(dashboard_uid: str):
             headers={
                 "Authorization": f"Bearer {TOKEN}",
                 "Content-Type": "application/json"
-            }
+            },
+            verify=False
         )
         response.raise_for_status()
         return response.json()
