@@ -50,7 +50,8 @@ def _db_update(deploy_id: int, **kwargs):
 # Stage 1 helper — OpenWebUI HTTP API se config update karo
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_password: str) -> str | None:
+def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_password: str,
+                   keys: list | None = None) -> str | None:
     """
     OpenWebUI /openai/config/update API se config update karo.
     Returns None on success, error string on failure.
@@ -58,6 +59,7 @@ def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_passwor
     import httpx
 
     svc = service_url.rstrip("/")
+    resolved_keys = keys if (keys and len(keys) == len(urls)) else ["sk-EMPTY"] * len(urls)
     try:
         # Admin JWT lo
         token = None
@@ -83,7 +85,7 @@ def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_passwor
         payload = {
             "ENABLE_OPENAI_API":    True,
             "OPENAI_API_BASE_URLS": urls,
-            "OPENAI_API_KEYS":      ["sk-EMPTY"] * len(urls),
+            "OPENAI_API_KEYS":      resolved_keys,
             "OPENAI_API_CONFIGS":   api_configs,
         }
         wr = httpx.post(f"{svc}/openai/config/update", headers=headers, json=payload, timeout=10)
@@ -99,7 +101,8 @@ def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_passwor
 # Stage 1.5 helper — PostgreSQL DB se direct config update karo
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list) -> str | None:
+def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list,
+                 keys: list | None = None) -> str | None:
     """
     OpenWebUI ke PostgreSQL DB ko directly update karo.
     Returns None on success, error string on failure.
@@ -113,6 +116,8 @@ def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list) -
         import psycopg2
     except ImportError:
         return "psycopg2 not installed"
+
+    resolved_keys = keys if (keys and len(keys) == len(urls)) else ["sk-EMPTY"] * len(urls)
 
     db = SessionLocal()
     try:
@@ -136,7 +141,7 @@ def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list) -
         _new_vals = {
             "ENABLE_OPENAI_API":    True,
             "OPENAI_API_BASE_URLS": urls,
-            "OPENAI_API_KEYS":      ["sk-EMPTY"] * len(urls),
+            "OPENAI_API_KEYS":      resolved_keys,
             "OPENAI_API_CONFIGS":   {u: {"enable": True, "prefix_id": None} for u in urls},
         }
 
@@ -192,6 +197,9 @@ def connect_llm_activity(payload: dict) -> dict:
     llm_ids              = payload["llm_ids"]
     new_ids              = payload["new_ids"]
     base_urls            = payload["base_urls"]
+    api_keys             = payload.get("api_keys") or ["sk-EMPTY"] * len(base_urls)
+    if len(api_keys) != len(base_urls):
+        api_keys = ["sk-EMPTY"] * len(base_urls)
     k8s_cluster_id       = payload["k8s_cluster_id"]
     dep_name             = payload["dep_name"]
     namespace            = payload["namespace"]
@@ -213,7 +221,7 @@ def connect_llm_activity(payload: dict) -> dict:
         _log_step(deploy_id, "Stage 1: Trying OpenWebUI HTTP API (admin JWT + /openai/config/update) ...")
 
         if service_url and admin_email and admin_password:
-            _http_err = _try_http_sync(service_url, base_urls, admin_email, admin_password)
+            _http_err = _try_http_sync(service_url, base_urls, admin_email, admin_password, keys=api_keys)
             if _http_err is None:
                 _log_step(deploy_id,
                     f"Stage 1: HTTP API update SUCCESS ✓ — model visible immediately (no pod restart needed)")
@@ -233,7 +241,7 @@ def connect_llm_activity(payload: dict) -> dict:
             activity.logger.info("[ConnectLLM] Stage 1.5 — trying PostgreSQL direct update")
             _log_step(deploy_id, "Stage 1.5: Trying PostgreSQL direct config update ...")
 
-            _pg_err = _try_pg_sync(deploy_id, postgresql_deploy_id, base_urls)
+            _pg_err = _try_pg_sync(deploy_id, postgresql_deploy_id, base_urls, keys=api_keys)
             if _pg_err is None:
                 _log_step(deploy_id,
                     "Stage 1.5: PostgreSQL config updated SUCCESS ✓ — "
@@ -325,7 +333,7 @@ def connect_llm_activity(payload: dict) -> dict:
 
             # ── Stage 5: Inject env vars + force restart annotation ───────────
             urls_str = ";".join(base_urls)
-            keys_str = ";".join(["sk-EMPTY"] * len(base_urls))
+            keys_str = ";".join(api_keys)
             activity.logger.info(
                 f"[ConnectLLM] Stage 5 — patching {len(base_urls)} URL(s): {urls_str}"
             )
@@ -343,11 +351,14 @@ def connect_llm_activity(payload: dict) -> dict:
             _DAAS_OW_API_KEY = "daas-openwebui-api-key"
             llm_keys  = {"OPENAI_API_BASE_URL", "OPENAI_API_BASE_URLS",
                          "OPENAI_API_KEY",       "OPENAI_API_KEYS"}
-            clean_env = [e for e in (target.env or []) if e.name not in llm_keys]
+            ssl_keys  = {"AIOHTTP_CLIENT_SESSION_SSL", "REQUESTS_VERIFY"}
+            clean_env = [e for e in (target.env or []) if e.name not in llm_keys | ssl_keys]
             clean_env.append(V1EnvVar(name="OPENAI_API_BASE_URL",  value=base_urls[0]))
             clean_env.append(V1EnvVar(name="OPENAI_API_BASE_URLS", value=urls_str))
-            clean_env.append(V1EnvVar(name="OPENAI_API_KEY",       value="sk-EMPTY"))
+            clean_env.append(V1EnvVar(name="OPENAI_API_KEY",       value=api_keys[0]))
             clean_env.append(V1EnvVar(name="OPENAI_API_KEYS",      value=keys_str))
+            clean_env.append(V1EnvVar(name="AIOHTTP_CLIENT_SESSION_SSL", value="false"))
+            clean_env.append(V1EnvVar(name="REQUESTS_VERIFY",           value="false"))
             if not any(e.name == "WEBUI_API_KEY" for e in clean_env):
                 clean_env.append(V1EnvVar(name="WEBUI_API_KEY", value=_DAAS_OW_API_KEY))
             target.env = clean_env
