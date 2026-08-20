@@ -117,6 +117,45 @@ def download_library_item(item_id: int, db: Session = Depends(get_db)):
     return RedirectResponse(url=file_url, status_code=302)
 
 
+# ── Harbor artifacts ─────────────────────────────────────────────────────────
+
+@library_router.get("/harbor/{registry_id}/artifacts", response_model=APIResponse[Any])
+def get_harbor_artifacts(
+    registry_id:   int,
+    project:       Optional[str] = Query(None, description="Harbor project name — specify karo to repositories list mile"),
+    repository:    Optional[str] = Query(None, description="Repository name — project ke saath specify karo to artifacts (tags) list mile"),
+    owner:         Optional[str] = Query(None, description="Owner prefix filter — sirf is owner ki repositories dikhao (e.g. raqsoft)"),
+    type_filter:   Optional[str] = Query(None, alias="type", description="Filter by ai.artifact.type (e.g. template, backup)"),
+    hypervisor:    Optional[str] = Query(None, description="Filter by ai.artifact.hypervisor (e.g. proxmox, vmware, hyper-v)"),
+    os_name:       Optional[str] = Query(None, description="Filter by os_name inside vm_template_details (e.g. linux, windows)"),
+    page:          int           = Query(1,  ge=1),
+    page_size:     int           = Query(20, ge=1, le=100),
+    db:            Session       = Depends(get_db),
+):
+    """
+    Harbor pe deploy hue artifacts fetch karo.
+
+    - `registry_id` alone                                         → sab projects list
+    - `registry_id` + `project`                                   → us project ke repositories list
+    - `registry_id` + `project` + `owner`                        → sirf us owner ki repositories
+    - `registry_id` + `project` + `repository`                   → us repo ke artifacts (tags) list
+    - `registry_id` + `project` + filter params                  → cross-repo filtered artifacts
+      Filters: artifact_type, hypervisor, os_name (partial match, case-insensitive)
+    """
+    return library_controller.list_harbor_artifacts(
+        registry_id=registry_id,
+        db=db,
+        project=project,
+        repository=repository,
+        owner=owner,
+        type_filter=type_filter,
+        hypervisor=hypervisor,
+        os_name=os_name,
+        page=page,
+        page_size=page_size,
+    )
+
+
 # ── Single item CRUD — parameterized routes last ──────────────────────────────
 
 @library_router.get("/{item_id}", response_model=APIResponse[Any])

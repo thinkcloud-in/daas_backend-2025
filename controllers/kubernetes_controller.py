@@ -862,11 +862,26 @@ async def test_k8s_cluster(cluster_id: int, db: Session) -> dict:
                                           {**result, "cluster_id": cluster_id})
 
 
-def list_k8s_clusters(db: Session) -> dict:
-    clusters = db.query(KubernetesCluster).order_by(KubernetesCluster.id.desc()).all()
-    return response_format.success_response(
-        200, "Kubernetes clusters listed", [_to_dict(c) for c in clusters]
+def list_k8s_clusters(db: Session, page: int = 1, page_size: int = 10) -> dict:
+    total    = db.query(KubernetesCluster).count()
+    offset   = (page - 1) * page_size
+    clusters = (
+        db.query(KubernetesCluster)
+        .order_by(KubernetesCluster.id.desc())
+        .offset(offset)
+        .limit(page_size)
+        .all()
     )
+    total_pages = (total + page_size - 1) // page_size if page_size else 1
+    return response_format.success_response(200, "Kubernetes clusters listed", {
+        "total":       total,
+        "page":        page,
+        "page_size":   page_size,
+        "total_pages": total_pages,
+        "has_next":    page < total_pages,
+        "has_prev":    page > 1,
+        "clusters":    [_to_dict(c) for c in clusters],
+    })
 
 
 async def get_k8s_cluster(cluster_id: int, db: Session) -> dict:

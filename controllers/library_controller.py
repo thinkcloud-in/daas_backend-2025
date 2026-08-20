@@ -229,6 +229,103 @@ def _update_progress_in_db(item_id: int, pct: int, db_session):
         db_session.rollback()
 
 
+async def _upload_harbor_direct_to_webdav(
+    record,
+    request:    Request,
+    db:         Session,
+    username:   str,
+    total_size: int,
+):
+    """Container type: browser stream → WebDAV seedha (no /tmp disk write)."""
+    import httpx as _httpx
+
+    subdir      = TYPE_SUBDIR.get(record.type, "container")
+    storage_url = (
+        os.getenv("STORAGE_INTERNAL_URL", "").rstrip("/")
+        or os.getenv("STORAGE_BASE_URL",  "").rstrip("/")
+    )
+    if not storage_url:
+        raise HTTPException(
+            status_code=500,
+            detail="STORAGE_INTERNAL_URL / STORAGE_BASE_URL not configured",
+        )
+
+    webdav_url = f"{storage_url}/{subdir}/{record.file_name}"
+    pod_path   = f"{LIBRARY_BASE_PATH}/{subdir}/{record.file_name}"
+    bytes_written = 0
+
+    async def _stream_gen():
+        nonlocal bytes_written
+        async for chunk in request.stream():
+            bytes_written += len(chunk)
+            yield chunk
+
+    try:
+        async with _httpx.AsyncClient(verify=False, timeout=None) as client:
+            resp = await client.put(
+                webdav_url,
+                content=_stream_gen(),
+                headers={"Content-Type": "application/octet-stream"},
+            )
+        if resp.status_code not in (200, 201, 204):
+            raise RuntimeError(
+                f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}"
+            )
+    except Exception as exc:
+        logger.error(f"[Library] Container WebDAV upload failed item={record.id}: {exc}")
+        try:
+            async with _httpx.AsyncClient(verify=False, timeout=10) as c:
+                await c.delete(webdav_url)
+        except Exception:
+            pass
+        record.status     = "failed"
+        record.push_error = str(exc)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Storage upload failed: {exc}")
+
+    logger.info(f"[Library] Container WebDAV OK: {webdav_url} ({bytes_written:,} bytes)")
+    record.file_path    = pod_path
+    record.file_size    = bytes_written or total_size or None
+    record.progress_pct = 100
+    record.status       = "ready"
+    db.commit()
+
+    push_workflow_id = f"harbor-push-{record.id}-{uuid.uuid4().hex[:8]}"
+    try:
+        temporal_client = await TemporalClientManager.get_temporal_client()
+        await temporal_client.start_workflow(
+            HarborPushWorkflow.run,
+            args=[{
+                "item_id":    record.id,
+                "pod_path":   pod_path,
+                "webdav_url": webdav_url,
+            }],
+            id=push_workflow_id,
+            task_queue=HARBOR_PUSH_TASK_QUEUE,
+            search_attributes=_make_search_attrs(record.name, "Harbor-Push", username),
+        )
+        record.push_workflow_id = push_workflow_id
+        record.push_status      = "pushing"
+        db.commit()
+        logger.info(f"[Library] Harbor-Push triggered: wf={push_workflow_id}")
+    except Exception as exc:
+        logger.error(f"[Library] Harbor-Push workflow start failed: {exc}")
+        record.push_status = "failed"
+        record.push_error  = str(exc)
+        db.commit()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Harbor-Push workflow start failed: {exc}",
+        )
+
+    return response_format.success_response(
+        200, "File uploaded and Harbor-Push started", {
+            **_item_to_dict(record),
+            "push_workflow_id": push_workflow_id,
+        }
+    )
+
+
 async def upload_library_file(
     item_id: int,
     request: Request,
@@ -247,6 +344,12 @@ async def upload_library_file(
     total_size = int(request.headers.get("content-length") or record.file_size or 0)
     _td        = os.getenv("STORAGE_TEMP_DIR", "")
     temp_dir   = _td if (_td and os.path.isdir(_td)) else None
+
+    # ── Container: stream directly to WebDAV (no /tmp) ───────────────────────
+    if record.type == "container":
+        return await _upload_harbor_direct_to_webdav(
+            record, request, db, username, total_size,
+        )
 
     # ── Phase 1 (common): browser stream → backend temp file ─────────────────
     temp_fd, temp_path = tempfile.mkstemp(
@@ -342,95 +445,6 @@ async def upload_library_file(
             raise HTTPException(status_code=500, detail=f"LLM-Push workflow start failed: {exc}")
 
         return response_format.success_response(200, "File received and LLM-Push started successfully", {
-            **_item_to_dict(record),
-            "push_workflow_id": push_workflow_id,
-        })
-
-    # ── container: WebDAV (STORAGE_BASE_URL via APISIX) pe upload, pod path set karo ──
-    if record.type == "container":
-        # Docker TAR se harbor_owner + name extract karo (agar pehle set nahi hua)
-        if not record.harbor_owner:
-            try:
-                import tarfile as _tf, json as _tjson
-                if _tf.is_tarfile(temp_path):
-                    _REGS = ("docker.io/", "ghcr.io/", "quay.io/",
-                             "registry-1.docker.io/", "index.docker.io/")
-                    def _strip_r(s):
-                        for _r in _REGS:
-                            if s.startswith(_r): return s[len(_r):]
-                        return s
-                    _owner, _iname = None, None
-                    with _tf.open(temp_path, "r:*") as _tar:
-                        for _en in ("repositories", "manifest.json"):
-                            try:
-                                _f = _tar.extractfile(_en)
-                                if not _f: continue
-                                _d = _tjson.loads(_f.read())
-                                if _en == "repositories":
-                                    for _rk in _d:
-                                        _comps = _strip_r(_rk).split("/")
-                                        if len(_comps) >= 2: _owner = _comps[-2]
-                                        if _comps: _iname = _comps[-1]
-                                        break
-                                else:
-                                    for _mf in _d:
-                                        for _rt in (_mf.get("RepoTags") or []):
-                                            _path = _strip_r(_rt.partition(":")[0])
-                                            _comps = _path.split("/")
-                                            if len(_comps) >= 2 and not _owner: _owner = _comps[-2]
-                                            if _comps and not _iname: _iname = _comps[-1]
-                                            break
-                                        if _owner: break
-                                if _owner: break
-                            except KeyError:
-                                continue
-                    if _owner:
-                        record.harbor_owner = _owner
-                    _placeholder = os.path.splitext(record.file_name)[0]
-                    if _iname and (not record.name or record.name == _placeholder):
-                        record.name = _iname
-                    if _owner or _iname:
-                        db.commit()
-                        logger.info(f"[Library] Container TAR → owner={record.harbor_owner} name={record.name}")
-            except Exception as _te:
-                logger.warning(f"[Library] Container TAR metadata (non-fatal): {_te}")
-
-        # Container: temp file seedha activity ko dete hain
-        # Activity STORAGE_INTERNAL_URL pe temp upload karega → push-image wrapper access karega
-        # (WebDAV intermediate step nahi — APISIX backend != push-image accessible storage)
-        logger.info(f"[Library] Container received → {temp_path} ({bytes_written:,} bytes)")
-        record.file_path    = temp_path
-        record.file_size    = bytes_written
-        record.progress_pct = 100
-        record.status       = "ready"
-        db.commit()
-
-        push_workflow_id = f"harbor-push-{item_id}-{uuid.uuid4().hex[:8]}"
-        try:
-            temporal_client = await TemporalClientManager.get_temporal_client()
-            await temporal_client.start_workflow(
-                HarborPushWorkflow.run,
-                args=[{"item_id": item_id, "temp_path": temp_path}],
-                id=push_workflow_id,
-                task_queue=HARBOR_PUSH_TASK_QUEUE,
-                search_attributes=_make_search_attrs(record.name, "Harbor-Push", username),
-            )
-            record.push_workflow_id = push_workflow_id
-            record.push_status      = "pushing"
-            db.commit()
-            logger.info(f"[Library] Harbor-Push triggered: wf={push_workflow_id}")
-        except Exception as exc:
-            logger.error(f"[Library] Harbor-Push workflow start failed: {exc}")
-            try:
-                os.remove(temp_path)
-            except OSError:
-                pass
-            record.push_status = "failed"
-            record.push_error  = str(exc)
-            db.commit()
-            raise HTTPException(status_code=500, detail=f"Harbor-Push workflow start failed: {exc}")
-
-        return response_format.success_response(200, "File received and Harbor-Push started successfully", {
             **_item_to_dict(record),
             "push_workflow_id": push_workflow_id,
         })
@@ -909,6 +923,263 @@ def get_library_item(item_id: int, db: Session):
         raise HTTPException(status_code=404, detail=f"Library item {item_id} not found")
     data = _attach_deployments([_item_to_dict(item)], db)[0]
     return response_format.success_response(200, "Library item fetched", data)
+
+
+def _parse_artifact_annotations(raw_ann: dict) -> dict:
+    """Harbor artifact ke OCI + ai.artifact.* annotations parse karo."""
+    import ast as _ast, json as _json
+
+    vm_details = {}
+    raw_details = (raw_ann.get("ai.artifact.vm_template_details") or "").strip()
+    if raw_details:
+        try:
+            vm_details = _ast.literal_eval(raw_details)
+        except Exception:
+            try:
+                vm_details = _json.loads(raw_details)
+            except Exception:
+                pass
+
+    return {
+        "artifact_type":       raw_ann.get("ai.artifact.artifact_type", ""),
+        "hypervisor":          raw_ann.get("ai.artifact.hypervisor", ""),
+        "size_bytes":          raw_ann.get("ai.artifact.size_bytes", ""),
+        "uploaded_by":         raw_ann.get("ai.artifact.uploaded_by", ""),
+        "type":                raw_ann.get("ai.artifact.type", ""),
+        "title":               raw_ann.get("org.opencontainers.image.title", ""),
+        "description":         raw_ann.get("org.opencontainers.image.description", ""),
+        "version":             raw_ann.get("org.opencontainers.image.version", ""),
+        "vendor":              raw_ann.get("org.opencontainers.image.vendor", ""),
+        "created":             raw_ann.get("org.opencontainers.image.created", ""),
+        "url":                 raw_ann.get("org.opencontainers.image.url", ""),
+        "vm_template_details": vm_details,
+    }
+
+
+def _artifact_matches(ann: dict, type_filter: str | None, hypervisor: str | None, os_name: str | None) -> bool:
+    """Parsed annotation dict ke against filters check karo (partial, case-insensitive)."""
+    if type_filter and type_filter.lower() not in ann.get("type", "").lower():
+        return False
+    if hypervisor and hypervisor.lower() not in ann.get("hypervisor", "").lower():
+        return False
+    if os_name:
+        details = ann.get("vm_template_details") or {}
+        if os_name.lower() not in (details.get("os_name") or "").lower():
+            return False
+    return True
+
+
+def list_harbor_artifacts(
+    registry_id: int,
+    db:          Session,
+    project:     str | None = None,
+    repository:  str | None = None,
+    owner:       str | None = None,
+    type_filter: str | None = None,
+    hypervisor:  str | None = None,
+    os_name:     str | None = None,
+    page:        int        = 1,
+    page_size:   int        = 20,
+):
+    """
+    Harbor pe deploy hue artifacts ki list fetch karo.
+    - registry_id alone                     → sab projects list
+    - + project                             → us project ke repositories list
+    - + project + repository                → us repo ke artifacts (tags) list
+    - + project + filter params             → cross-repo filtered artifacts
+    """
+    import httpx as _httpx
+    from models.kubernetes_deploy_model import KubernetesDeployment
+
+    harbor = db.query(KubernetesDeployment).filter(KubernetesDeployment.id == registry_id).first()
+    if not harbor:
+        raise HTTPException(status_code=404, detail=f"Harbor registry id={registry_id} not found")
+    if not harbor.harbor_url:
+        raise HTTPException(status_code=409, detail=f"Harbor registry id={registry_id} has no harbor_url")
+
+    base = harbor.harbor_url.rstrip("/")
+    auth = (harbor.harbor_user or "admin", harbor.harbor_pass or "")
+    host = base.replace("http://", "").replace("https://", "")
+
+    _timeout = _httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
+
+    def _get(path: str, p: dict | None = None) -> list:
+        url = f"{base}/api/v2.0{path}"
+        try:
+            r = _httpx.get(url, auth=auth, params=p or {},
+                           timeout=_timeout, verify=False)
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=f"Harbor API unreachable ({base}): {e}")
+        if r.status_code == 401:
+            raise HTTPException(status_code=502, detail="Harbor credentials invalid (401)")
+        if r.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Harbor resource not found: {path}")
+        if not r.is_success:
+            raise HTTPException(status_code=502, detail=f"Harbor API error {r.status_code}: {r.text[:200]}")
+        return r.json() if r.text.strip() else []
+
+    def _format_artifact(a: dict, repo_name: str) -> dict:
+        tags    = [t["name"] for t in (a.get("tags") or []) if t.get("name")]
+        ann     = _parse_artifact_annotations(a.get("annotations") or {})
+        return {
+            "digest":       a.get("digest", ""),
+            "tags":         tags,
+            "repository":   repo_name,
+            "size":         a.get("size", 0),
+            "push_time":    a.get("push_time", ""),
+            "annotations":  ann,
+            "pull_command": f"docker pull {host}/{project}/{repo_name}:{tags[0]}" if tags else "",
+        }
+
+    _OCI_MANIFEST_ACCEPT = (
+        "application/vnd.oci.image.manifest.v1+json,"
+        "application/vnd.docker.distribution.manifest.v2+json"
+    )
+
+    def _oci_tags(full_name: str) -> list:
+        """OCI /v2/ API se tags list — literal slashes in path, no %2F issue."""
+        url = f"{base}/v2/{full_name}/tags/list"
+        try:
+            r = _httpx.get(url, auth=auth, timeout=_timeout, verify=False)
+        except Exception:
+            return []
+        return r.json().get("tags") or [] if r.is_success else []
+
+    def _oci_manifest(full_name: str, ref: str) -> dict:
+        """OCI /v2/ API se manifest (with annotations) fetch karo."""
+        url = f"{base}/v2/{full_name}/manifests/{ref}"
+        try:
+            r = _httpx.get(url, auth=auth, timeout=_timeout, verify=False,
+                           headers={"Accept": _OCI_MANIFEST_ACCEPT})
+        except Exception:
+            return {}
+        return r.json() if r.is_success else {}
+
+    def _oci_artifact(full_name: str, repo_name: str, tag: str) -> dict | None:
+        """OCI manifest → artifact dict."""
+        manifest = _oci_manifest(full_name, tag)
+        if not manifest:
+            return None
+        size   = sum(lyr.get("size", 0) for lyr in (manifest.get("layers") or []))
+        digest = manifest.get("config", {}).get("digest", "")
+        return {
+            "digest":     digest,
+            "tags":       [tag],
+            "name":       repo_name.split("/")[-1],
+            "repository": repo_name,
+            "size":       size,
+            "full_image": f"{host}/{full_name}:{tag}",
+        }
+
+    # ── Filter mode: project + any filter → cross-repo search ───────────────
+    _filters_set = any([type_filter, hypervisor, os_name])
+    if project and _filters_set:
+        # 1. Sab repos fetch karo (up to 200)
+        all_repos_raw = _get(f"/projects/{project}/repositories", {"page": 1, "page_size": 100})
+        if len(all_repos_raw) == 100:
+            all_repos_raw += _get(f"/projects/{project}/repositories", {"page": 2, "page_size": 100})
+
+        matched: list = []
+        for repo_raw in (all_repos_raw if isinstance(all_repos_raw, list) else []):
+            full_name = repo_raw.get("name", "")       # "library/raqsoft/proxmox-template"
+            repo_name = full_name.split("/", 1)[-1]    # "raqsoft/proxmox-template"
+            if owner and not repo_name.startswith(f"{owner}/"):
+                continue
+            # OCI /v2/ API — repo name ke slashes directly URL mein, no %2F needed
+            for tag in _oci_tags(full_name):
+                raw_ann = _oci_manifest(full_name, tag).get("annotations") or {}
+                ann     = _parse_artifact_annotations(raw_ann)
+                if _artifact_matches(ann, type_filter, hypervisor, os_name):
+                    art = _oci_artifact(full_name, repo_name, tag)
+                    if art:
+                        matched.append(art)
+
+        total       = len(matched)
+        offset      = (page - 1) * page_size
+        paged       = matched[offset: offset + page_size]
+        total_pages = (total + page_size - 1) // page_size if page_size else 1
+        return response_format.success_response(200, "Filtered artifacts", {
+            "registry_id": registry_id,
+            "harbor_url":  base,
+            "project":     project,
+            "filters":     {"type": type_filter, "hypervisor": hypervisor, "os_name": os_name},
+            "total":       total,
+            "page":        page,
+            "page_size":   page_size,
+            "total_pages": total_pages,
+            "has_next":    page < total_pages,
+            "has_prev":    page > 1,
+            "artifacts":   paged,
+        })
+
+    # ── Level 3: project + repository → artifacts list ──────────────────────
+    if project and repository:
+        full_name = f"{project}/{repository}"   # "library/raqsoft/proxmox-template"
+        tags      = _oci_tags(full_name)
+        artifacts = []
+        for tag in tags:
+            art = _oci_artifact(full_name, repository, tag)
+            if art:
+                artifacts.append(art)
+        return response_format.success_response(200, f"Artifacts in {project}/{repository}", {
+            "registry_id": registry_id,
+            "harbor_url":  base,
+            "project":     project,
+            "repository":  repository,
+            "page":        page,
+            "page_size":   page_size,
+            "count":       len(artifacts),
+            "artifacts":   artifacts,
+        })
+
+    # ── Level 2: project → repositories list ────────────────────────────────
+    if project:
+        raw   = _get(f"/projects/{project}/repositories", {"page": page, "page_size": page_size})
+        repos = []
+        for r in (raw if isinstance(raw, list) else []):
+            full_name = r.get("name", "")
+            repo_name = full_name.split("/", 1)[-1]
+            if owner and not repo_name.startswith(f"{owner}/"):
+                continue
+            repos.append({
+                "name":           repo_name,
+                "full_name":      full_name,
+                "artifact_count": r.get("artifact_count", 0),
+                "pull_count":     r.get("pull_count", 0),
+                "update_time":    r.get("update_time", ""),
+            })
+        return response_format.success_response(200, f"Repositories in project '{project}'", {
+            "registry_id":  registry_id,
+            "harbor_url":   base,
+            "project":      project,
+            "owner":        owner,
+            "page":         page,
+            "page_size":    page_size,
+            "count":        len(repos),
+            "repositories": repos,
+        })
+
+    # ── Level 1: projects list ───────────────────────────────────────────────
+    raw      = _get("/projects", {"page": page, "page_size": page_size})
+    projects = []
+    for p in (raw if isinstance(raw, list) else []):
+        projects.append({
+            "id":            p.get("id"),
+            "name":          p.get("name", ""),
+            "repo_count":    p.get("repo_count", 0),
+            "chart_count":   p.get("chart_count", 0),
+            "creation_time": p.get("creation_time", ""),
+            "update_time":   p.get("update_time", ""),
+            "public":        p.get("metadata", {}).get("public", "false") == "true",
+        })
+    return response_format.success_response(200, "Harbor projects list", {
+        "registry_id": registry_id,
+        "harbor_url":  base,
+        "page":        page,
+        "page_size":   page_size,
+        "count":       len(projects),
+        "projects":    projects,
+    })
 
 
 def get_library_item_path(item_id: int, db: Session) -> tuple[str, str]:

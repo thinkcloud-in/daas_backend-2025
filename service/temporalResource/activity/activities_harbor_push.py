@@ -512,8 +512,10 @@ def _push_image_via_api(
 @activity.defn(name="harbor_push_activity")
 def harbor_push_activity(params: dict) -> dict:
     item_id   = params["item_id"]
-    temp_path = params.get("temp_path")
-    db        = SessionLocal()
+    temp_path          = params.get("temp_path")
+    pod_path           = params.get("pod_path")
+    webdav_cleanup_url = params.get("webdav_url")
+    db                 = SessionLocal()
 
     def _update(status: str, error: str = None, image: str = None,
                 version: str = None, owner: str = None,
@@ -630,15 +632,39 @@ def harbor_push_activity(params: dict) -> dict:
             f"version={image_version} source_type={source_type}"
         )
 
-        # ── 4. WebDAV upload → push-image API (skopeo) → Harbor ─────────────────
-        # owner == project → double prefix bachao: sirf image_name use karo
+        # ── 4. Push to Harbor ─────────────────────────────────────────────────
         _owner_prefix = f"{image_owner}/" if (image_owner and image_owner != project) else ""
         dest_image    = f"{harbor_host}/{project}/{_owner_prefix}{image_name}:{image_version}"
+        api_image     = f"{_owner_prefix}{image_name}"
+        api_tag       = image_version
+
+        if pod_path:
+            # File already on PV via direct WebDAV upload — skip local processing
+            file_ext  = os.path.splitext(pod_path)[1].lower()
+            _src_type = "oci" if file_ext == ".zip" else "docker-archive"
+            logger.info(f"[HarborPush] pod_path mode → {pod_path} ({_src_type})")
+            _push_image_via_api(
+                harbor_host, harbor_user, harbor_pass,
+                project, api_image, api_tag,
+                source_type=_src_type,
+                webdav_path=pod_path,
+            )
+            logger.info(f"[HarborPush] push OK → {dest_image}")
+            _update("pushed", image=dest_image, version=image_version,
+                    owner=image_owner, h_user=harbor_user, h_pass=harbor_pass,
+                    name=image_name)
+            logger.info(f"[HarborPush] item={item_id} done → {dest_image}")
+            return {
+                "status":       "pushed",
+                "harbor_image": dest_image,
+                "version":      image_version,
+                "owner":        image_owner,
+                "name":         image_name,
+            }
+
         extract_tmp   = None
         webdav_url    = None
         patched_tar   = None   # docker-archive patch → temp file, cleanup needed
-        api_image     = f"{_owner_prefix}{image_name}"
-        api_tag       = image_version
         try:
             uid = uuid.uuid4().hex[:8]
             if is_oci_dir_zip:
@@ -845,6 +871,8 @@ def harbor_push_activity(params: dict) -> dict:
         raise
 
     finally:
+        if webdav_cleanup_url:
+            _webdav_delete(webdav_cleanup_url)
         try:
             db.close()
         except Exception:

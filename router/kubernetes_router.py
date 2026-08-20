@@ -1,6 +1,6 @@
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -68,11 +68,15 @@ async def test_saved_cluster(cluster_id: int, db: Session = Depends(get_db)):
 
 
 @kubernetes_router.get("", response_model=APIResponse[Any])
-def list_clusters(db: Session = Depends(get_db)):
+def list_clusters(
+    page:      int = Query(1,  ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    db:        Session = Depends(get_db),
+):
     """
     Saare saved Kubernetes clusters list karo.
     """
-    return kubernetes_controller.list_k8s_clusters(db)
+    return kubernetes_controller.list_k8s_clusters(db, page=page, page_size=page_size)
 
 
 @kubernetes_router.put("/{cluster_id}", response_model=APIResponse[Any])

@@ -900,7 +900,7 @@ _KEYCLOAK_ENV_KEYS = {
     "ENABLE_OAUTH_SIGNUP", "OAUTH_PROVIDER_NAME", "OPENID_PROVIDER_URL",
     "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_MERGE_ACCOUNTS_BY_EMAIL",
     "ENABLE_LOGIN_FORM", "OAUTH_SCOPES", "DEFAULT_USER_ROLE",
-    "OAUTH_ROLES_CLAIM", "OAUTH_ADMIN_ROLES",
+    "OAUTH_ROLES_CLAIM", "OAUTH_ADMIN_ROLES", "SSL_CERT_FILE",
 }
 
 
@@ -1776,6 +1776,165 @@ def repair_database_url(openwebui_id: int, db: Session) -> dict:
     })
 
 
+def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
+    """
+    Keycloak ke liye CA cert auto-setup:
+    1. Keycloak se public cert extract (ssl module — no manual openssl cmd needed)
+    2. certifi bundle + custom cert combine karo
+    3. ConfigMap ow-combined-ca create/update karo
+    4. OW deployment pe volume + volumeMount add karo (idempotent)
+    SSL_CERT_FILE env var connect_keycloak mein oauth_env_vars ke through set hoti hai.
+    Returns None on success, error string on failure.
+    """
+    import ssl, socket, tempfile, os, yaml, re
+    from urllib.parse import urlparse
+    from kubernetes import client as kc_api, config as kcfg
+    from kubernetes.client.rest import ApiException
+    from kubernetes.client.models import V1Volume, V1ConfigMapVolumeSource, V1VolumeMount
+
+    parsed = urlparse(kc_url)
+    host = parsed.hostname
+    port = parsed.port or 443
+
+    if not host:
+        return f"Cannot parse host from kc_url={kc_url!r}"
+
+    # Step 1: Keycloak ka public cert extract karo
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        with socket.create_connection((host, port), timeout=10) as sock:
+            with ctx.wrap_socket(sock, server_hostname=host) as ssock:
+                der_cert = ssock.getpeercert(binary_form=True)
+        pem_cert = ssl.DER_cert_to_PEM_cert(der_cert)
+    except Exception as e:
+        return f"Keycloak cert extract failed ({host}:{port}): {e}"
+
+    # Step 2: certifi bundle + custom cert combine karo
+    try:
+        import certifi
+        with open(certifi.where(), "r") as f:
+            certifi_bundle = f.read()
+    except Exception as e:
+        return f"certifi bundle read failed: {e}"
+
+    combined = certifi_bundle.rstrip() + "\n" + pem_cert
+
+    # Step 3: K8s client load karo
+    from db_configuration.config import SessionLocal as _SL
+    _db = _SL()
+    try:
+        cluster = _db.query(KubernetesCluster).filter(
+            KubernetesCluster.id == ow.k8s_cluster_id
+        ).first()
+        if not cluster or not cluster.kubeconfig:
+            return "K8s cluster/kubeconfig not found"
+        kubeconfig_yaml = cluster.kubeconfig
+        control_ip      = cluster.control_ip
+    finally:
+        _db.close()
+
+    kc_dict = yaml.safe_load(kubeconfig_yaml)
+    if control_ip:
+        for ce in kc_dict.get("clusters", []):
+            srv = ce.get("cluster", {}).get("server", "")
+            if srv:
+                ce["cluster"]["server"] = re.sub(
+                    r"https://[^:/]+", f"https://{control_ip}", srv
+                )
+
+    kc_path = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            yaml.dump(kc_dict, f)
+            kc_path = f.name
+        kcfg.load_kube_config(config_file=kc_path)
+    finally:
+        if kc_path:
+            try:
+                os.unlink(kc_path)
+            except OSError:
+                pass
+
+    namespace = ow.namespace or "default"
+    core_v1   = kc_api.CoreV1Api()
+    apps_v1   = kc_api.AppsV1Api()
+
+    # Step 4: ConfigMap create/update karo
+    cm_name = "ow-combined-ca"
+    cm_body = kc_api.V1ConfigMap(
+        metadata=kc_api.V1ObjectMeta(name=cm_name, namespace=namespace),
+        data={"cacert.pem": combined},
+    )
+    try:
+        try:
+            core_v1.read_namespaced_config_map(name=cm_name, namespace=namespace)
+            core_v1.replace_namespaced_config_map(name=cm_name, namespace=namespace, body=cm_body)
+            logger.info(f"[CASetup] ConfigMap {cm_name} updated in ns={namespace}")
+        except ApiException as e:
+            if e.status == 404:
+                core_v1.create_namespaced_config_map(namespace=namespace, body=cm_body)
+                logger.info(f"[CASetup] ConfigMap {cm_name} created in ns={namespace}")
+            else:
+                raise
+    except Exception as e:
+        return f"ConfigMap create/update failed: {e}"
+
+    # Step 5: Deployment pe volume + volumeMount add karo (idempotent)
+    rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
+    rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
+    dep_name = f"{rname}-openwebui"
+
+    try:
+        deployment = apps_v1.read_namespaced_deployment(name=dep_name, namespace=namespace)
+
+        volumes    = list(deployment.spec.template.spec.volumes or [])
+        vol_exists = any(v.name == "ow-ca" for v in volumes)
+
+        target = None
+        for c in (deployment.spec.template.spec.containers or []):
+            if c.name == "openwebui":
+                target = c
+                break
+        if target is None:
+            return f"Container 'openwebui' not found in deployment '{dep_name}'"
+
+        mounts       = list(target.volume_mounts or [])
+        mount_exists = any(m.name == "ow-ca" for m in mounts)
+
+        changed = False
+        if not vol_exists:
+            volumes.append(V1Volume(
+                name="ow-ca",
+                config_map=V1ConfigMapVolumeSource(name=cm_name),
+            ))
+            deployment.spec.template.spec.volumes = volumes
+            changed = True
+
+        if not mount_exists:
+            mounts.append(V1VolumeMount(
+                name="ow-ca",
+                mount_path="/etc/ssl/custom-ca",
+                read_only=True,
+            ))
+            target.volume_mounts = mounts
+            changed = True
+
+        if changed:
+            apps_v1.replace_namespaced_deployment(name=dep_name, namespace=namespace, body=deployment)
+            logger.info(f"[CASetup] Deployment {dep_name} patched: ow-ca volume+mount added")
+        else:
+            logger.info(f"[CASetup] Volume/mount already present in {dep_name} — skipped")
+
+    except ApiException as e:
+        return f"Deployment patch failed: {e}"
+    except Exception as e:
+        return f"Volume/mount setup failed: {e}"
+
+    return None
+
+
 def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
     import os, json as _json
 
@@ -1830,6 +1989,7 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
         "DEFAULT_USER_ROLE":             "user",
         "OAUTH_ROLES_CLAIM":             "realm_access.roles",
         "OAUTH_ADMIN_ROLES":             "admin",
+        "SSL_CERT_FILE":                 "/etc/ssl/custom-ca/cacert.pem",
     }
 
     _kc_api_patch = {
@@ -1875,7 +2035,12 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
         _form_disabled = (_exec_err_msg is None)
         logger.info(f"[Keycloak] PG exec → {'ok' if _form_disabled else _exec_err_msg}")
 
-    # ── Step 2: K8s env vars patch (OAuth credentials + pod restart) ─────────
+    # ── Step 2: CA cert auto-setup (ConfigMap + volume/mount) ────────────────
+    _ca_err = _setup_keycloak_ca_cert(ow, kc_url)
+    if _ca_err:
+        logger.warning(f"[Keycloak] CA cert auto-setup failed: {_ca_err} — SSL_CERT_FILE set but cert may be missing")
+
+    # ── Step 3: K8s env vars patch (OAuth credentials + SSL_CERT_FILE + pod restart) ──
     err = _k8s_patch_keycloak(ow, oauth_env_vars, db)
     if err:
         raise HTTPException(status_code=502, detail=f"K8s patch failed: {err}")
