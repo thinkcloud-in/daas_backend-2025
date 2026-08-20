@@ -88,8 +88,11 @@ async def delete_ipmi_server(db: Session, ipmi_id: int,email: Optional[str] = No
     result = await handle.result()
     return result
 
-def get_all_ipmi_servers(db: Session):
-    return db.query(IPMIDevice).all()
+def get_all_ipmi_servers(db: Session, skip: int = 0, limit: int = 10):
+    query = db.query(IPMIDevice).order_by(IPMIDevice.id.asc())
+    total = query.count()
+    items = query.offset(skip).limit(limit).all()
+    return items, total
 
 def get_ipmi_server_id(db: Session, ipmi_id: int):
     ipmi_device = db.query(IPMIDevice).filter(IPMIDevice.id == ipmi_id).first()

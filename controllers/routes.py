@@ -266,10 +266,23 @@ async def create_cluster_endpoint(cluster_data: models.CreateClusterBase):
 
 #Route to list all the clusters
 @router.get('/cluster/clusters', response_model=APIResponse[Any])
-async def list_clusters(db: Session = Depends(get_db)):
-    clusters = db.query(models.Cluster).all()
+async def list_clusters(page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    query = db.query(models.Cluster).order_by(models.Cluster.id.asc())
+    total = query.count()
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    clusters = query.offset((page - 1) * page_size).limit(page_size).all()
     clusters_json = jsonable_encoder(clusters)
-    return response_format.success_response(200, "Clusters retrieved successfully.", clusters_json)
+    pagination = {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
+    return response_format.success_response(200, "Clusters retrieved successfully.", {"items": clusters_json, "pagination": pagination})
 
 #get pool details based on id
 @router.get("/cluster/{cluster_id}", response_model=APIResponse)

@@ -379,10 +379,21 @@ async def update_ldap_config_activity(Ldap: LDAPCredential,ldap_id:str):
         url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/components/{ldap_id}"
         headers = keycloak_config.get_login_from_keycloak()
         response = requests.put(url, headers=headers, json=payload)
-       
-        if(response.status_code == 204):
-            all_ldaps= await keycloak_config.get_LDAPs_from_keycloak()
+
+        if response.status_code == 204:
+            all_ldaps = await keycloak_config.get_LDAPs_from_keycloak()
             return all_ldaps
-        return response.status_code
+        # Surface the real failure instead of silently reporting success --
+        # a non-204 here means Keycloak rejected the update (e.g. validation
+        # error), and the caller must not tell the user it succeeded.
+        try:
+            response_body = response.json()
+        except ValueError:
+            response_body = response.text
+        return {
+            "msg": "Error occurred",
+            "error": f"Keycloak returned status {response.status_code}",
+            "response": response_body,
+        }
     except Exception as e:
-        return {"msg": "Error occurred: " + str(e)}
+        return {"msg": "Error occurred", "error": str(e)}

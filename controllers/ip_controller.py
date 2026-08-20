@@ -26,10 +26,22 @@ def read_ips(ips_id: int, db: Session = Depends(get_db)):
         return error_response(404, "IPS entry not found")
     return success_response(200, "IPS entry retrieved successfully", data)
 
-def read_all_ips(skip: int, limit: int, db: Session):
-    data = get_all_ips(db, skip=skip, limit=limit)
-    data_dict = [to_dict(item) for item in data]
-    return paginated_success_response(200, offset=skip, limit=limit, total=len(data), msg="All IPS entries retrieved successfully", data=data_dict)
+def read_all_ips(page: int, page_size: int, db: Session):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    skip = (page - 1) * page_size
+    items, total = get_all_ips(db, skip=skip, limit=page_size)
+    data_dict = [to_dict(item) for item in items]
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    pagination = {
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+        "total_pages": total_pages,
+        "has_next": page < total_pages,
+        "has_prev": page > 1,
+    }
+    return success_response(200, "All IPS entries retrieved successfully", {"items": data_dict, "pagination": pagination})
 
 def read_pool_names(db: Session):
     data = get_all_pool_names(db)

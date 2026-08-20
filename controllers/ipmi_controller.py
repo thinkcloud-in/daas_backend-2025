@@ -14,11 +14,23 @@ async def create_ipmi_server_route(ipmi_data, db):
 def model_to_dict(obj):
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
-async def get_all_ipmi_servers_route(db):
+async def get_all_ipmi_servers_route(db, page: int = 1, page_size: int = 10):
     try:
-        data = get_all_ipmi_servers(db)
-        result = [model_to_dict(item) for item in data]
-        return response_format.success_response(200, "IPMI Servers retrieved successfully.", result)
+        page = max(1, page)
+        page_size = max(1, min(page_size, 100))
+        skip = (page - 1) * page_size
+        items, total = get_all_ipmi_servers(db, skip=skip, limit=page_size)
+        result = [model_to_dict(item) for item in items]
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        pagination = {
+            "page": page,
+            "page_size": page_size,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1,
+        }
+        return response_format.success_response(200, "IPMI Servers retrieved successfully.", {"items": result, "pagination": pagination})
     except Exception as e:
         return response_format.error_response(500, "Failed to retrieve IPMI Servers", str(e))
 
