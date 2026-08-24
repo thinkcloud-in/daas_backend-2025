@@ -956,14 +956,23 @@ def _parse_artifact_annotations(raw_ann: dict) -> dict:
     }
 
 
-def _artifact_matches(ann: dict, type_filter: str | None, hypervisor: str | None, os_name: str | None) -> bool:
+def _artifact_matches(
+    ann:         dict,
+    type_filter: str | None,
+    hypervisor:  str | None,
+    os_type:     str | None,
+    os_name:     str | None = None,
+) -> bool:
     """Parsed annotation dict ke against filters check karo (partial, case-insensitive)."""
     if type_filter and type_filter.lower() not in ann.get("type", "").lower():
         return False
     if hypervisor and hypervisor.lower() not in ann.get("hypervisor", "").lower():
         return False
+    details = ann.get("vm_template_details") or {}
+    if os_type:
+        if os_type.lower() not in (details.get("os_type") or "").lower():
+            return False
     if os_name:
-        details = ann.get("vm_template_details") or {}
         if os_name.lower() not in (details.get("os_name") or "").lower():
             return False
     return True
@@ -978,6 +987,7 @@ def list_harbor_artifacts(
     type_filter: str | None = None,
     hypervisor:  str | None = None,
     os_type:     str | None = None,
+    os_name:     str | None = None,
     page:        int        = 1,
     page_size:   int        = 20,
 ):
@@ -1035,6 +1045,12 @@ def list_harbor_artifacts(
         "application/vnd.oci.image.manifest.v1+json,"
         "application/vnd.docker.distribution.manifest.v2+json"
     )
+    _TEMPLATE_ANN_EXCLUDE = frozenset({
+        "org.opencontainers.image.description",
+        "org.opencontainers.image.url",
+        "org.opencontainers.image.vendor",
+        "org.opencontainers.image.version",
+    })
 
     def _oci_tags(full_name: str) -> list:
         """OCI /v2/ API se tags list — literal slashes in path, no %2F issue."""
@@ -1060,19 +1076,26 @@ def list_harbor_artifacts(
         manifest = _oci_manifest(full_name, tag)
         if not manifest:
             return None
-        size   = sum(lyr.get("size", 0) for lyr in (manifest.get("layers") or []))
-        digest = manifest.get("config", {}).get("digest", "")
+        size    = sum(lyr.get("size", 0) for lyr in (manifest.get("layers") or []))
+        digest  = manifest.get("config", {}).get("digest", "")
+        raw_ann = manifest.get("annotations") or {}
+        # model: saari annotations, template: OCI standard keys exclude
+        if type_filter == "model":
+            annotations = raw_ann
+        else:
+            annotations = {k: v for k, v in raw_ann.items() if k not in _TEMPLATE_ANN_EXCLUDE}
         return {
-            "digest":     digest,
-            "tags":       [tag],
-            "name":       repo_name.split("/")[-1],
-            "repository": repo_name,
-            "size":       size,
-            "full_image": f"{host}/{full_name}:{tag}",
+            "digest":      digest,
+            "tags":        [tag],
+            "name":        repo_name.split("/")[-1],
+            "repository":  repo_name,
+            "size":        size,
+            "full_image":  f"{host}/{full_name}:{tag}",
+            "annotations": annotations,
         }
 
     # ── Filter mode: project + any filter → cross-repo search ───────────────
-    _filters_set = any([type_filter, hypervisor, os_type])
+    _filters_set = any([type_filter, hypervisor, os_type, os_name])
     if project and _filters_set:
         # 1. Sab repos fetch karo (up to 200)
         all_repos_raw = _get(f"/projects/{project}/repositories", {"page": 1, "page_size": 100})
@@ -1089,7 +1112,7 @@ def list_harbor_artifacts(
             for tag in _oci_tags(full_name):
                 raw_ann = _oci_manifest(full_name, tag).get("annotations") or {}
                 ann     = _parse_artifact_annotations(raw_ann)
-                if _artifact_matches(ann, type_filter, hypervisor, os_type):
+                if _artifact_matches(ann, type_filter, hypervisor, os_type, os_name):
                     art = _oci_artifact(full_name, repo_name, tag)
                     if art:
                         matched.append(art)
@@ -1102,7 +1125,6 @@ def list_harbor_artifacts(
             "registry_id": registry_id,
             "harbor_url":  base,
             "project":     project,
-            "filters":     {"type": type_filter, "hypervisor": hypervisor, "os_type": os_type},
             "total":       total,
             "page":        page,
             "page_size":   page_size,

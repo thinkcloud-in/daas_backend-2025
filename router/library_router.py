@@ -127,7 +127,8 @@ def get_harbor_artifacts(
     owner:         Optional[str] = Query(None, description="Owner prefix filter — sirf is owner ki repositories dikhao (e.g. raqsoft)"),
     type_filter:   Optional[str] = Query(None, alias="type", description="Filter by ai.artifact.type (e.g. template, backup)"),
     hypervisor:    Optional[str] = Query(None, description="Filter by ai.artifact.hypervisor (e.g. proxmox, vmware, hyper-v)"),
-    os_type:       Optional[str] = Query(None, description="Filter by os_name inside vm_template_details (e.g. linux, windows)"),
+    os_type:       Optional[str] = Query(None, description="Filter by os_type field in vm_template_details (e.g. linux, windows)"),
+    os_name:       Optional[str] = Query(None, description="Filter by os_name field in vm_template_details (e.g. ubuntu, centos)"),
     page:          int           = Query(1,  ge=1),
     page_size:     int           = Query(20, ge=1, le=100),
     db:            Session       = Depends(get_db),
@@ -140,7 +141,7 @@ def get_harbor_artifacts(
     - `registry_id` + `project` + `owner`                        → sirf us owner ki repositories
     - `registry_id` + `project` + `repository`                   → us repo ke artifacts (tags) list
     - `registry_id` + `project` + filter params                  → cross-repo filtered artifacts
-      Filters: artifact_type, hypervisor, os_name (partial match, case-insensitive)
+      Filters: artifact_type, hypervisor, os_type, os_name (partial match, case-insensitive)
     """
     return library_controller.list_harbor_artifacts(
         registry_id=registry_id,
@@ -151,6 +152,7 @@ def get_harbor_artifacts(
         type_filter=type_filter,
         hypervisor=hypervisor,
         os_type=os_type,
+        os_name=os_name,
         page=page,
         page_size=page_size,
     )
