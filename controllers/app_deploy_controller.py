@@ -820,13 +820,13 @@ def _ow_pg_exec_set_config(ow: "AppDeployment", patch: dict, db: "Session") -> s
     try:
         core_v1 = kc.CoreV1Api()
         pg_ns   = pg.namespace or "postgresql"
-        pods    = core_v1.list_namespaced_pod(pg_ns)
+        pods    = core_v1.list_namespaced_pod(pg_ns, label_selector="daas-type=postgresql")
         pod     = next(
             (p for p in pods.items if (p.status.phase or "").lower() == "running"),
             None,
         )
         if pod is None:
-            return f"No running pod in PostgreSQL namespace '{pg_ns}'"
+            return f"No running postgresql pod in namespace '{pg_ns}'"
         pod_name = pod.metadata.name
     except Exception as e:
         return f"PG pod list failed: {str(e)[:200]}"
@@ -2025,12 +2025,14 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
     # OW API ya network routing ki zaroorat nahi — PG pod ke andar psql chalate hain
     if not _form_disabled:
         _exec_err_msg = _ow_pg_exec_set_config(ow, {
-            "ui.enable_login_form":   False,
-            "ui.enable_signup":       False,
-            "ui.enable_oauth_signup": False,
-            "enable_login_form":      False,
-            "enable_signup":          False,
-            "enable_oauth_signup":    False,
+            "ui.enable_login_form":                  False,
+            "ui.enable_signup":                      False,
+            "ui.enable_oauth_signup":                False,
+            "ui.oauth_auto_redirect_to_provider":    True,
+            "enable_login_form":                     False,
+            "enable_signup":                         False,
+            "enable_oauth_signup":                   False,
+            "oauth_auto_redirect_to_provider":       True,
         }, db)
         _form_disabled = (_exec_err_msg is None)
         logger.info(f"[Keycloak] PG exec → {'ok' if _form_disabled else _exec_err_msg}")
@@ -2094,10 +2096,12 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
     # ── Step 1.5: PostgreSQL pod exec — config table restore karo ───────────────
     if not _form_restored:
         _exec_restore_err = _ow_pg_exec_set_config(ow, {
-            "ui.enable_login_form": True,
-            "ui.enable_signup":     False,
-            "enable_login_form":    True,
-            "enable_signup":        False,
+            "ui.enable_login_form":               True,
+            "ui.enable_signup":                   False,
+            "ui.oauth_auto_redirect_to_provider": False,
+            "enable_login_form":                  True,
+            "enable_signup":                      False,
+            "oauth_auto_redirect_to_provider":    False,
         }, db)
         _form_restored = (_exec_restore_err is None)
         logger.info(f"[Keycloak] PG exec restore → {'ok' if _form_restored else _exec_restore_err}")

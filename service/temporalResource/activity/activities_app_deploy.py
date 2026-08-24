@@ -467,7 +467,7 @@ def _postgresql_manifest(rname: str, namespace: str, image: str,
             "metadata": {"name": svc_name, "namespace": namespace,
                          "labels": {"app": svc_name, "managed-by": "daas"}},
             "spec": {
-                "type": "LoadBalancer",
+                "type": "ClusterIP",
                 "selector": {"app": svc_name},
                 "ports": [{"name": "postgres", "port": 5432, "targetPort": 5432}],
             },
@@ -512,7 +512,7 @@ def _vectordb_manifest(rname: str, namespace: str, image: str) -> list[dict]:
             "metadata": {"name": svc_name, "namespace": namespace,
                          "labels": {"app": svc_name, "managed-by": "daas"}},
             "spec": {
-                "type": "LoadBalancer",
+                "type": "ClusterIP",
                 "selector": {"app": svc_name},
                 "ports": [{"name": "postgres", "port": 5432, "targetPort": 5432}],
             },
@@ -797,31 +797,25 @@ def app_deploy_activity(payload: dict) -> dict:
         except Exception:
             pass
 
-        # PostgreSQL ke liye internal ClusterIP URL use karo — LB wait skip
+        # PostgreSQL + VectorDB: ClusterIP — internal DNS URL, no LB wait
         if deployment_type == "postgresql":
             service_url = (
                 f"postgresql://postgres:postgres123@"
                 f"{svc_name}.{namespace}.svc.cluster.local:5432/postgres"
             )
             lb_found = False
-            # Still try to get LB IP for external_ip (psql admin access)
-            lb_deadline = time.time() + 120
-            while time.time() < lb_deadline:
-                time.sleep(5)
-                try:
-                    _svc_obj = v1.read_namespaced_service(name=svc_name, namespace=namespace)
-                    _ingress = (_svc_obj.status.load_balancer.ingress or []) \
-                               if _svc_obj.status.load_balancer else []
-                    _lb_addr = next((i.ip or i.hostname for i in _ingress if (i.ip or i.hostname)), None)
-                    if _lb_addr:
-                        external_ip = _lb_addr
-                        lb_found    = True
-                        break
-                except Exception:
-                    pass
             _log_step(deploy_id, f"Service URL (internal): {service_url}")
+
+        elif deployment_type == "vectordb":
+            service_url = (
+                f"postgresql://postgres:postgres123@"
+                f"{svc_name}.{namespace}.svc.cluster.local:5432/vectordb"
+            )
+            lb_found = False
+            _log_step(deploy_id, f"Service URL (internal): {service_url}")
+
         else:
-            # OpenWebUI + VectorDB: LoadBalancer IP wait (max 5 min)
+            # OpenWebUI only: LoadBalancer IP wait (max 5 min)
             lb_deadline = time.time() + 300
             lb_found    = False
             while time.time() < lb_deadline:
@@ -841,14 +835,10 @@ def app_deploy_activity(payload: dict) -> dict:
             if not lb_found:
                 _log_step(deploy_id, f"LB IP timeout — node IP fallback: {external_ip}")
 
-            # Service URL build
-            if deployment_type == "openwebui":
-                if lb_found:
-                    service_url = f"http://{external_ip}"
-                else:
-                    service_url = f"http://{external_ip}:{node_port}" if node_port else f"http://{external_ip}"
-            else:  # vectordb
-                service_url = f"postgresql://postgres:postgres123@{external_ip}/vectordb"
+            if lb_found:
+                service_url = f"http://{external_ip}"
+            else:
+                service_url = f"http://{external_ip}:{node_port}" if node_port else f"http://{external_ip}"
 
             _log_step(deploy_id, f"Service URL: {service_url}")
 

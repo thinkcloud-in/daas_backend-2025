@@ -977,7 +977,7 @@ def list_harbor_artifacts(
     owner:       str | None = None,
     type_filter: str | None = None,
     hypervisor:  str | None = None,
-    os_name:     str | None = None,
+    os_type:     str | None = None,
     page:        int        = 1,
     page_size:   int        = 20,
 ):
@@ -1072,7 +1072,7 @@ def list_harbor_artifacts(
         }
 
     # ── Filter mode: project + any filter → cross-repo search ───────────────
-    _filters_set = any([type_filter, hypervisor, os_name])
+    _filters_set = any([type_filter, hypervisor, os_type])
     if project and _filters_set:
         # 1. Sab repos fetch karo (up to 200)
         all_repos_raw = _get(f"/projects/{project}/repositories", {"page": 1, "page_size": 100})
@@ -1089,7 +1089,7 @@ def list_harbor_artifacts(
             for tag in _oci_tags(full_name):
                 raw_ann = _oci_manifest(full_name, tag).get("annotations") or {}
                 ann     = _parse_artifact_annotations(raw_ann)
-                if _artifact_matches(ann, type_filter, hypervisor, os_name):
+                if _artifact_matches(ann, type_filter, hypervisor, os_type):
                     art = _oci_artifact(full_name, repo_name, tag)
                     if art:
                         matched.append(art)
@@ -1102,7 +1102,7 @@ def list_harbor_artifacts(
             "registry_id": registry_id,
             "harbor_url":  base,
             "project":     project,
-            "filters":     {"type": type_filter, "hypervisor": hypervisor, "os_name": os_name},
+            "filters":     {"type": type_filter, "hypervisor": hypervisor, "os_type": os_type},
             "total":       total,
             "page":        page,
             "page_size":   page_size,

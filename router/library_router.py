@@ -127,7 +127,7 @@ def get_harbor_artifacts(
     owner:         Optional[str] = Query(None, description="Owner prefix filter — sirf is owner ki repositories dikhao (e.g. raqsoft)"),
     type_filter:   Optional[str] = Query(None, alias="type", description="Filter by ai.artifact.type (e.g. template, backup)"),
     hypervisor:    Optional[str] = Query(None, description="Filter by ai.artifact.hypervisor (e.g. proxmox, vmware, hyper-v)"),
-    os_name:       Optional[str] = Query(None, description="Filter by os_name inside vm_template_details (e.g. linux, windows)"),
+    os_type:       Optional[str] = Query(None, description="Filter by os_name inside vm_template_details (e.g. linux, windows)"),
     page:          int           = Query(1,  ge=1),
     page_size:     int           = Query(20, ge=1, le=100),
     db:            Session       = Depends(get_db),
@@ -150,7 +150,7 @@ def get_harbor_artifacts(
         owner=owner,
         type_filter=type_filter,
         hypervisor=hypervisor,
-        os_name=os_name,
+        os_type=os_type,
         page=page,
         page_size=page_size,
     )
