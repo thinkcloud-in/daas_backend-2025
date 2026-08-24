@@ -2004,9 +2004,7 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
         "oauth_merge_accounts_by_email": True,
     }
 
-    # ── Step 1: Direct HTTP API (backend → OW service_url) ───────────────────
-    _form_disabled = False
-    _exec_err_msg  = None
+    # ── Step 1: Direct HTTP API (backend → OW service_url) — best-effort ────
     if ow.service_url and ow.admin_email and ow.admin_password:
         _api_result = _ow_apply_keycloak_config(
             service_url    = ow.service_url,
@@ -2018,24 +2016,24 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
             provider_name  = provider_name,
             oauth_scopes   = oauth_scopes,
         )
-        _form_disabled = (_api_result == "ok")
-        logger.info(f"[Keycloak] HTTP API → {'ok' if _form_disabled else _api_result}")
+        logger.info(f"[Keycloak] HTTP API → {_api_result}")
 
     # ── Step 1.5: PostgreSQL pod exec — config table directly update karo ──────
-    # OW API ya network routing ki zaroorat nahi — PG pod ke andar psql chalate hain
-    if not _form_disabled:
-        _exec_err_msg = _ow_pg_exec_set_config(ow, {
-            "ui.enable_login_form":                  False,
-            "ui.enable_signup":                      False,
-            "ui.enable_oauth_signup":                False,
-            "ui.oauth_auto_redirect_to_provider":    True,
-            "enable_login_form":                     False,
-            "enable_signup":                         False,
-            "enable_oauth_signup":                   False,
-            "oauth_auto_redirect_to_provider":       True,
-        }, db)
-        _form_disabled = (_exec_err_msg is None)
-        logger.info(f"[Keycloak] PG exec → {'ok' if _form_disabled else _exec_err_msg}")
+    # OW ke HTTP API status pe bharosa nahi karte (200 dekar bhi DB me persist
+    # na ho, aisa ho sakta hai) — hamesha PG me direct UPSERT karo, guaranteed
+    # source of truth yahi hai (same schema jo manual psql se verify kiya).
+    _exec_err_msg = _ow_pg_exec_set_config(ow, {
+        "ui.enable_login_form":                  False,
+        "ui.enable_signup":                      False,
+        "ui.enable_oauth_signup":                False,
+        "ui.oauth_auto_redirect_to_provider":    True,
+        "enable_login_form":                     False,
+        "enable_signup":                         False,
+        "enable_oauth_signup":                   False,
+        "oauth_auto_redirect_to_provider":       True,
+    }, db)
+    _form_disabled = (_exec_err_msg is None)
+    logger.info(f"[Keycloak] PG exec → {'ok' if _form_disabled else _exec_err_msg}")
 
     # ── Step 2: CA cert auto-setup (ConfigMap + volume/mount) ────────────────
     _ca_err = _setup_keycloak_ca_cert(ow, kc_url)
@@ -2086,25 +2084,23 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
     if not ow.keycloak_config:
         raise HTTPException(status_code=404, detail="No Keycloak SSO is connected to this OpenWebUI")
 
-    # ── Step 1: Direct HTTP API — login form wapas enable karo ──────────────
-    _form_restored = False
+    # ── Step 1: Direct HTTP API — login form wapas enable karo (best-effort) ─
     if ow.service_url and ow.admin_email and ow.admin_password:
         _re_result = _ow_remove_keycloak_config(ow.service_url, ow.admin_email, ow.admin_password)
-        _form_restored = (_re_result == "ok")
-        logger.info(f"[Keycloak] HTTP API restore → {'ok' if _form_restored else _re_result}")
+        logger.info(f"[Keycloak] HTTP API restore → {_re_result}")
 
     # ── Step 1.5: PostgreSQL pod exec — config table restore karo ───────────────
-    if not _form_restored:
-        _exec_restore_err = _ow_pg_exec_set_config(ow, {
-            "ui.enable_login_form":               True,
-            "ui.enable_signup":                   False,
-            "ui.oauth_auto_redirect_to_provider": False,
-            "enable_login_form":                  True,
-            "enable_signup":                      False,
-            "oauth_auto_redirect_to_provider":    False,
-        }, db)
-        _form_restored = (_exec_restore_err is None)
-        logger.info(f"[Keycloak] PG exec restore → {'ok' if _form_restored else _exec_restore_err}")
+    # OW ke HTTP API status pe bharosa nahi karte — hamesha PG me direct UPSERT karo.
+    _exec_restore_err = _ow_pg_exec_set_config(ow, {
+        "ui.enable_login_form":               True,
+        "ui.enable_signup":                   False,
+        "ui.oauth_auto_redirect_to_provider": False,
+        "enable_login_form":                  True,
+        "enable_signup":                      False,
+        "oauth_auto_redirect_to_provider":    False,
+    }, db)
+    _form_restored = (_exec_restore_err is None)
+    logger.info(f"[Keycloak] PG exec restore → {'ok' if _form_restored else _exec_restore_err}")
 
     # ── Step 3: Capture Keycloak emails before K8s patch ──────────────────────
     _kc_cfg   = _parse_keycloak_config(ow.keycloak_config)
