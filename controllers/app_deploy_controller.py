@@ -817,16 +817,31 @@ def _ow_pg_exec_set_config(ow: "AppDeployment", patch: dict, db: "Session") -> s
             try: _os.unlink(kc_path)
             except OSError: pass
 
+    # Pod template sirf "app": svc_name label carry karta hai (Deployment metadata
+    # ka "daas-type" label pod tak propagate nahi hota) — isliye svc_name se hi
+    # derive karke "app" label match karo, "daas-type" se nahi.
+    _pg_rn   = _re.sub(r"[^a-z0-9-]", "-", pg.name.lower())
+    _pg_rn   = _re.sub(r"-+", "-", _pg_rn).strip("-")[:52]
+    svc_name = f"{_pg_rn}-postgresql"
+
     try:
         core_v1 = kc.CoreV1Api()
         pg_ns   = pg.namespace or "postgresql"
-        pods    = core_v1.list_namespaced_pod(pg_ns, label_selector="daas-type=postgresql")
+        pods    = core_v1.list_namespaced_pod(pg_ns, label_selector=f"app={svc_name}")
         pod     = next(
             (p for p in pods.items if (p.status.phase or "").lower() == "running"),
             None,
         )
         if pod is None:
-            return f"No running postgresql pod in namespace '{pg_ns}'"
+            # Fallback: label match na mile to naam-prefix se dhoondo
+            all_pods = core_v1.list_namespaced_pod(pg_ns)
+            pod = next(
+                (p for p in all_pods.items
+                 if p.metadata.name.startswith(svc_name) and (p.status.phase or "").lower() == "running"),
+                None,
+            )
+        if pod is None:
+            return f"No running postgresql pod found for '{svc_name}' in namespace '{pg_ns}'"
         pod_name = pod.metadata.name
     except Exception as e:
         return f"PG pod list failed: {str(e)[:200]}"
