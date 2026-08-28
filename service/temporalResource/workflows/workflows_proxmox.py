@@ -2,7 +2,6 @@ import asyncio
 from temporalio import workflow
 from datetime import timedelta
 from service.temporalResource.activity import activities_proxmox
-import logging
 from temporalio.common import RetryPolicy
 from temporalio.workflow import ParentClosePolicy
 
@@ -15,8 +14,7 @@ from temporalio.workflow import ParentClosePolicy
 
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger("create_machine_workflow")
- 
+logger = workflow.logger
 @workflow.defn(sandboxed=False)
 class WaitAndAssignIPsWorkflow:
     @workflow.run
