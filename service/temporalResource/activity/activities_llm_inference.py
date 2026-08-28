@@ -5,7 +5,6 @@ import base64
 import shlex
 import time
 import ipaddress
-import logging
 import requests
 import paramiko
 from urllib.parse import quote
@@ -24,8 +23,7 @@ from utils.ssh_client import run_commands, reboot_and_wait
 import dotenv
 dotenv.load_dotenv()
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
 _SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
 _VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launches/restarts

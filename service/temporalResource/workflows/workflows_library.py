@@ -1,4 +1,3 @@
-import logging
 from datetime import timedelta
 
 from temporalio import workflow
@@ -6,8 +5,7 @@ from temporalio.common import RetryPolicy
 
 from service.temporalResource.activity import activities_library
 
-logger = logging.getLogger(__name__)
-
+logger = workflow.logger
 _RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=5),
     backoff_coefficient=2.0,

@@ -1,4 +1,3 @@
-import logging
 from datetime import timedelta
 
 from temporalio import workflow
@@ -7,9 +6,7 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from service.temporalResource.activity.activities_app_deploy import app_deploy_activity
 
-logger = logging.getLogger(__name__)
-
-
+logger = workflow.logger
 @workflow.defn(name="AppDeployWorkflow")
 class AppDeployWorkflow:
 

@@ -3,7 +3,6 @@ import os
 import aiohttp
 import httpx
 from temporalio import activity
-import logging  
 from models.Rbac_models import RBAC
 import service.gucamoleService as service
 from db_configuration.config import SessionLocal, get_db
@@ -13,7 +12,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 security = HTTPBearer()
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger("RBAC LOGGER")
+logger = activity.logger
 @activity.defn
 async def get_client_activity():
     try:

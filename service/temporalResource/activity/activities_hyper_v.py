@@ -6,12 +6,10 @@ from service import hyper_v_service
 from db_configuration.config import SessionLocal, get_db
 from models.models import Cluster 
 from sqlalchemy.orm import Session
-import logging
 from urllib.parse import quote
 from models.models import Machine, Pool
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 # @activity.defn
 # async def clone_vm_hyper_v_activity(request: dict) -> dict:
 #     cluster_id = request.get("cluster_id")

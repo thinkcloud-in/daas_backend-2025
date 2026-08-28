@@ -1,4 +1,3 @@
-import logging
 import os
 
 import paramiko
@@ -9,9 +8,7 @@ from db_configuration.config import SessionLocal
 from models.harbor_image_model import HarborImage
 from utils.ssh_client import run_commands
 
-logger = logging.getLogger(__name__)
-
-
+logger = activity.logger
 @activity.defn(name="Harbor-Image-SFTP-and-Push")
 def sftp_and_push_harbor_image_activity(payload: dict) -> dict:
     """

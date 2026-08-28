@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import re
 import tempfile
@@ -11,9 +10,7 @@ from db_configuration.config import SessionLocal
 from models.app_deploy_model import AppDeployment
 from models.kubernetes_model import KubernetesCluster
 
-logger = logging.getLogger(__name__)
-
-
+logger = activity.logger
 # ─────────────────────────────────────────────────────────────────────────────
 # DB helpers
 # ─────────────────────────────────────────────────────────────────────────────

@@ -4,11 +4,9 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 from service.temporalResource.activity import activities_hyper_v
-import logging
 from sqlalchemy.orm import Session
 
-logger = logging.getLogger(__name__)
-
+logger = workflow.logger
 @workflow.defn(sandboxed=False)
 class CloneVMHyperVWorkflow:
     @workflow.run

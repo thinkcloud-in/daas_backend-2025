@@ -4,7 +4,6 @@ from io import BytesIO
 import os
 from typing import Dict, List
 import aiohttp
-import logging  
 import psycopg2
 from temporalio import  activity
 import service.gucamoleService as service
@@ -19,8 +18,7 @@ load_dotenv()
 
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger("Guacamole LOGGER")
-
+logger = activity.logger
 def get_db_connection():
     connection = psycopg2.connect(
         user=os.getenv('USER_NAME'),

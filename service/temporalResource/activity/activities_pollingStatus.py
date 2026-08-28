@@ -2,7 +2,6 @@ from utils.temporal_client import TemporalClientManager
 from temporalio.client import WorkflowExecutionStatus
 from db_configuration.config import SessionLocal, get_db
 from service import pollingStatus
-import logging
 from temporalio import activity
 from service.hyper_v_service import get_status as get_hyperv_status
 from service.clusterService import getting_Proxmox_host, get_api_token
@@ -12,8 +11,7 @@ from service.clusterService import get_all_nodes
 import requests
 VERIFY_SSL = False
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 def split_pools_by_cluster_type(db: Session):
     pool_data = db.query(Pool).all()
     proxmox_pools = []

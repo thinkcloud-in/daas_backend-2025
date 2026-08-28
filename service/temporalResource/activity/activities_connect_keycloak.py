@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import re
 import tempfile
@@ -11,8 +10,7 @@ from db_configuration.config import SessionLocal
 from models.app_deploy_model import AppDeployment
 from models.kubernetes_model import KubernetesCluster
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _KEYCLOAK_ENV_KEYS = {
     "ENABLE_OAUTH_SIGNUP", "OAUTH_PROVIDER_NAME", "OPENID_PROVIDER_URL",
     "OAUTH_CLIENT_ID", "OAUTH_CLIENT_SECRET", "OAUTH_MERGE_ACCOUNTS_BY_EMAIL",

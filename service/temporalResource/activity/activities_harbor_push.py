@@ -11,7 +11,6 @@ Flow:
 """
 
 import json
-import logging
 import os
 import re
 import shutil
@@ -31,8 +30,7 @@ from db_configuration.config import SessionLocal
 from models.library_model import LibraryItem
 from models.kubernetes_deploy_model import KubernetesDeployment
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 HARBOR_PUSH_TASK_QUEUE = "harbor-push-queue"
 
 

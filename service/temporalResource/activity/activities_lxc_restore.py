@@ -1,7 +1,6 @@
 import os
 import re
 import time
-import logging
 import ipaddress
 import requests
 import paramiko
@@ -17,8 +16,7 @@ from models.lxc_restore_model import LXCRestoreJob
 from service.clusterService import get_api_token, getting_Proxmox_host
 from utils.ssh_client import run_commands
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _PROXMOX_SSH_USER = os.getenv("PROXMOX_SSH_USER", "root")
 _PROXMOX_SSH_PASS = os.getenv("PROXMOX_SSH_PASS", "")
 
