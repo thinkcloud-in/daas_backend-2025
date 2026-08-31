@@ -48,7 +48,11 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
                 status = "FAILED"
                 response_data = str(e)
                 duration = (datetime.datetime.now() - start_time).total_seconds()
-                logger.exception("request_failed", duration_ms=round(duration * 1000, 2))
+                logger.exception(
+                    "request_failed",
+                    duration_ms=round(duration * 1000, 2),
+                    error=response_data[:500],
+                )
                 raise e
 
             end_time = datetime.datetime.now()
@@ -61,6 +65,7 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
                 status_code=response.status_code,
                 duration_ms=round(duration * 1000, 2),
                 user=user,
+                response_body=response_data[:500] if response_data else None,
             )
 
             log_entry = {

@@ -1,6 +1,7 @@
 import logging
 import logging.handlers
 import os
+import sys
 
 import structlog
 
@@ -96,11 +97,18 @@ def setup_logging():
         cache_logger_on_first_use=True,
     )
 
+    # Colored key=value output only makes sense on an interactive terminal.
+    # When stdout isn't a TTY (Docker/K8s — where a log shipper reads stdout
+    # and forwards it to OpenSearch/ELK/etc.), emit plain JSON there too, so
+    # every field stays individually searchable instead of being shipped as
+    # one opaque ANSI-colored string.
+    stdout_is_console = sys.stdout.isatty()
     console_formatter = structlog.stdlib.ProcessorFormatter(
         foreign_pre_chain=shared_processors,
         processors=[
             structlog.stdlib.ProcessorFormatter.remove_processors_meta,
-            structlog.dev.ConsoleRenderer(colors=True),
+            structlog.dev.ConsoleRenderer(colors=True) if stdout_is_console
+            else structlog.processors.JSONRenderer(),
         ],
     )
     json_formatter = structlog.stdlib.ProcessorFormatter(
