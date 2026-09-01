@@ -1,4 +1,3 @@
-import logging
 from datetime import timedelta
 
 from temporalio import workflow
@@ -10,9 +9,7 @@ with workflow.unsafe.imports_passed_through():
         disconnect_keycloak_activity,
     )
 
-logger = logging.getLogger(__name__)
-
-
+logger = workflow.logger
 @workflow.defn(name="ConnectKeycloakWorkflow")
 class ConnectKeycloakWorkflow:
 

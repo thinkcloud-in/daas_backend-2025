@@ -12,11 +12,7 @@ from models.IPs_model import IPEntry
 from service.proxmoxService import clone_vm
 from service.hyper_v_service import delete_hyperv_vm, clone_vm_hyper_v
 import json
-import logging
-
-logger = logging.getLogger(__name__)
-
-
+logger = activity.logger
 @activity.defn()
 async def create_pool_activity(request: dict) -> dict:
     db = SessionLocal()

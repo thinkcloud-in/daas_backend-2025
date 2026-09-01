@@ -1,5 +1,4 @@
 import asyncio
-import logging
 from datetime import timedelta
 from urllib.parse import urlsplit
 from temporalio import workflow
@@ -25,8 +24,7 @@ _RETRY_TEMPLATE_PULL = RetryPolicy(
 
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger(__name__)
-
+logger = workflow.logger
 _RETRY = RetryPolicy(
     initial_interval=timedelta(seconds=5),
     backoff_coefficient=2.0,

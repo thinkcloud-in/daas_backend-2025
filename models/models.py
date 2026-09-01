@@ -5,6 +5,7 @@ from db_configuration.config import Base
 import datetime
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.ext.mutable import MutableDict
+from utils.crypto_utils import EncryptedString
 
 #declarative base model for pool
 class Pool(Base):
@@ -949,7 +950,7 @@ class Cluster(Base):
     port = Column(Integer)
     agent_port = Column(Integer)
     username = Column(String)
-    password = Column (String)
+    password = Column(EncryptedString)  # transparently encrypted at rest — see utils/crypto_utils.py
     tls = Column(Boolean)
     node_type = Column(String)
     

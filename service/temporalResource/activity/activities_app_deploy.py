@@ -17,7 +17,6 @@ Flow:
 
 import base64
 import json
-import logging
 import re
 import tempfile
 import time
@@ -31,8 +30,7 @@ from models.app_deploy_model import AppDeployment
 from models.kubernetes_model import KubernetesCluster
 from models.library_model import LibraryItem
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _CONTAINERD_LABEL = "daas-patch=containerd"
 
 

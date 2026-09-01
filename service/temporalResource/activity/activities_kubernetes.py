@@ -1,6 +1,4 @@
 import datetime
-import logging
-
 import requests
 import urllib3
 from temporalio import activity
@@ -10,9 +8,7 @@ from db_configuration.config import SessionLocal
 from models.kubernetes_model import KubernetesCluster
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-logger = logging.getLogger(__name__)
-
-
+logger = activity.logger
 @activity.defn(name="k8s-test-connection")
 def test_k8s_connection_activity(payload: dict) -> dict:
     """

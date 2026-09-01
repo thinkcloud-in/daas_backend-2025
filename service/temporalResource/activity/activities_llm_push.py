@@ -10,7 +10,6 @@ Flow:
   6. DB update: harbor_image, version, harbor_owner, push_status=pushed
 """
 
-import logging
 import os
 import re
 import tempfile
@@ -28,8 +27,7 @@ from db_configuration.config import SessionLocal
 from models.library_model import LibraryItem
 from models.kubernetes_deploy_model import KubernetesDeployment
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 LLM_PUSH_TASK_QUEUE = "llm-push-queue"
 
 

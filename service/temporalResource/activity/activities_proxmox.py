@@ -15,10 +15,7 @@ from influxdb_client import InfluxDBClient, Point, WriteOptions
 import dotenv
 import os
 dotenv.load_dotenv()
-import logging
-
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 # @activity.defn
 # async def clone_vm_activity(clone_payload: dict):
 #     db: Session = next(get_db())

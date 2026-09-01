@@ -1,4 +1,3 @@
-import logging
 import os
 import aiohttp
 from fastapi.encoders import jsonable_encoder
@@ -17,8 +16,7 @@ load_dotenv()
 
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger("machine_activity_logger")
-
+logger = activity.logger
 async def get_machine_name(machine_data):
     try:
         machine_name = machine_data['name']

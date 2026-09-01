@@ -1,4 +1,3 @@
-import logging
 import os
 import time
 from urllib.parse import quote as _url_quote
@@ -10,8 +9,7 @@ from db_configuration.config import SessionLocal
 from models.library_model import LibraryItem
 from utils.k8s_pod_exec import delete_file_from_pod
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _HARBOR_PUSH_TYPES = {"container"}
 
 

@@ -22,7 +22,6 @@ Flow:
 import datetime
 import fnmatch
 import json
-import logging
 import os
 import shutil
 import tempfile
@@ -40,8 +39,7 @@ from models.kubernetes_deploy_model import KubernetesDeployment
 from models.kubernetes_model import KubernetesCluster
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 _IMPORTER_DS_NAME = "harbor-img-importer"
 _IMPORT_DONE_MARKER = "HARBOR_IMPORT_DONE"
 

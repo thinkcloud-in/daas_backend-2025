@@ -1,6 +1,9 @@
 import logging
-import logging.config
+import logging.handlers
 import os
+import sys
+
+import structlog
 
 LOG_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 APP_LOG_FILE = os.path.join(LOG_DIR, "app.log")
@@ -36,6 +39,13 @@ def redact_secrets(data):
     return data
 
 
+def _redact_event_dict(logger, method_name, event_dict):
+    """structlog processor — applies redact_secrets() to every log event automatically,
+    so sensitive fields never reach the console or the log files, without every
+    call site having to remember to call redact_secrets() itself."""
+    return redact_secrets(event_dict)
+
+
 def setup_logging():
     """
     Single source of truth for logging across the whole backend. Call once,
@@ -44,9 +54,14 @@ def setup_logging():
     default, so this is all that's needed to capture logs everywhere —
     no per-module handler setup required.
 
-    - app.log    : INFO and above — the full operational trace.
-    - errors.log : ERROR and above only — for fast triage without INFO noise.
-    - console    : INFO and above, for local/dev visibility.
+    structlog sits on top of the standard logging module rather than
+    replacing it: every existing `logger.info(...)` call in the codebase
+    keeps working unchanged. structlog only controls how those records (and
+    any request-scoped context bound via structlog.contextvars) get
+    rendered:
+      - console : colored, human-readable key=value output — INFO and above.
+      - app.log    : the same events as structured JSON — INFO and above.
+      - errors.log : structured JSON, ERROR and above only.
 
     Idempotent: safe to call more than once (e.g. if imported from multiple
     entry points) — only configures on the first call.
@@ -56,44 +71,70 @@ def setup_logging():
         return
     _configured = True
 
-    formatter = {
-        "format": "%(asctime)s | %(levelname)-8s | %(name)s | %(module)s:%(funcName)s:%(lineno)d | %(message)s",
-        "datefmt": "%Y-%m-%d %H:%M:%S",
-    }
+    timestamper = structlog.processors.TimeStamper(fmt="%Y-%m-%d %H:%M:%S")
 
-    logging.config.dictConfig({
-        "version": 1,
-        "disable_existing_loggers": False,
-        "formatters": {
-            "standard": formatter,
-        },
-        "handlers": {
-            "console": {
-                "class": "logging.StreamHandler",
-                "level": "INFO",
-                "formatter": "standard",
-            },
-            "app_file": {
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": "INFO",
-                "formatter": "standard",
-                "filename": APP_LOG_FILE,
-                "maxBytes": 10 * 1024 * 1024,
-                "backupCount": 5,
-                "encoding": "utf-8",
-            },
-            "error_file": {
-                "class": "logging.handlers.RotatingFileHandler",
-                "level": "ERROR",
-                "formatter": "standard",
-                "filename": ERROR_LOG_FILE,
-                "maxBytes": 10 * 1024 * 1024,
-                "backupCount": 5,
-                "encoding": "utf-8",
-            },
-        },
-        "root": {
-            "level": "INFO",
-            "handlers": ["console", "app_file", "error_file"],
-        },
-    })
+    # Runs for every event: ones logged via structlog.get_logger() AND ones
+    # logged via the plain `logging.getLogger(__name__)` calls that already
+    # exist everywhere in this codebase (those are treated as "foreign"
+    # records and go through this same chain via foreign_pre_chain below).
+    shared_processors = [
+        structlog.contextvars.merge_contextvars,  # pulls in request_id etc. bound per-request
+        structlog.stdlib.ExtraAdder(),  # pulls extra={...} kwargs from plain logging.info() calls in too
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        timestamper,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        _redact_event_dict,
+    ]
+
+    structlog.configure(
+        processors=shared_processors + [
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        logger_factory=structlog.stdlib.LoggerFactory(),
+        wrapper_class=structlog.stdlib.BoundLogger,
+        cache_logger_on_first_use=True,
+    )
+
+    # Colored key=value output only makes sense on an interactive terminal.
+    # When stdout isn't a TTY (Docker/K8s — where a log shipper reads stdout
+    # and forwards it to OpenSearch/ELK/etc.), emit plain JSON there too, so
+    # every field stays individually searchable instead of being shipped as
+    # one opaque ANSI-colored string.
+    stdout_is_console = sys.stdout.isatty()
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer(colors=True) if stdout_is_console
+            else structlog.processors.JSONRenderer(),
+        ],
+    )
+    json_formatter = structlog.stdlib.ProcessorFormatter(
+        foreign_pre_chain=shared_processors,
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.processors.JSONRenderer(),
+        ],
+    )
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+
+    app_file_handler = logging.handlers.RotatingFileHandler(
+        APP_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    app_file_handler.setLevel(logging.INFO)
+    app_file_handler.setFormatter(json_formatter)
+
+    error_file_handler = logging.handlers.RotatingFileHandler(
+        ERROR_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
+    )
+    error_file_handler.setLevel(logging.ERROR)
+    error_file_handler.setFormatter(json_formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.handlers = [console_handler, app_file_handler, error_file_handler]

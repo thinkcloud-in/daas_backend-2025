@@ -1,4 +1,3 @@
-import logging
 from datetime import timedelta
 from http.client import HTTPException
 from temporalio import workflow
@@ -6,8 +5,7 @@ from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_pool
 # Workflows should not raise FastAPI HTTPException; re-raise original exceptions
 
-logger = logging.getLogger(__name__)
-
+logger = workflow.logger
 @workflow.defn(sandboxed=False)
 class PoolCreationWorkflow:
     @workflow.run

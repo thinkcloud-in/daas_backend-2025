@@ -1,5 +1,4 @@
 import base64
-import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from temporalio import activity
@@ -17,8 +16,7 @@ from cryptography.hazmat.backends import default_backend
 # except config.config_exception.ConfigException:
 #     config.load_kube_config()
 
-logger = logging.getLogger(__name__)
-
+logger = activity.logger
 v1 = None # client.CoreV1Api()
 NAMESPACE = "thinkcloud"
 SECRET_NAME = "daas-tls-secret"

@@ -1,5 +1,4 @@
 from datetime import timedelta
-import logging
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 from service.temporalResource.activity import activities_machine, activities_proxmox
@@ -7,8 +6,7 @@ from sqlalchemy.orm import Session
 
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
-logger = logging.getLogger("create_machine_workflow")
-
+logger = workflow.logger
 @workflow.defn(sandboxed=False)
 class CreateMachineWorkflow:
     @workflow.run
