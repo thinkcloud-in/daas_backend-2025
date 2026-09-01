@@ -30,6 +30,7 @@ pandas==2.1.4
 
 # HTTP client
 requests==2.32.3
+requests-toolbelt==1.0.0
 
 # Authentication & Security
 PyJWT==2.9.0

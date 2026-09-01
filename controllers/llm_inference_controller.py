@@ -122,8 +122,53 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             raise HTTPException(status_code=400, detail="At least one node is required")
         if len(data.ipPools) == 0:
             raise HTTPException(status_code=400, detail="At least one IP pool is required")
-        if not data.template or not data.template.strip():
+
+        is_harbor_source = data.templateSource == "harbor"
+        if not is_harbor_source and (not data.template or not data.template.strip()):
             raise HTTPException(status_code=400, detail="Template VM is required. Provide a valid Proxmox template VMID or name.")
+
+        harbor_conn = None
+        harbor_model_repo = harbor_model_tag = None
+        template_conn = None
+        vm_config = None
+        if is_harbor_source:
+            from models.kubernetes_deploy_model import KubernetesDeployment
+            harbor_dep = db.query(KubernetesDeployment).filter(
+                KubernetesDeployment.id == data.harborRegistryId
+            ).first()
+            if not harbor_dep:
+                raise HTTPException(status_code=404, detail=f"Harbor registry id={data.harborRegistryId} not found")
+            if not harbor_dep.harbor_url:
+                raise HTTPException(status_code=409, detail=f"Harbor id={data.harborRegistryId} has no harbor_url configured")
+            harbor_conn = {
+                "harbor_url":  harbor_dep.harbor_url,
+                "harbor_user": harbor_dep.harbor_user or "admin",
+                "harbor_pass": harbor_dep.harbor_pass or "",
+                "project":     "library",
+            }
+            harbor_model_repo, _, harbor_model_tag = data.harborArtifact.rpartition(":")
+
+            # Template uses the SAME Harbor connection as the model -- whichever
+            # registry the user picked in "Select Harbor" is the single source
+            # of truth for url/user/pass, for both dropdowns.
+            if not data.harborTemplate:
+                raise HTTPException(status_code=400, detail="'harborTemplate' is required when templateSource is 'harbor'.")
+            template_repo, _, template_tag = data.harborTemplate.rpartition(":")
+            template_conn = {
+                **harbor_conn,
+                "repository": template_repo,
+                "tag":        template_tag,
+            }
+
+            # The VM spec the user supplied. The model volume isn't described
+            # here -- it's sized from the artifact's own metadata inside
+            # provision_model_volume_activity, where a slow or unreachable
+            # Harbor is retried rather than failing this request.
+            vm_config = {
+                "cores":   data.cores,
+                "memory":  data.memory,
+                "network": data.network,
+            }
 
         # ── Prevent duplicate job name ────────────────────────────────────────
         existing = db.query(LLMInferenceJob).filter(LLMInferenceJob.name == data.poolName).first()
@@ -196,7 +241,14 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             name=data.poolName,
             cluster_id=cluster.id,
             ip_pool_ids=ip_pool_ids,
-            template=data.template,
+            template=data.template or "",
+            template_source=data.templateSource or "proxmox",
+            harbor_registry_id=int(data.harborRegistryId) if is_harbor_source else None,
+            harbor_template=(f"{template_conn['repository']}:{template_conn['tag']}" if is_harbor_source else None),
+            harbor_model=data.harborArtifact if is_harbor_source else None,
+            # Null for proxmox-source pools -- they take cores/memory/network
+            # from their template, and have no model volume of their own.
+            vm_config=vm_config,
             nodes=[n.dict() for n in data.nodes],
             # machines_name (actual resolved per-VM names) isn't known yet at
             # creation time -- only the naming pattern (data.machine_name,
@@ -223,6 +275,14 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "cluster_id":   cluster.id,
             "ip_pool_ids":  ip_pool_ids,
             "template":     data.template,
+            "template_source": data.templateSource or "proxmox",
+            "harbor": ({
+                **harbor_conn,
+                "model_repository": harbor_model_repo,
+                "model_tag":        harbor_model_tag,
+                "template_conn":    template_conn,
+            } if is_harbor_source else None),
+            "vm_config":    vm_config,
             "nodes":        [n.dict() for n in data.nodes],
             "reserved_ips": reserved_ips,
             "subnet":       cluster_subnet,

@@ -2,12 +2,16 @@ import os
 import re
 import json
 import base64
+import math
 import shlex
 import time
+import threading
+import subprocess
 import ipaddress
 import logging
 import requests
 import paramiko
+from requests_toolbelt import MultipartEncoder
 from urllib.parse import quote
 
 from temporalio import activity
@@ -29,6 +33,9 @@ logger = logging.getLogger(__name__)
 _SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
 _SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
 _VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launches/restarts
+# Room on the model volume beyond the weights themselves -- vLLM writes
+# compiled kernels, torch caches and tokenizer artifacts alongside them.
+_MODEL_VOLUME_HEADROOM_GB = 100
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -134,6 +141,89 @@ def _run_commands_with_key(host: str, username: str, pkey, commands: list):
         client.close()
 
 
+def _curl_upload_stream(node_host: str, headers: dict, target_node: str, import_storage: str,
+                         filename: str, content_stream, total_size: int, cluster_id,
+                         heartbeat_interval: int = 15):
+    """
+    Streams content_stream (a file-like object, e.g. harbor_resp.raw) into
+    Proxmox's storage upload API via curl.
+
+    Python's requests/OpenSSL stack cannot complete this specific upload on
+    this network -- confirmed to fail instantly regardless of file size,
+    auth token, TLS version, or renegotiation flags, while curl completes
+    the identical upload reliably every time. curl reads the file field from
+    this process's own stdin (@-), so the blob is piped straight through,
+    never buffered to local disk and never fully held in memory.
+
+    Everything, including the Authorization header, goes as plain argv --
+    this curl build (curl 8.21.0 on Windows) rejects -F options combined
+    with a -K config file no matter how they're ordered relative to each
+    other or the URL ("option -F: is badly used here"/"option -K: is badly
+    used here" either way), so -K is not usable together with -F here at
+    all. The token is briefly visible in the process list for the life of
+    this subprocess as a result.
+    """
+    token = headers["Authorization"]
+    url = f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/upload"
+
+    proc = subprocess.Popen(
+        [
+            "curl", "-k", "-v",
+            "-H", f"Authorization: {token}",
+            "-F", "content=import",
+            "-F", f"filename=@-;filename={filename};type=application/octet-stream",
+            url,
+        ],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+
+    sent = 0
+    write_error = {}
+
+    def _pump():
+        nonlocal sent
+        try:
+            while True:
+                chunk = content_stream.read(1024 * 1024)
+                if not chunk:
+                    break
+                proc.stdin.write(chunk)
+                sent += len(chunk)
+        except Exception as e:
+            write_error["error"] = e
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    writer = threading.Thread(target=_pump, daemon=True)
+    writer.start()
+
+    while writer.is_alive():
+        writer.join(timeout=heartbeat_interval)
+        pct = (sent / total_size * 100) if total_size else 0
+        activity.heartbeat(f"[cluster {cluster_id}] curl upload: {sent}/{total_size} bytes ({pct:.1f}%)")
+
+    stdout, stderr = proc.communicate()
+    if write_error:
+        # A broken pipe here means curl already exited before we finished
+        # writing -- that exit (and its real cause) is in returncode/stderr,
+        # not in the write error itself, which is just the downstream symptom.
+        raise RuntimeError(
+            f"curl exited early during upload (exit {proc.returncode}) after "
+            f"{sent}/{total_size} bytes written -- write failed with "
+            f"{write_error['error']!r}. curl stderr: {stderr.decode(errors='replace')}"
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"curl upload failed (exit {proc.returncode}): {stderr.decode(errors='replace')}")
+
+    try:
+        return json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        raise RuntimeError(f"curl upload returned non-JSON response: {stdout[:500]!r}")
+
+
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
@@ -202,6 +292,568 @@ def reserve_vmids_activity(payload: dict) -> dict:
         return {"vmids": reserved, "vm_names": vm_names}
     finally:
         db.close()
+
+
+class _SizedStream:
+    """
+    Wraps a stream, exposing .read(size) plus an explicit, caller-supplied
+    .len -- nothing else (no .fileno(), no __len__, no .getvalue()).
+
+    MultipartEncoder computes each part's length EAGERLY, at construction
+    time (Part.__init__ does `total_len(self.body)` immediately) -- it has
+    no support for a genuinely unknown-length part; passing one raises
+    TypeError immediately rather than falling back to chunked transfer.
+
+    So the length must be told to it, not hidden from it. A raw HTTP
+    response stream like harbor_resp.raw DOES have a working .fileno() (it's
+    backed by a real socket) -- MultipartEncoder's own length-detection would
+    find that, then ask the OS "how big is this file", which for a socket
+    typically comes back as 0, not the real blob size. Hiding .fileno() and
+    supplying the real size ourselves (from the OCI manifest, which already
+    tells us the exact blob size) avoids that wrong guess entirely.
+    """
+    # Below this, MultipartEncoder/urllib3 read in small (~8-16KB) chunks --
+    # heartbeating on every single .read() would be thousands of calls/sec
+    # of pure overhead for no benefit, so that's throttled to once every
+    # few seconds. The CPU yield below is intentionally NOT throttled --
+    # it's meant to fire on every chunk (see _CHUNK_YIELD_S).
+    _HEARTBEAT_INTERVAL_S = 5
+    # Every chunk read/relayed hands the CPU back to the OS scheduler for a
+    # moment instead of the loop hammering read() -> write() back-to-back at
+    # full speed for the whole multi-minute transfer. sleep(0) is a
+    # cooperative yield (gives other threads a chance to run) without
+    # forcing a real minimum delay the way sleep(0.001) does -- at ~2.5M
+    # chunks for a 31GB file, even 1ms/chunk adds ~40 minutes of pure sleep
+    # and caps throughput at chunk_size/1ms regardless of actual bandwidth.
+    _CHUNK_YIELD_S = float(os.getenv("HARBOR_TRANSFER_CHUNK_YIELD_S", "0"))
+
+    def __init__(self, stream, length):
+        self._stream = stream
+        self.len = length
+        self._sent = 0
+        self._last_heartbeat = 0.0
+
+    def read(self, size=-1):
+        chunk = self._stream.read(size)
+        self._sent += len(chunk)
+        now = time.monotonic()
+
+        # Heartbeat: (a) proves the worker is alive so Temporal's
+        # heartbeatTimeout can actually detect a dead/frozen worker instead
+        # of freezing forever at "Started" with no way to notice, and
+        # (b) gives Temporal a checkpoint to deliver a cancellation --
+        # without this, terminate/cancel has no opportunity to ever reach
+        # code that's blocked inside a single multi-minute requests.post().
+        if now - self._last_heartbeat >= self._HEARTBEAT_INTERVAL_S:
+            self._last_heartbeat = now
+            pct = (self._sent / self.len * 100) if self.len else 0
+            activity.heartbeat(f"Uploaded {self._sent}/{self.len} bytes ({pct:.1f}%)")
+
+        if chunk:
+            time.sleep(self._CHUNK_YIELD_S)
+
+        return chunk
+
+
+def _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag):
+    """
+    OCI manifest fetch -> (digest, layer_size, annotations) (see list_harbor_artifacts).
+
+    Annotations come back from the same response the digest does, so anything
+    needing artifact metadata (e.g. ai.artifact.size_bytes for volume sizing)
+    reads it from here rather than fetching the manifest a second time.
+
+    Note layer_size is the COMPRESSED transfer size -- for provisioning against
+    what the artifact occupies on disk, use the ai.artifact.size_bytes
+    annotation instead (see _model_volume_gb).
+    """
+    full_name = f"{project}/{repository}"
+    resp = requests.get(
+        f"{harbor_url.rstrip('/')}/v2/{full_name}/manifests/{tag}",
+        auth=(harbor_user, harbor_pass), verify=False, timeout=30,
+        headers={"Accept": "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"},
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Harbor manifest fetch failed ({resp.status_code}): {resp.text[:300]}")
+    manifest = resp.json()
+    layers = manifest.get("layers") or []
+    if not layers:
+        raise RuntimeError(f"No layers found in manifest for {full_name}:{tag}")
+    return layers[0]["digest"], layers[0]["size"], (manifest.get("annotations") or {})
+
+
+def _model_volume_gb(annotations, repository, tag, headroom_gb=_MODEL_VOLUME_HEADROOM_GB):
+    """
+    Volume size for a model artifact: its on-disk size plus room to work in.
+
+    Sized from ai.artifact.size_bytes, not the manifest's layer size -- that one
+    is the compressed transfer size and can be several times smaller than what
+    lands on disk, which would undersize the volume.
+    """
+    raw = (annotations or {}).get("ai.artifact.size_bytes")
+    if not raw:
+        raise RuntimeError(
+            f"Model '{repository}:{tag}' has no ai.artifact.size_bytes annotation -- "
+            f"its volume cannot be sized without it."
+        )
+    model_gb = math.ceil(int(str(raw).strip()) / (1024 ** 3))
+    return model_gb + headroom_gb
+
+
+def _node_api_host(hosts, headers, node_name, fallback):
+    """
+    The node's OWN API URL, resolved via /cluster/status.
+
+    Uploads must go straight to the node that will hold the file. Sending them
+    to another node makes its pveproxy relay the entire body onward, and that
+    relay hop is where every large upload stalled during testing.
+    """
+    for host in hosts:
+        try:
+            resp = requests.get(f"{host}/api2/json/cluster/status",
+                                headers=headers, verify=False, timeout=10)
+            if not resp.ok:
+                continue
+            for entry in resp.json().get("data", []):
+                if entry.get("type") == "node" and entry.get("name") == node_name and entry.get("ip"):
+                    port = fallback.rsplit(":", 1)[-1]
+                    return f"https://{entry['ip']}:{port}"
+        except Exception:
+            continue
+    return fallback
+
+
+def _assert_storage_space(host, headers, node, storage, needed_bytes, margin=1.05):
+    """
+    Refuse a doomed upload up front. Running out of space 20 minutes into a
+    multi-GB transfer costs the whole transfer; checking first costs a second.
+    Unreadable status is not treated as failure -- we only block on a definite no.
+    """
+    try:
+        resp = requests.get(f"{host}/api2/json/nodes/{node}/storage/{storage}/status",
+                            headers=headers, verify=False, timeout=15)
+        if not resp.ok:
+            return
+        avail = resp.json().get("data", {}).get("avail")
+        if avail is None:
+            return
+        required = int(needed_bytes * margin)
+        if avail < required:
+            raise RuntimeError(
+                f"Not enough space on {node}:{storage} -- need ~{required:,} bytes, "
+                f"only {avail:,} available. Free space or pick a different node."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        return
+
+
+@activity.defn
+def pull_and_restore_harbor_template_activity(payload: dict) -> dict:
+
+    db: Session = SessionLocal()
+    new_vmid = None
+    import_volid = None
+    node_host = None
+    headers = None
+    # Once the VM exists with its disk imported, the expensive work is done.
+    # A later failure (template conversion) must never delete it.
+    vm_created = False
+    target_node = payload["target_node"]
+    try:
+        cluster_id     = payload["cluster_id"]
+        storage        = payload.get("storage", "local-lvm")
+        # Staging storage for the uploaded qcow2. Not configurable: it has to
+        # be a storage with "import" content enabled, and `local` is the only
+        # one on a Proxmox node that qualifies by default -- block storages
+        # (Ceph RBD, LVM-thin) hold disk images, not files. Deliberately NOT
+        # the same as `storage` above, which is where the imported disk lands
+        # and is normally RBD.
+        import_storage = "local"
+        harbor_url     = payload["harbor_url"]
+        harbor_user    = payload["harbor_user"]
+        harbor_pass    = payload["harbor_pass"]
+        project        = payload["project"]
+        repository     = payload["repository"]
+        tag            = payload["tag"]
+        cores          = int(payload.get("cores") or 4)
+        memory         = int(payload.get("memory") or 8192)
+        bridge         = payload.get("network") or "vmbr0"
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+
+        api_token    = get_api_token(db, cluster_data.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        if not PROXMOX_HOST:
+            raise RuntimeError("No reachable Proxmox host")
+        ALL_HOSTS = _all_hosts(cluster_data) or [PROXMOX_HOST]
+        node_host = _node_api_host(ALL_HOSTS, headers, target_node, PROXMOX_HOST)
+
+        digest, blob_size, _ann = _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag)
+        _assert_storage_space(node_host, headers, target_node, import_storage, blob_size)
+
+        resp = requests.get(f"{node_host}/api2/json/cluster/nextid", headers=headers, verify=False, timeout=10)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Failed to get next VMID: {resp.text}")
+        new_vmid = int(resp.json()["data"])
+
+        # ── Relay Harbor -> the node's own upload API via curl ────────────
+        # Python's requests/OpenSSL stack cannot complete this upload on
+        # this network (confirmed: fails instantly regardless of file size,
+        # token, TLS version, or renegotiation flags) while curl completes
+        # it reliably every time. curl reads the blob from this process's
+        # stdin (-F field=@-), so nothing is buffered to local disk -- Harbor
+        # bytes are piped straight into curl's request body as they arrive.
+        blob_url = f"{harbor_url.rstrip('/')}/v2/{project}/{repository}/blobs/{digest}"
+        filename = f"llm-template-{new_vmid}-{int(time.time())}.qcow2"
+        activity.heartbeat(f"Pulling {repository}:{tag} -> {target_node}:{import_storage}")
+
+        harbor_resp = requests.get(
+            blob_url, auth=(harbor_user, harbor_pass), verify=False,
+            stream=True, timeout=(10, 7200),
+        )
+        if not harbor_resp.ok:
+            raise RuntimeError(f"Harbor blob fetch failed ({harbor_resp.status_code}): {harbor_resp.text[:300]}")
+
+        logger.info(f"[cluster {cluster_id}] Starting curl upload to {target_node}:{import_storage} vmid={new_vmid}")
+        upload_data = _curl_upload_stream(
+            node_host=node_host, headers=headers, target_node=target_node,
+            import_storage=import_storage, filename=filename,
+            content_stream=harbor_resp.raw, total_size=blob_size,
+            cluster_id=cluster_id,
+        )
+        logger.info(f"[cluster {cluster_id}] curl upload finished for vmid={new_vmid}")
+        upload_upid = upload_data.get("data")
+        logger.info(f"[cluster {cluster_id}] Upload UPID: {upload_upid}")
+        if upload_upid:
+            logger.info(f"[cluster {cluster_id}] Waiting for upload task {upload_upid} (timeout=1800s)...")
+            _wait_for_task(ALL_HOSTS, headers, target_node, upload_upid, timeout=1800)
+            logger.info(f"[cluster {cluster_id}] Upload task completed.")
+
+        import_volid = f"{import_storage}:import/{filename}"
+
+        # ── One call: create the VM and pull the disk into real storage ────
+        activity.heartbeat(f"Creating vmid {new_vmid} from {import_volid}")
+        logger.info(f"[cluster {cluster_id}] Creating vmid={new_vmid} import-from={import_volid}")
+        create_resp = requests.post(
+            f"{node_host}/api2/json/nodes/{target_node}/qemu",
+            headers=headers, verify=False, timeout=300,
+            data={
+                "vmid":   new_vmid,
+                "name":   f"llm-template-{new_vmid}",
+                "cores":  cores,
+                "memory": memory,
+                "sockets": 1,
+                "cpu":    "host",
+                "numa":   0,
+                "ostype": "l26",
+                "scsihw": "virtio-scsi-single",
+                "agent":  1,
+                "net0":   f"virtio,bridge={bridge},firewall=1",
+                "scsi0":  f"{storage}:0,import-from={import_volid},iothread=1",
+                "ide0":   f"{storage}:cloudinit",
+                "ide2":   "none,media=cdrom",
+                "boot":   "order=scsi0;ide2;net0",
+            },
+        )
+        logger.info(f"[cluster {cluster_id}] Create returned {create_resp.status_code} for vmid={new_vmid}")
+        if create_resp.status_code >= 400:
+            raise RuntimeError(f"VM create/import failed for vmid {new_vmid}: {create_resp.text}")
+        create_upid = create_resp.json().get("data")
+        if create_upid:
+            _wait_for_task(ALL_HOSTS, headers, target_node, create_upid, timeout=10800)
+        vm_created = True
+
+        # ── The staged file is dead weight the moment the disk is imported ─
+        # Freeing it here rather than at pool-completion keeps node-local space
+        # occupied for minutes instead of the hour of driver/Ray/vLLM setup
+        # that follows -- that space is what the next pull needs.
+        try:
+            requests.delete(
+                f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/content/{quote(import_volid, safe='')}",
+                headers=headers, verify=False, timeout=60,
+            )
+            import_volid = None
+        except Exception as cleanup_err:
+            logger.warning(f"Could not remove staged disk {import_volid} (non-fatal): {cleanup_err}")
+
+        tmpl_resp = requests.post(
+            f"{node_host}/api2/json/nodes/{target_node}/qemu/{new_vmid}/template",
+            headers=headers, verify=False, timeout=60,
+        )
+        if tmpl_resp.status_code >= 400:
+            raise RuntimeError(f"qm template failed for vmid {new_vmid}: {tmpl_resp.text}")
+        upid = tmpl_resp.json().get("data")
+        if upid:
+            _wait_for_task(ALL_HOSTS, headers, target_node, upid, timeout=300)
+
+        logger.info(f"[cluster {cluster_id}] Harbor template ready: vmid={new_vmid} node={target_node}")
+        return {"template_vmid": new_vmid, "template_node": target_node}
+    except Exception:
+        # Only ever clean up INCOMPLETE work. Once vm_created is True the disk
+        # import succeeded -- the expensive part -- so a failure after that
+        # point leaves the VM alone rather than throwing the work away.
+        if not vm_created and new_vmid and node_host:
+            try:
+                requests.delete(
+                    f"{node_host}/api2/json/nodes/{target_node}/qemu/{new_vmid}",
+                    headers=headers, verify=False, timeout=30,
+                )
+            except Exception:
+                pass
+        elif vm_created:
+            logger.warning(
+                f"[cluster {cluster_id}] Disk imported into vmid {new_vmid} but a later step failed -- "
+                f"leaving the VM intact rather than deleting completed work. "
+                f"It may need manual template conversion or cleanup."
+            )
+        if import_volid and node_host:
+            try:
+                requests.delete(
+                    f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/content/{quote(import_volid, safe='')}",
+                    headers=headers, verify=False, timeout=30,
+                )
+            except Exception:
+                pass
+        raise
+    finally:
+        db.close()
+
+
+def _delete_proxmox_vm(db: Session, cluster_id: int, vmid: int) -> bool:
+    """Find and permanently purge a Proxmox VM/template by vmid. True if removed or already absent."""
+    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster_data:
+        logger.warning(f"[template-cleanup] Cluster {cluster_id} not found — cannot clean up vmid {vmid}")
+        return False
+    api_token    = get_api_token(db, cluster_data.name)
+    headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not PROXMOX_HOST:
+        return False
+    node = next(
+        (vm.get("node") for vm in proxmoxService.get_all_cluster_vms(db, cluster_data)
+         if str(vm.get("vmid")) == str(vmid)),
+        None,
+    )
+    if not node:
+        logger.info(f"[template-cleanup] vmid {vmid} already absent")
+        return True
+    resp = requests.delete(
+        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}",
+        headers=headers, params={"purge": 1, "destroy-unreferenced-disks": 1},
+        verify=False, timeout=60,
+    )
+    if resp.status_code >= 400 and resp.status_code != 404:
+        logger.error(f"[template-cleanup] Could not remove vmid {vmid} on {node}: {resp.text}")
+        return False
+    logger.info(f"[template-cleanup] vmid {vmid} removed from {node}")
+    return True
+
+
+@activity.defn
+def delete_harbor_template_activity(payload: dict) -> dict:
+    """
+    Removes the intermediate Proxmox template restored from Harbor, right
+    after every node has finished cloning from it -- clones are full
+    (independent-disk) clones, so nothing depends on the template staying
+    around. Runs at the end of a successful clone phase rather than waiting
+    for pool deletion, so a Harbor-sourced template never sits around as
+    standing storage.
+    """
+    db: Session = SessionLocal()
+    try:
+        ok = _delete_proxmox_vm(db, payload["cluster_id"], int(payload["template_vmid"]))
+        return {"ok": ok, "template_vmid": payload["template_vmid"]}
+    finally:
+        db.close()
+
+
+@activity.defn
+def provision_model_volume_activity(payload: dict) -> dict:
+    """
+    Give the Ray head VM a dedicated volume for the model, mounted at the path
+    the model pull already writes to.
+
+    Sized model + headroom so the OS disk never has to grow to fit a model --
+    which matters because the OS disk arrives as a fixed-size qcow2 from Harbor
+    and enlarging it would mean growing the guest filesystem too.
+
+    Attaches to the head VM only; workers reach the same files over NFS.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id = payload["cluster_id"]
+        node       = payload["node"]
+        vmid       = int(payload["vmid"])
+        ip         = payload["ip_address"]
+        storage    = payload.get("storage", "local-lvm")
+        slot       = payload.get("slot", "scsi1")
+        mount_path = payload.get("mount_path", "/vllm_data/hf_cache")
+        ssh_user   = payload.get("ssh_user", _SSH_USER)
+        ssh_pass   = payload.get("ssh_pass", _SSH_PASS)
+
+        # Sized here rather than at create time so a slow or briefly unreachable
+        # Harbor is retried by Temporal instead of failing the API request.
+        _d, _s, annotations = _resolve_harbor_blob(
+            payload["harbor_url"], payload["harbor_user"], payload["harbor_pass"],
+            payload["project"], payload["repository"], payload["tag"],
+        )
+        size_gb = _model_volume_gb(annotations, payload["repository"], payload["tag"])
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+        api_token    = get_api_token(db, cluster_data.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        ALL_HOSTS    = _all_hosts(cluster_data) or [PROXMOX_HOST]
+
+        # ── Attach the volume ────────────────────────────────────────────
+        activity.heartbeat(f"Attaching {size_gb}GB model volume to vmid {vmid}")
+        resp = requests.put(
+            f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config",
+            headers=headers, verify=False, timeout=120,
+            data={slot: f"{storage}:{size_gb}"},
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Could not attach model volume to vmid {vmid}: {resp.text}")
+        upid = resp.json().get("data")
+        if upid:
+            _wait_for_task(ALL_HOSTS, headers, node, upid, timeout=600)
+
+        # ── Format and mount it in the guest ─────────────────────────────
+        # The device letter isn't predictable (it depends on how many disks
+        # the guest already sees), so find the one disk that has no partitions
+        # and no filesystem signature rather than assuming /dev/sdb.
+        activity.heartbeat(f"Formatting model volume on {ip}")
+        find_dev = (
+            "for d in $(lsblk -dnpo NAME,TYPE | awk '$2==\"disk\"{print $1}'); do "
+            "  if [ -z \"$(lsblk -no NAME \"$d\" | tail -n +2)\" ] && "
+            "     [ -z \"$(sudo blkid -o value -s TYPE \"$d\" 2>/dev/null)\" ]; then "
+            "    echo \"$d\"; break; "
+            "  fi; "
+            "done"
+        )
+        results = run_commands(ip, ssh_user, ssh_pass, [
+            "sudo partprobe >/dev/null 2>&1 || true",
+            find_dev,
+        ], timeout=120)
+        device = (results[-1] if isinstance(results, list) else str(results)).strip().split("\n")[-1].strip()
+        if not device.startswith("/dev/"):
+            raise RuntimeError(
+                f"No unformatted disk found on {ip} after attaching {slot} "
+                f"-- got {device!r}. The volume may not have been picked up by the guest."
+            )
+        logger.info(f"[{ip}] Model volume detected as {device}")
+
+        # fstab entry keyed on UUID, not the device name -- device letters can
+        # shift across reboots once the GPU or other disks change.
+        run_commands(ip, ssh_user, ssh_pass, [
+            f"sudo mkfs.ext4 -F -L llm-models {device}",
+            f"sudo mkdir -p {mount_path}",
+            f"sudo mount {device} {mount_path}",
+            (
+                f"UUID=$(sudo blkid -o value -s UUID {device}); "
+                f"grep -q \"$UUID\" /etc/fstab || "
+                f"echo \"UUID=$UUID {mount_path} ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab > /dev/null"
+            ),
+            f"df -h {mount_path}",
+        ], timeout=900)
+
+        logger.info(f"[{ip}] Model volume ready: {device} ({size_gb}GB) -> {mount_path}")
+        return {"slot": slot, "device": device, "size_gb": size_gb,
+                "storage": storage, "mount_path": mount_path}
+    finally:
+        db.close()
+
+
+@activity.defn
+def pull_harbor_model_to_vm_activity(payload: dict) -> dict:
+    """
+    Pull a GGUF model artifact from Harbor directly onto one VM, into a fixed
+    folder. Returns (model_dir, model_file) shaped exactly for
+    install_ray_vllm_activity's existing LLM_MODEL_PATH + LLM_MODEL_NAME
+    combination logic -- no changes needed there.
+    """
+    ip          = payload["ip_address"]
+    ssh_user    = payload.get("ssh_user", _SSH_USER)
+    ssh_pass    = payload.get("ssh_pass", _SSH_PASS)
+    harbor_url  = payload["harbor_url"]
+    harbor_user = payload["harbor_user"]
+    harbor_pass = payload["harbor_pass"]
+    project     = payload["project"]
+    repository  = payload["repository"]
+    tag         = payload["tag"]
+    model_dir   = payload.get("model_dir", "/vllm_data/hf_cache/harbor_model")
+    model_file  = repository.split("/")[-1] + ".gguf"
+
+    digest, _blob_size, _ann = _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag)
+
+    activity.heartbeat(f"Pulling model {repository}:{tag} -> {ip}:{model_dir}/{model_file}")
+    blob_url   = f"{harbor_url.rstrip('/')}/v2/{project}/{repository}/blobs/{digest}"
+    harbor_host_only = harbor_url.split("://", 1)[-1].split("/", 1)[0].split(":")[0]
+    remote_path = f"{model_dir}/{model_file}"
+    netrc_path  = f"/tmp/.harbor_netrc_{ip.replace('.', '_')}"
+    run_commands(ip, ssh_user, ssh_pass, [
+        f"sudo mkdir -p {model_dir}",
+        f"umask 077 && printf 'machine {harbor_host_only}\\nlogin {harbor_user}\\npassword {harbor_pass}\\n' > {netrc_path}",
+        (
+            f"bash -c \"curl -sS -f --netrc-file {netrc_path} '{blob_url}' "
+            f"| sudo tee {remote_path} > /dev/null\"; "
+            f"rc=$?; rm -f {netrc_path}; exit $rc"
+        ),
+    ], timeout=7200)
+
+    logger.info(f"[{ip}] Harbor model pulled: {model_dir}/{model_file}")
+    return {"model_dir": model_dir, "model_file": model_file}
+
+
+@activity.defn
+def share_model_nfs_activity(payload: dict) -> dict:
+    """Export the head node's pulled-model folder over NFS, scoped to the pool subnet."""
+    ip        = payload["ip_address"]
+    ssh_user  = payload.get("ssh_user", _SSH_USER)
+    ssh_pass  = payload.get("ssh_pass", _SSH_PASS)
+    model_dir = payload["model_dir"]
+    subnet    = payload["subnet"]
+
+    run_commands(ip, ssh_user, ssh_pass, [
+        "sudo dnf install -y nfs-utils",
+        f"sudo mkdir -p {model_dir}",
+        f"grep -qF '{model_dir} ' /etc/exports || "
+        f"echo '{model_dir} {subnet}(ro,sync,no_subtree_check,no_root_squash)' | sudo tee -a /etc/exports > /dev/null",
+        "sudo exportfs -ra",
+        "sudo systemctl enable --now nfs-server",
+    ], timeout=120)
+
+    logger.info(f"[{ip}] NFS export ready: {model_dir} -> {subnet}")
+    return {"exported_path": model_dir}
+
+
+@activity.defn
+def mount_model_nfs_activity(payload: dict) -> dict:
+    """Mount the head node's exported model folder on a worker, at the same local path."""
+    ip        = payload["ip_address"]
+    ssh_user  = payload.get("ssh_user", _SSH_USER)
+    ssh_pass  = payload.get("ssh_pass", _SSH_PASS)
+    head_ip   = payload["head_ip"]
+    model_dir = payload["model_dir"]
+
+    run_commands(ip, ssh_user, ssh_pass, [
+        "sudo dnf install -y nfs-utils",
+        f"sudo mkdir -p {model_dir}",
+        f"grep -qF '{head_ip}:{model_dir}' /etc/fstab || "
+        f"echo '{head_ip}:{model_dir} {model_dir} nfs defaults 0 0' | sudo tee -a /etc/fstab > /dev/null",
+        f"mountpoint -q {model_dir} || sudo mount {model_dir}",
+    ], timeout=120)
+
+    logger.info(f"[{ip}] Mounted model share from {head_ip}:{model_dir}")
+    return {"mounted_path": model_dir}
 
 
 @activity.defn
@@ -1247,7 +1899,7 @@ def update_llm_inference_job_activity(payload: dict) -> dict:
         if not record:
             raise RuntimeError(f"LLMInferenceJob {job_id} not found")
 
-        for field in ("status", "vmids", "ip_addresses", "head_ip", "endpoint_url", "workflow_id", "machines_name"):
+        for field in ("status", "vmids", "ip_addresses", "head_ip", "endpoint_url", "workflow_id", "machines_name", "template"):
             if field in payload:
                 setattr(record, field, payload[field])
 
@@ -1404,6 +2056,19 @@ def delete_llm_pool_activity(payload: dict) -> dict:
                 "deleted_vmids": deleted_vmids,
                 "failed_vmids": failed_vmids,
             }
+
+        # ── Safety net: remove the Harbor-restored template if it's somehow
+        # still around (normally delete_harbor_template_activity already
+        # removed it right after cloning finished). A "proxmox" source means
+        # the user picked a pre-existing cluster template that may back other
+        # pools -- deleting it would break them, so only ever touch "harbor".
+        # Best-effort: an orphan template is untidy, but not a reason to hold
+        # the pool's IPs and DB record hostage the way an undeleted VM is.
+        if record.template_source == "harbor" and str(record.template or "").isdigit():
+            try:
+                _delete_proxmox_vm(db, cluster_id, int(record.template))
+            except Exception as tmpl_err:
+                logger.error(f"[delete] Harbor template {record.template} cleanup failed: {tmpl_err}")
 
         # ── Release IPs (only reached if every VM was confirmed deleted) ──
         from models.IPs_model import IPEntry

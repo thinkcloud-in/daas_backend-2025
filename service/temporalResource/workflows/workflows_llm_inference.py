@@ -11,6 +11,18 @@ from service.temporalResource.activity import activities_llm_inference
 
 _RETRY_ONCE = RetryPolicy(maximum_attempts=1)
 
+# For the Harbor template pull specifically: safe to retry because failure
+# cleanup (in the activity itself) removes both the partial VM and the
+# uploaded backup archive before the exception propagates, and every retry
+# gets a fresh vmid from Proxmox -- so a retry never collides with the failed
+# attempt's leftovers. Kept modest (not 3+) since each attempt can itself
+# take a long time given the transfer size involved.
+_RETRY_TEMPLATE_PULL = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_attempts=2,
+)
+
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
 logger = logging.getLogger(__name__)
@@ -92,6 +104,51 @@ class CreateMultiNodeLLMWorkflow:
         reserved_vmids = reservation["vmids"]
         reserved_names = reservation["vm_names"]
 
+        # ── Phase 0.6: Harbor-sourced OS disk -> import, templatize ───────────
+        # Runs once for the whole pool, not per node -- every node below clones
+        # from this one resulting template exactly like a manually-picked one.
+        template_vmid = payload["template"]
+        harbor = payload.get("harbor")
+        vm_config = payload.get("vm_config") or {}
+        if payload.get("template_source") == "harbor" and harbor:
+            template_conn = harbor["template_conn"]
+            restore_result = await workflow.execute_activity(
+                activities_llm_inference.pull_and_restore_harbor_template_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "target_node": nodes[0]["node"],
+                    "storage":     payload.get("storage", "local-lvm"),
+                    "harbor_url":  template_conn["harbor_url"],
+                    "harbor_user": template_conn["harbor_user"],
+                    "harbor_pass": template_conn["harbor_pass"],
+                    "project":     template_conn["project"],
+                    "repository":  template_conn["repository"],
+                    "tag":         template_conn["tag"],
+                    # A qcow2 carries no VM config -- these come from the form.
+                    "cores":       vm_config.get("cores"),
+                    "memory":      vm_config.get("memory"),
+                    "network":     vm_config.get("network"),
+                }],
+                retry_policy=_RETRY_TEMPLATE_PULL,
+                start_to_close_timeout=timedelta(hours=3),
+                # Without this, a worker that dies mid-transfer (crash, killed
+                # process, lost connection) leaves the activity frozen at
+                # "Started" forever -- nothing ever notices or retries it,
+                # since Temporal has no independent way to check the worker
+                # is still alive. The activity now heartbeats every ~5s
+                # during the transfer (see _SizedStream.read); if none
+                # arrive within this window, Temporal marks it failed and
+                # retries automatically instead of hanging indefinitely.
+                heartbeat_timeout=timedelta(seconds=60),
+            )
+            template_vmid = str(restore_result["template_vmid"])
+            await workflow.execute_activity(
+                activities_llm_inference.update_llm_inference_job_activity,
+                args=[{"job_id": job_id, "template": template_vmid}],
+                retry_policy=_RETRY,
+                start_to_close_timeout=timedelta(minutes=2),
+            )
+
         # ── Phase 1: Clone + configure all VMs in parallel ───────────────────
         clone_tasks = []
         for i, (node_cfg, reserved) in enumerate(zip(nodes, ips)):
@@ -104,7 +161,7 @@ class CreateMultiNodeLLMWorkflow:
                         "gpus":          node_cfg["gpu"],
                         "reserved_ip":   reserved["ip"],
                         "ip_pool_id":    reserved["pool_id"],
-                        "template":      payload["template"],
+                        "template":      template_vmid,
                         "storage":       payload.get("storage", "local-lvm"),
                         "pool_name":     payload["name"],
                         "name_template": payload.get("name_template"),
@@ -122,6 +179,22 @@ class CreateMultiNodeLLMWorkflow:
         for i, r in enumerate(vm_results):
             if "error" in r:
                 raise Exception(f"VM clone failed for node[{i}] ({nodes[i]['node']}): {r['error']}")
+
+        # ── Phase 1.5: Harbor-sourced template -> now safe to delete ──────────
+        # Clones are full (independent-disk), confirmed above -- nothing
+        # depends on the template past this point. Best-effort: a failure
+        # here shouldn't fail the whole pool creation, delete_llm_pool_activity
+        # carries a safety-net retry of this same cleanup.
+        if payload.get("template_source") == "harbor" and harbor:
+            try:
+                await workflow.execute_activity(
+                    activities_llm_inference.delete_harbor_template_activity,
+                    args=[{"cluster_id": payload["cluster_id"], "template_vmid": template_vmid}],
+                    retry_policy=_RETRY,
+                    start_to_close_timeout=timedelta(minutes=5),
+                )
+            except Exception as cleanup_err:
+                logger.warning(f"Harbor template {template_vmid} cleanup failed (non-fatal): {cleanup_err}")
 
         vmids    = [r["vmid"]       for r in vm_results]
         ip_addrs = [r["ip_address"] for r in vm_results]
@@ -193,6 +266,97 @@ class CreateMultiNodeLLMWorkflow:
             for ip in ip_addrs
         ]
         await asyncio.gather(*gpu_health_tasks)
+
+        # ── Phase 2.65: Harbor-sourced model -> pull once, share if multi-node ─
+        # Pulled onto the head node only, ever -- on a multi-node pool it's
+        # shared out over NFS so workers read it from there instead of each
+        # pulling their own copy. install_ray_vllm_activity is re-run per node
+        # afterward purely to (re)write LLM_MODEL_PATH/LLM_MODEL_NAME -- its
+        # driver/venv install steps are already-satisfied no-ops at that point.
+        if payload.get("template_source") == "harbor" and harbor and harbor.get("model_repository"):
+            model_dir = "/vllm_data/hf_cache/harbor_model"
+
+            # Dedicated volume for the weights, mounted at the path the pull
+            # below writes into. The activity sizes it from the artifact's own
+            # metadata. Attached to the head node only -- workers reach the
+            # same files over NFS. Keeps the model off the OS disk, which
+            # arrives fixed-size from Harbor and cannot grow.
+            await workflow.execute_activity(
+                activities_llm_inference.provision_model_volume_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "node":        nodes[0]["node"],
+                    "vmid":        vmids[0],
+                    "ip_address":  head_ip,
+                    "storage":     payload.get("storage", "local-lvm"),
+                    "slot":        "scsi1",
+                    "mount_path":  "/vllm_data/hf_cache",
+                    "harbor_url":  harbor["harbor_url"],
+                    "harbor_user": harbor["harbor_user"],
+                    "harbor_pass": harbor["harbor_pass"],
+                    "project":     harbor["project"],
+                    "repository":  harbor["model_repository"],
+                    "tag":         harbor["model_tag"],
+                    **ssh_creds,
+                }],
+                retry_policy=_RETRY_ONCE,
+                start_to_close_timeout=timedelta(minutes=30),
+            )
+
+            pull_result = await workflow.execute_activity(
+                activities_llm_inference.pull_harbor_model_to_vm_activity,
+                args=[{
+                    "ip_address":  head_ip,
+                    "harbor_url":  harbor["harbor_url"],
+                    "harbor_user": harbor["harbor_user"],
+                    "harbor_pass": harbor["harbor_pass"],
+                    "project":     harbor["project"],
+                    "repository":  harbor["model_repository"],
+                    "tag":         harbor["model_tag"],
+                    "model_dir":   model_dir,
+                    **ssh_creds,
+                }],
+                retry_policy=_RETRY_ONCE,
+                start_to_close_timeout=timedelta(hours=2),
+            )
+            model_file = pull_result["model_file"]
+
+            if len(ip_addrs) > 1:
+                await workflow.execute_activity(
+                    activities_llm_inference.share_model_nfs_activity,
+                    args=[{"ip_address": head_ip, "model_dir": model_dir, "subnet": payload["subnet"], **ssh_creds}],
+                    retry_policy=_RETRY,
+                    start_to_close_timeout=timedelta(minutes=10),
+                )
+                mount_tasks = [
+                    workflow.execute_activity(
+                        activities_llm_inference.mount_model_nfs_activity,
+                        args=[{"ip_address": ip, "head_ip": head_ip, "model_dir": model_dir, **ssh_creds}],
+                        retry_policy=_RETRY,
+                        start_to_close_timeout=timedelta(minutes=10),
+                    )
+                    for ip in ip_addrs[1:]
+                ]
+                await asyncio.gather(*mount_tasks)
+
+            env_tasks = [
+                workflow.execute_activity(
+                    activities_llm_inference.install_ray_vllm_activity,
+                    args=[{
+                        "ip_address": ip,
+                        "name":       reserved_names[i],
+                        "subnet":     payload["subnet"],
+                        "net_iface":  payload.get("net_iface"),
+                        "model":      model_file,
+                        "model_path": model_dir,
+                        **ssh_creds,
+                    }],
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                    start_to_close_timeout=timedelta(minutes=10),
+                )
+                for i, ip in enumerate(ip_addrs)
+            ]
+            await asyncio.gather(*env_tasks)
 
         # ── Phase 3: Affinity rules ───────────────────────────────────────────
         # Each VM must be pinned to the node IT was actually cloned onto --

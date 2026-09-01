@@ -25,6 +25,12 @@ async def llm_inference_worker():
         workflows=[CreateMultiNodeLLMWorkflow, PoolVMActionWorkflow, DeleteLLMPoolWorkflow],
         activities=[
             activities_llm_inference.reserve_vmids_activity,
+            activities_llm_inference.pull_and_restore_harbor_template_activity,
+            activities_llm_inference.delete_harbor_template_activity,
+            activities_llm_inference.provision_model_volume_activity,
+            activities_llm_inference.pull_harbor_model_to_vm_activity,
+            activities_llm_inference.share_model_nfs_activity,
+            activities_llm_inference.mount_model_nfs_activity,
             activities_llm_inference.clone_and_configure_vm_activity,
             activities_llm_inference.verify_gpu_health_activity,
             activities_llm_inference.verify_ray_cluster_gpu_activity,

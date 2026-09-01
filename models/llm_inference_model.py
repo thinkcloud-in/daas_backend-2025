@@ -17,6 +17,10 @@ class LLMInferenceJob(Base):
     cluster_id = Column(Integer, nullable=False)
     ip_pool_ids = Column(ARRAY(Integer), nullable=False)          # multiple pools
     template = Column(String, nullable=False)
+    template_source = Column(String, nullable=True, default="proxmox")
+    harbor_registry_id = Column(Integer, nullable=True)   # kubernetes_deployments.id
+    harbor_template = Column(String, nullable=True)       # "repository:tag"
+    harbor_model = Column(String, nullable=True)          # "repository:tag"
     nodes = Column(JSONB, nullable=False)                         # [{"node": "", "gpu": []}]
     # Actual resolved per-VM names (e.g. ["example-001", "example-002"]),
     # not the raw pattern the user typed at creation ("example-{n:fixed=3}").
@@ -35,6 +39,12 @@ class LLMInferenceJob(Base):
     # so this must be the source of truth read back on restart, not
     # something only used once at creation time.
     vllm_extra_params = Column(JSONB, nullable=True)
+    # Harbor-source only: the VM spec the user supplied. A qcow2 disk carries
+    # no VM config, so unlike a Proxmox template these have to be described at
+    # create time -- and since they're null for every proxmox-source pool, they
+    # live in one JSONB rather than a column each.
+    #   {"cores": 8, "memory": 16384, "network": "vmbr0"}
+    vm_config = Column(JSONB, nullable=True)
     vmids = Column(ARRAY(Integer), nullable=True)
     ip_addresses = Column(ARRAY(String), nullable=True)
     head_ip = Column(String, nullable=True)
@@ -60,7 +70,17 @@ class LLMInferenceJobCreate(BaseModel):
     clusterName: str
     poolName: str
     ipPools: List[str]                  # list of IPSModel.Pool_name
-    template: str
+    templateSource: Optional[str] = "proxmox"  # "proxmox" | "harbor"
+    template: Optional[str] = None      # required when templateSource == "proxmox"
+    harborRegistryId: Optional[str] = None   # kubernetes_deployments.id, required when templateSource == "harbor"
+    harborTemplate: Optional[str] = None     # "repository:tag", required when templateSource == "harbor"
+    harborArtifact: Optional[str] = None     # "repository:tag" of the model, required when templateSource == "harbor"
+    # VM spec -- harbor source only. A qcow2 is just a disk, so the VM built
+    # around it is described here; a proxmox-source pool inherits these from
+    # its template instead. Persisted together in the vm_config JSONB column.
+    cores: Optional[int] = None
+    memory: Optional[int] = None             # MB
+    network: Optional[str] = None            # bridge name, e.g. "vmbr0"
     nodes: List[NodeConfig]             # [{node, gpu: []}]
     storage: Optional[str] = "local-lvm"
     machine_name: Optional[str] = None
@@ -75,11 +95,33 @@ class LLMInferenceJobCreate(BaseModel):
     # ram: Optional[int] = None         # taken from template
     # cpu: Optional[int] = None         # taken from template
 
-    @validator("template")
-    def template_must_not_be_empty(cls, v):
+    @validator("template", always=True)
+    def template_must_not_be_empty(cls, v, values):
+        if values.get("templateSource") == "harbor":
+            return v
         if not v or not v.strip():
             raise ValueError("Template VM is required. Provide a valid Proxmox template VMID or name.")
         return v.strip()
+
+    @validator("harborRegistryId", "harborTemplate", "harborArtifact", always=True)
+    def harbor_fields_required_when_harbor_source(cls, v, values):
+        if values.get("templateSource") == "harbor" and not v:
+            raise ValueError("harborRegistryId, harborTemplate, and harborArtifact are required when templateSource is 'harbor'.")
+        return v
+
+    @validator("maxImagesPerRequest", "cores", "memory", pre=True)
+    def blank_int_to_none(cls, v):
+        return None if v == "" else v
+
+    @validator("cores", "memory", "network", always=True)
+    def vm_spec_required_when_harbor_source(cls, v, values):
+        # A Proxmox template already carries these; a bare qcow2 does not, so
+        # for harbor source there is nothing to fall back on.
+        if values.get("templateSource") == "harbor" and not v:
+            raise ValueError(
+                "cores, memory, and network are required when templateSource is 'harbor'."
+            )
+        return v
 
     @validator("model", pre=True, always=True)
     def set_model_from_env(cls, v):
