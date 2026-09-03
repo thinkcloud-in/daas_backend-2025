@@ -5,12 +5,9 @@ import base64
 import math
 import shlex
 import time
-import threading
-import subprocess
 import ipaddress
 import requests
 import paramiko
-from requests_toolbelt import MultipartEncoder
 from urllib.parse import quote
 
 from temporalio import activity
@@ -34,6 +31,13 @@ _VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launche
 # Room on the model volume beyond the weights themselves -- vLLM writes
 # compiled kernels, torch caches and tokenizer artifacts alongside them.
 _MODEL_VOLUME_HEADROOM_GB = 100
+# In-cluster Service DNS name for the artifacts-controller pod (devraq-oras-skopeo-api),
+# which does the actual Harbor pull + Proxmox push -- this backend's own network
+# position cannot complete that upload reliably (confirmed extensively).
+ARTIFACTS_CONTROLLER_URL = os.getenv(
+    "ARTIFACTS_CONTROLLER_URL",
+    "http://devraq-oras-skopeo-api-svc.thinkcloud.svc.cluster.local:8009",
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -139,89 +143,6 @@ def _run_commands_with_key(host: str, username: str, pkey, commands: list):
         client.close()
 
 
-def _curl_upload_stream(node_host: str, headers: dict, target_node: str, import_storage: str,
-                         filename: str, content_stream, total_size: int, cluster_id,
-                         heartbeat_interval: int = 15):
-    """
-    Streams content_stream (a file-like object, e.g. harbor_resp.raw) into
-    Proxmox's storage upload API via curl.
-
-    Python's requests/OpenSSL stack cannot complete this specific upload on
-    this network -- confirmed to fail instantly regardless of file size,
-    auth token, TLS version, or renegotiation flags, while curl completes
-    the identical upload reliably every time. curl reads the file field from
-    this process's own stdin (@-), so the blob is piped straight through,
-    never buffered to local disk and never fully held in memory.
-
-    Everything, including the Authorization header, goes as plain argv --
-    this curl build (curl 8.21.0 on Windows) rejects -F options combined
-    with a -K config file no matter how they're ordered relative to each
-    other or the URL ("option -F: is badly used here"/"option -K: is badly
-    used here" either way), so -K is not usable together with -F here at
-    all. The token is briefly visible in the process list for the life of
-    this subprocess as a result.
-    """
-    token = headers["Authorization"]
-    url = f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/upload"
-
-    proc = subprocess.Popen(
-        [
-            "curl", "-k", "-v",
-            "-H", f"Authorization: {token}",
-            "-F", "content=import",
-            "-F", f"filename=@-;filename={filename};type=application/octet-stream",
-            url,
-        ],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-    )
-
-    sent = 0
-    write_error = {}
-
-    def _pump():
-        nonlocal sent
-        try:
-            while True:
-                chunk = content_stream.read(1024 * 1024)
-                if not chunk:
-                    break
-                proc.stdin.write(chunk)
-                sent += len(chunk)
-        except Exception as e:
-            write_error["error"] = e
-        finally:
-            try:
-                proc.stdin.close()
-            except Exception:
-                pass
-
-    writer = threading.Thread(target=_pump, daemon=True)
-    writer.start()
-
-    while writer.is_alive():
-        writer.join(timeout=heartbeat_interval)
-        pct = (sent / total_size * 100) if total_size else 0
-        activity.heartbeat(f"[cluster {cluster_id}] curl upload: {sent}/{total_size} bytes ({pct:.1f}%)")
-
-    stdout, stderr = proc.communicate()
-    if write_error:
-        # A broken pipe here means curl already exited before we finished
-        # writing -- that exit (and its real cause) is in returncode/stderr,
-        # not in the write error itself, which is just the downstream symptom.
-        raise RuntimeError(
-            f"curl exited early during upload (exit {proc.returncode}) after "
-            f"{sent}/{total_size} bytes written -- write failed with "
-            f"{write_error['error']!r}. curl stderr: {stderr.decode(errors='replace')}"
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(f"curl upload failed (exit {proc.returncode}): {stderr.decode(errors='replace')}")
-
-    try:
-        return json.loads(stdout.decode())
-    except json.JSONDecodeError:
-        raise RuntimeError(f"curl upload returned non-JSON response: {stdout[:500]!r}")
-
-
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
@@ -290,67 +211,6 @@ def reserve_vmids_activity(payload: dict) -> dict:
         return {"vmids": reserved, "vm_names": vm_names}
     finally:
         db.close()
-
-
-class _SizedStream:
-    """
-    Wraps a stream, exposing .read(size) plus an explicit, caller-supplied
-    .len -- nothing else (no .fileno(), no __len__, no .getvalue()).
-
-    MultipartEncoder computes each part's length EAGERLY, at construction
-    time (Part.__init__ does `total_len(self.body)` immediately) -- it has
-    no support for a genuinely unknown-length part; passing one raises
-    TypeError immediately rather than falling back to chunked transfer.
-
-    So the length must be told to it, not hidden from it. A raw HTTP
-    response stream like harbor_resp.raw DOES have a working .fileno() (it's
-    backed by a real socket) -- MultipartEncoder's own length-detection would
-    find that, then ask the OS "how big is this file", which for a socket
-    typically comes back as 0, not the real blob size. Hiding .fileno() and
-    supplying the real size ourselves (from the OCI manifest, which already
-    tells us the exact blob size) avoids that wrong guess entirely.
-    """
-    # Below this, MultipartEncoder/urllib3 read in small (~8-16KB) chunks --
-    # heartbeating on every single .read() would be thousands of calls/sec
-    # of pure overhead for no benefit, so that's throttled to once every
-    # few seconds. The CPU yield below is intentionally NOT throttled --
-    # it's meant to fire on every chunk (see _CHUNK_YIELD_S).
-    _HEARTBEAT_INTERVAL_S = 5
-    # Every chunk read/relayed hands the CPU back to the OS scheduler for a
-    # moment instead of the loop hammering read() -> write() back-to-back at
-    # full speed for the whole multi-minute transfer. sleep(0) is a
-    # cooperative yield (gives other threads a chance to run) without
-    # forcing a real minimum delay the way sleep(0.001) does -- at ~2.5M
-    # chunks for a 31GB file, even 1ms/chunk adds ~40 minutes of pure sleep
-    # and caps throughput at chunk_size/1ms regardless of actual bandwidth.
-    _CHUNK_YIELD_S = float(os.getenv("HARBOR_TRANSFER_CHUNK_YIELD_S", "0"))
-
-    def __init__(self, stream, length):
-        self._stream = stream
-        self.len = length
-        self._sent = 0
-        self._last_heartbeat = 0.0
-
-    def read(self, size=-1):
-        chunk = self._stream.read(size)
-        self._sent += len(chunk)
-        now = time.monotonic()
-
-        # Heartbeat: (a) proves the worker is alive so Temporal's
-        # heartbeatTimeout can actually detect a dead/frozen worker instead
-        # of freezing forever at "Started" with no way to notice, and
-        # (b) gives Temporal a checkpoint to deliver a cancellation --
-        # without this, terminate/cancel has no opportunity to ever reach
-        # code that's blocked inside a single multi-minute requests.post().
-        if now - self._last_heartbeat >= self._HEARTBEAT_INTERVAL_S:
-            self._last_heartbeat = now
-            pct = (self._sent / self.len * 100) if self.len else 0
-            activity.heartbeat(f"Uploaded {self._sent}/{self.len} bytes ({pct:.1f}%)")
-
-        if chunk:
-            time.sleep(self._CHUNK_YIELD_S)
-
-        return chunk
 
 
 def _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag):
@@ -499,38 +359,60 @@ def pull_and_restore_harbor_template_activity(payload: dict) -> dict:
             raise RuntimeError(f"Failed to get next VMID: {resp.text}")
         new_vmid = int(resp.json()["data"])
 
-        # ── Relay Harbor -> the node's own upload API via curl ────────────
-        # Python's requests/OpenSSL stack cannot complete this upload on
-        # this network (confirmed: fails instantly regardless of file size,
-        # token, TLS version, or renegotiation flags) while curl completes
-        # it reliably every time. curl reads the blob from this process's
-        # stdin (-F field=@-), so nothing is buffered to local disk -- Harbor
-        # bytes are piped straight into curl's request body as they arrive.
-        blob_url = f"{harbor_url.rstrip('/')}/v2/{project}/{repository}/blobs/{digest}"
+        # ── Relay Harbor -> Proxmox via the artifacts-controller pod ──────
+        # Neither this process's own requests/OpenSSL stack nor a
+        # subprocess curl running FROM here can complete this upload
+        # reliably on this network (confirmed extensively). A curl upload
+        # run from the artifacts-controller pod's own network position
+        # completes the identical transfer cleanly every time instead, so
+        # the pull-from-Harbor and push-to-Proxmox both happen over there;
+        # this activity just triggers each step and waits on the result.
         filename = f"llm-template-{new_vmid}-{int(time.time())}.qcow2"
         activity.heartbeat(f"Pulling {repository}:{tag} -> {target_node}:{import_storage}")
 
-        harbor_resp = requests.get(
-            blob_url, auth=(harbor_user, harbor_pass), verify=False,
-            stream=True, timeout=(10, 7200),
+        pull_resp = requests.post(
+            f"{ARTIFACTS_CONTROLLER_URL}/pull/artifact",
+            json={
+                "harbor_url": harbor_url,
+                "username": harbor_user,
+                "password": harbor_pass,
+                "project": project,
+                "artifact_name": repository,
+                "tag": tag,
+                # Unique per pull so concurrent pool creations (multi-node)
+                # can't collide on the same staged file.
+                "dest_dir": f"/library/harbor/pull_artifacts/{new_vmid}",
+            },
+            timeout=7200,
         )
-        if not harbor_resp.ok:
-            raise RuntimeError(f"Harbor blob fetch failed ({harbor_resp.status_code}): {harbor_resp.text[:300]}")
+        if pull_resp.status_code >= 400:
+            raise RuntimeError(f"Artifact pull failed ({pull_resp.status_code}): {pull_resp.text[:500]}")
+        pull_data = pull_resp.json()
+        pulled_files = pull_data.get("files") or []
+        if not pulled_files:
+            raise RuntimeError(f"Artifact pull returned no files: {pull_data}")
+        staged_path = f"{pull_data['dest_dir']}/{pulled_files[0]}"
+        logger.info(f"[cluster {cluster_id}] Pulled {repository}:{tag} to {staged_path}")
 
-        logger.info(f"[cluster {cluster_id}] Starting curl upload to {target_node}:{import_storage} vmid={new_vmid}")
-        upload_data = _curl_upload_stream(
-            node_host=node_host, headers=headers, target_node=target_node,
-            import_storage=import_storage, filename=filename,
-            content_stream=harbor_resp.raw, total_size=blob_size,
-            cluster_id=cluster_id,
+        activity.heartbeat(f"Pushing {filename} -> {target_node}:{import_storage}")
+        node_ip = node_host.split("://", 1)[-1].split(":", 1)[0]
+        push_resp = requests.post(
+            f"{ARTIFACTS_CONTROLLER_URL}/push/artifact/proxmox",
+            json={
+                "file_path": staged_path,
+                "node_host": node_ip,
+                "node_name": target_node,
+                "filename": filename,
+                "proxmox_token": api_token,
+                "storage": import_storage,
+                "tls_verify": False,
+                "poll_timeout": 3600,
+            },
+            timeout=7500,
         )
-        logger.info(f"[cluster {cluster_id}] curl upload finished for vmid={new_vmid}")
-        upload_upid = upload_data.get("data")
-        logger.info(f"[cluster {cluster_id}] Upload UPID: {upload_upid}")
-        if upload_upid:
-            logger.info(f"[cluster {cluster_id}] Waiting for upload task {upload_upid} (timeout=1800s)...")
-            _wait_for_task(ALL_HOSTS, headers, target_node, upload_upid, timeout=1800)
-            logger.info(f"[cluster {cluster_id}] Upload task completed.")
+        if push_resp.status_code >= 400:
+            raise RuntimeError(f"Proxmox push failed ({push_resp.status_code}): {push_resp.text[:500]}")
+        logger.info(f"[cluster {cluster_id}] Push to {target_node}:{import_storage} completed for vmid={new_vmid}")
 
         import_volid = f"{import_storage}:import/{filename}"
 
