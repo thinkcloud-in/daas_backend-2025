@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from fastapi.encoders import jsonable_encoder
 import requests, os
 from utils.proxmox_helper import init_proxmox_context, cleanup_proxmox_context
+from utils.crypto_utils import strip_password
 
 VERIFY_SSL = False
 
@@ -185,9 +186,10 @@ async def create_cluster_activity(cluster_data: dict):
                 pass
             db.commit()
             db.refresh(cluster)
+            cluster_dict = strip_password(model_to_dict(cluster))
             return {
                 "cluster": {
-                    **model_to_dict(cluster),
+                    **cluster_dict,
                     "ip": cluster.ip.split(",") if cluster.ip else []
                 }
             }
@@ -237,10 +239,12 @@ async def delete_cluster_activity(cluster_id: str):
                 msg_parts.append("Hyper-V Cluster deleted successfully from DB.")
             db.commit()
             clusters = db.query(Cluster).all()
-            return jsonable_encoder({
+            result = jsonable_encoder({
                 "msg": " ".join(msg_parts),
                 "clusters": clusters
             })
+            strip_password(result["clusters"])
+            return result
         except Exception as e:
             db.rollback()
             raise Exception("Error occurred while deleting cluster: " + str(e))
@@ -269,10 +273,12 @@ async def update_cluster_activity(cluster_data: UpdateClusterBase, cluster_id: s
             if db_cluster.type.lower() == "vmware":
                 modify_telegraf_vsphere_input_plugin(db_cluster.ip, cluster_data.username, cluster_data.password,cluster_data.port,cluster_id)
             
-            return jsonable_encoder({
+            result = jsonable_encoder({
                 "msg": "Cluster updated successfully",
                 "cluster": db_cluster
             })
+            strip_password(result["cluster"])
+            return result
         except Exception as e:
             db.rollback()
             return {"msg": "Error occurred: " + str(e)}
