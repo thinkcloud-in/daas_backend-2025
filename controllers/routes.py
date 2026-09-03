@@ -17,6 +17,7 @@ import os
 import pytz
 from models.API_Response_model import APIResponse
 from utils import response_format
+from utils.crypto_utils import strip_password
 from controllers.llm_inference_controller import _fetch_steps
 
 logger = logging.getLogger(__name__)
@@ -278,7 +279,7 @@ async def list_clusters(page: int = 1, page_size: int = 10, db: Session = Depend
     total = query.count()
     total_pages = max(1, (total + page_size - 1) // page_size)
     clusters = query.offset((page - 1) * page_size).limit(page_size).all()
-    clusters_json = jsonable_encoder(clusters)
+    clusters_json = strip_password(jsonable_encoder(clusters))
     pagination = {
         "page": page,
         "page_size": page_size,
@@ -293,7 +294,8 @@ async def list_clusters(page: int = 1, page_size: int = 10, db: Session = Depend
 @router.get("/cluster/{cluster_id}", response_model=APIResponse)
 async def get_cluster_details_endpoint(cluster_id: str, db: Session = Depends(get_db)):
     res = await controller.get_cluster_details(db, cluster_id)
-    return response_format.success_response(200, "Cluster details retrieved successfully.", jsonable_encoder(res))
+    res_json = strip_password(jsonable_encoder(res))
+    return response_format.success_response(200, "Cluster details retrieved successfully.", res_json)
 
 
 @router.delete('/cluster/delete_cluster/{cluster_id}', response_model=APIResponse)

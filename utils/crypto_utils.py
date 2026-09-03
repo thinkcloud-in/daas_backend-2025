@@ -48,6 +48,20 @@ def decrypt_password(cipher: str | None) -> str | None:
         ) from e
 
 
+def strip_password(data):
+    """
+    Removes the 'password' key (in place) from a dict, or from every dict in
+    a list. The ORM decrypts Cluster.password back to plaintext as soon as a
+    row is loaded, so any endpoint serializing a Cluster/list-of-Cluster must
+    run its response through this before returning it to the client.
+    """
+    items = data if isinstance(data, list) else [data]
+    for item in items:
+        if isinstance(item, dict):
+            item.pop("password", None)
+    return data
+
+
 class EncryptedString(TypeDecorator):
     """
     SQLAlchemy column type that transparently encrypts a value before it is

@@ -51,6 +51,7 @@ from router.library_router import library_router
 from router.pod_storage_router import pod_storage_router
 from router.kubernetes_router import kubernetes_router
 from router.app_deploy_router import app_deploy_router
+from router.help_support_router import help_support_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -105,6 +106,7 @@ app.include_router(library_router)
 app.include_router(kubernetes_router)
 app.include_router(app_deploy_router)
 app.include_router(pod_storage_router)
+app.include_router(help_support_router)
 
 
 def start_async_worker(target):
