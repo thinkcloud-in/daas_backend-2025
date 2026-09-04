@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import Optional
 
 from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
 
 from service import help_support_service
 from utils import response_format
@@ -60,3 +61,35 @@ def continue_log_scroll(scroll_id: str):
 def close_log_scroll(scroll_id: str):
     help_support_service.close_log_scroll(scroll_id)
     return response_format.success_response(200, "Scroll closed", {"scroll_id": scroll_id})
+
+
+def download_backend_logs(
+    start_date: str, end_date: str,
+    start_time: str, end_time: str,
+    services: Optional[str] = None,
+    batch_size: int = 1000,
+):
+    """
+    Poore matching date range ke logs ko ek .log file ke roop me directly
+    browser download karwata hai — StreamingResponse use hoti hai, koi server
+    pe file/storage nahi banti, data seedha OpenSearch se client tak stream
+    hota hai.
+    Pehla batch YAHIN (generator ke bahar) fetch karte hain jaanbujhke — agar
+    OpenSearch unreachable ho ya auth/date galat ho, to error yahi turant
+    proper HTTP status ke saath raise ho jata hai, streaming shuru hone se
+    pehle hi (streaming shuru hone ke baad HTTP status badalna possible nahi
+    hota).
+    """
+    _validate_range(start_date, end_date, start_time, end_time)
+    service_list = _parse_services(services)
+
+    first_batch = help_support_service.start_log_scroll(
+        start_date, end_date, start_time, end_time, service_list, batch_size
+    )
+
+    filename = f"backend-logs_{start_date}_to_{end_date}.log"
+    return StreamingResponse(
+        help_support_service.stream_log_batches(first_batch),
+        media_type="text/plain",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )

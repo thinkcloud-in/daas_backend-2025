@@ -1,13 +1,17 @@
 """
-LLM Push Activity  (K8s-free, direct OCI push)
+LLM Push Activity  (shared-PV, push-image wrapper)
 
 Flow:
   1. DB se library item + harbor registry record lo
-  2. GGUF / template metadata nikalo (local file read + ZIP mein version_metadata.json)
-  3. OCI annotations build karo (version_metadata.json ke SAARE fields)
-  4. Direct OCI Distribution Spec se Harbor pe push karo (no wrapper, no pod)
-  5. Harbor REST API se repository description set karo
-  6. DB update: harbor_image, version, harbor_owner, push_status=pushed
+  2. ZIP ko shared PV (STORAGE_TEMP_DIR) pe hi extract karo — metadata JSON
+     ko chhodkar baaki saari files (koi extension filter nahi)
+  3. GGUF / template metadata nikalo (local file read + version_metadata.json)
+  4. OCI annotations build karo (version_metadata.json ke SAARE fields)
+  5. HTTP POST /push/artifact → image-push-tool pod (isi PV ko mount karta
+     hai) → oras push → Harbor. File ke bytes bhejne ki zaroorat nahi, sirf
+     shared-PV path bata dete hain.
+  6. Harbor REST API se repository description set karo
+  7. DB update: harbor_image, version, harbor_owner, push_status=pushed
 """
 
 import os
@@ -38,6 +42,9 @@ def _clean_env_url(value: str | None) -> str:
 
 
 _PUSH_IMAGE_BASE_URL = _clean_env_url(os.getenv("PUSH_IMAGE_BASE_URL", ""))
+# library aur image-push-tool pod dono isi PV ko mount karte hain — extraction
+# yahi honi chahiye, warna image-push-tool ko extracted files dikhengi hi nahi.
+_STORAGE_TEMP_DIR = os.getenv("STORAGE_TEMP_DIR") or None
 
 
 def _sanitize(name: str) -> str:
@@ -376,12 +383,26 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
 def _push_artifact_via_api(
     harbor_host: str, harbor_user: str, harbor_pass: str,
     project: str, artifact_name: str, tag: str,
-    file_path: str,
+    file_paths,
     annotations: dict = None,
 ) -> None:
-    """HTTP POST → push-image wrapper → oras push → Harbor."""
+    """
+    HTTP POST → push-image wrapper (image-push-tool pod) → oras push → Harbor.
+    file_paths ek path (str) ya paths ki list ho sakta hai — ye pod se PV
+    share karta hai (library upload isi PV pe files rakhta hai), isliye yaha
+    file ke bytes bhejne ki zaroorat nahi, sirf path bata dete hain.
+
+    NOTE: multi-file (`file_paths` list) tabhi kaam karega jab image-push-tool
+    pod ke apne /push/artifact handler me bhi is field ko support kiya gaya ho
+    (multi-layer oras push) — wo alag service hai, is repo ke bahar.
+    """
     if not _PUSH_IMAGE_BASE_URL:
         raise RuntimeError("PUSH_IMAGE_BASE_URL env var is not set")
+
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+    if not file_paths:
+        raise RuntimeError("_push_artifact_via_api: at least one file path is required")
 
     payload = {
         "harbor_url":    harbor_host,
@@ -390,7 +411,8 @@ def _push_artifact_via_api(
         "project":       project,
         "artifact_name": artifact_name,
         "tag":           tag,
-        "file_path":     file_path,
+        "file_path":     file_paths[0],   # backward-compat single-file field
+        "file_paths":    file_paths,      # multi-file — pod-side support zaroori
         "plain_http":    True,
     }
     if annotations:
@@ -399,7 +421,8 @@ def _push_artifact_via_api(
 
     logger.info(
         f"[LLMPush] POST {_PUSH_IMAGE_BASE_URL}/push/artifact "
-        f"→ {harbor_host}/{project}/{artifact_name}:{tag}"
+        f"→ {harbor_host}/{project}/{artifact_name}:{tag} "
+        f"({len(file_paths)} file(s): {[os.path.basename(p) for p in file_paths]})"
     )
     resp = requests.post(
         f"{_PUSH_IMAGE_BASE_URL}/push/artifact",
@@ -416,32 +439,14 @@ def _push_artifact_via_api(
 
 # ── Direct OCI push (no wrapper, no pod, no oras CLI) ────────────────────────
 
-def _push_oci_artifact_direct(
-    harbor_host: str,
-    harbor_user: str,
-    harbor_pass: str,
-    project: str,
-    repo_name: str,
-    tag: str,
-    file_path: str,
-    annotations: dict = None,
-) -> str:
+def _push_blob(reg_url: str, harbor_host: str, auth: tuple, file_path: str) -> tuple:
     """
-    OCI Distribution Spec se directly Harbor pe artifact push karo.
-    Wrapper ya oras CLI ki zaroorat nahi — annotations manifest mein directly embed hoti hain.
-    Harbor Overview tab mein saare annotations dikhengi.
-    Returns: manifest digest (sha256:xxx)
+    Ek file ko OCI blob ke roop me upload karo (skip agar already exist ho).
+    Streaming hoti hai (memory safe, chahe file kitni bhi badi ho).
+    Returns: (digest, size)
     """
     import hashlib
-    import json as _json
 
-    auth    = (harbor_user, harbor_pass)
-    fname   = os.path.basename(file_path)
-    reg_url = f"http://{harbor_host}/v2/{project}/{repo_name}"
-
-    logger.info(f"[LLMPush] Direct OCI push → {harbor_host}/{project}/{repo_name}:{tag}")
-
-    # ── 1. File digest + size (streaming, memory safe) ────────────────────────
     h = hashlib.sha256()
     file_size = 0
     with open(file_path, "rb") as fh:
@@ -449,44 +454,93 @@ def _push_oci_artifact_direct(
             h.update(_c)
             file_size += len(_c)
     file_digest = f"sha256:{h.hexdigest()}"
-    logger.info(f"[LLMPush] blob digest={file_digest} size={file_size / 1e6:.1f} MB")
+    logger.info(f"[LLMPush] blob digest={file_digest} size={file_size / 1e6:.1f} MB ({os.path.basename(file_path)})")
 
-    # ── 2. Blob upload (skip if already exists) ───────────────────────────────
-    if requests.head(f"{reg_url}/blobs/{file_digest}", auth=auth, timeout=30, verify=False).status_code != 200:
-        # Start upload session
-        post_r = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=30, verify=False)
-        if not post_r.ok:
-            raise RuntimeError(f"OCI upload session failed: {post_r.status_code} {post_r.text[:300]}")
-        session_url = post_r.headers.get("Location", "")
-        if not session_url.startswith("http"):
-            session_url = f"http://{harbor_host}{session_url}"
+    if requests.head(f"{reg_url}/blobs/{file_digest}", auth=auth, timeout=30, verify=False).status_code == 200:
+        logger.info(f"[LLMPush] Blob already exists — skip upload ({os.path.basename(file_path)}).")
+        return file_digest, file_size
 
-        # PATCH — file stream karo (large files ke liye memory safe)
-        logger.info(f"[LLMPush] Uploading blob {file_size / 1e9:.2f} GB...")
-        with open(file_path, "rb") as fh:
-            patch_r = requests.patch(
-                session_url, data=fh, auth=auth,
-                headers={"Content-Type": "application/octet-stream"},
-                timeout=3600, verify=False,
-            )
-        if not patch_r.ok:
-            raise RuntimeError(f"OCI blob PATCH failed: {patch_r.status_code} {patch_r.text[:300]}")
-        put_url = patch_r.headers.get("Location", "")
-        if not put_url.startswith("http"):
-            put_url = f"http://{harbor_host}{put_url}"
+    # Start upload session
+    post_r = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=30, verify=False)
+    if not post_r.ok:
+        raise RuntimeError(f"OCI upload session failed: {post_r.status_code} {post_r.text[:300]}")
+    session_url = post_r.headers.get("Location", "")
+    if not session_url.startswith("http"):
+        session_url = f"http://{harbor_host}{session_url}"
 
-        # PUT — blob commit
-        sep = "&" if "?" in put_url else "?"
-        put_r = requests.put(
-            f"{put_url}{sep}digest={file_digest}",
-            auth=auth, headers={"Content-Type": "application/octet-stream"},
-            timeout=60, verify=False,
+    # PATCH — file stream karo (large files ke liye memory safe)
+    logger.info(f"[LLMPush] Uploading blob {file_size / 1e9:.2f} GB ({os.path.basename(file_path)})...")
+    with open(file_path, "rb") as fh:
+        patch_r = requests.patch(
+            session_url, data=fh, auth=auth,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=3600, verify=False,
         )
-        if not put_r.ok:
-            raise RuntimeError(f"OCI blob commit failed: {put_r.status_code} {put_r.text[:300]}")
-        logger.info("[LLMPush] Blob committed.")
-    else:
-        logger.info("[LLMPush] Blob already exists — skip upload.")
+    if not patch_r.ok:
+        raise RuntimeError(f"OCI blob PATCH failed: {patch_r.status_code} {patch_r.text[:300]}")
+    put_url = patch_r.headers.get("Location", "")
+    if not put_url.startswith("http"):
+        put_url = f"http://{harbor_host}{put_url}"
+
+    # PUT — blob commit
+    sep = "&" if "?" in put_url else "?"
+    put_r = requests.put(
+        f"{put_url}{sep}digest={file_digest}",
+        auth=auth, headers={"Content-Type": "application/octet-stream"},
+        timeout=60, verify=False,
+    )
+    if not put_r.ok:
+        raise RuntimeError(f"OCI blob commit failed: {put_r.status_code} {put_r.text[:300]}")
+    logger.info(f"[LLMPush] Blob committed ({os.path.basename(file_path)}).")
+    return file_digest, file_size
+
+
+def _push_oci_artifact_direct(
+    harbor_host: str,
+    harbor_user: str,
+    harbor_pass: str,
+    project: str,
+    repo_name: str,
+    tag: str,
+    file_paths,
+    annotations: dict = None,
+) -> str:
+    """
+    OCI Distribution Spec se directly Harbor pe artifact push karo.
+    Wrapper ya oras CLI ki zaroorat nahi — annotations manifest mein directly embed hoti hain.
+    Harbor Overview tab mein saare annotations dikhengi.
+
+    file_paths: ek file ka path (str) ya files ki list — har file apna alag
+    OCI layer banti hai (koi zip/repack nahi, extension ki koi filtering
+    nahi) — isi manifest ke andar sab layers ke roop me push ho jaati hain.
+    Returns: manifest digest (sha256:xxx)
+    """
+    import hashlib
+    import json as _json
+
+    if isinstance(file_paths, str):
+        file_paths = [file_paths]
+    if not file_paths:
+        raise RuntimeError("_push_oci_artifact_direct: at least one file_path is required")
+
+    auth    = (harbor_user, harbor_pass)
+    reg_url = f"http://{harbor_host}/v2/{project}/{repo_name}"
+
+    logger.info(
+        f"[LLMPush] Direct OCI push → {harbor_host}/{project}/{repo_name}:{tag} "
+        f"({len(file_paths)} file(s): {[os.path.basename(p) for p in file_paths]})"
+    )
+
+    # ── 1+2. Har file ko apna blob/layer banao ────────────────────────────────
+    layers = []
+    for fp in file_paths:
+        digest, size = _push_blob(reg_url, harbor_host, auth, fp)
+        layers.append({
+            "mediaType":   "application/octet-stream",
+            "digest":      digest,
+            "size":        size,
+            "annotations": {"org.opencontainers.image.title": os.path.basename(fp)},
+        })
 
     # ── 3. Empty config blob ──────────────────────────────────────────────────
     _empty        = b"{}"
@@ -514,12 +568,7 @@ def _push_oci_artifact_direct(
             "digest":    _empty_digest,
             "size":      len(_empty),
         },
-        "layers": [{
-            "mediaType":   "application/octet-stream",
-            "digest":      file_digest,
-            "size":        file_size,
-            "annotations": {"org.opencontainers.image.title": fname},
-        }],
+        "layers": layers,
     }
     if annotations:
         manifest["annotations"] = annotations
@@ -537,8 +586,36 @@ def _push_oci_artifact_direct(
     if not mani_r.ok:
         raise RuntimeError(f"OCI manifest push failed: {mani_r.status_code} {mani_r.text[:500]}")
 
-    logger.info(f"[LLMPush] Manifest pushed: {manifest_digest}")
+    logger.info(f"[LLMPush] Manifest pushed: {manifest_digest} ({len(layers)} layer(s))")
     return manifest_digest
+
+
+_META_FILE_NAMES = {
+    "version_metadata.json", "metadata.json",
+    "model_metadata.json", "model_info.json",
+}
+
+
+def _extract_all_except_metadata(zip_path: str, dest_dir: str) -> list:
+    """
+    ZIP ke andar ki SAARI files ko extract karo, sirf metadata JSON files
+    (version_metadata.json etc.) ko chhodkar — koi extension-based filtering
+    nahi, jo bhi ho wo push honi hai. Directory entries skip hoti hain.
+    Returns: list of extracted file paths (empty list agar zip nahi hai ya
+    metadata ke alawa kuch mila hi nahi).
+    """
+    import zipfile as _zf
+
+    extracted = []
+    with _zf.ZipFile(zip_path, "r") as z:
+        for name in z.namelist():
+            if name.endswith("/"):
+                continue  # directory entry
+            if os.path.basename(name).lower() in _META_FILE_NAMES:
+                continue  # metadata — sirf annotations ke liye, push nahi karni
+            z.extract(name, dest_dir)
+            extracted.append(os.path.join(dest_dir, name))
+    return extracted
 
 
 # ── Main activity ─────────────────────────────────────────────────────────────
@@ -615,20 +692,17 @@ def llm_push_activity(params: dict) -> dict:
             import zipfile as _zf
             import json as _j
 
-            actual_push_path = temp_path
+            actual_push_path = temp_path      # GGUF binary-header read karne ke liye
+            push_file_paths  = [temp_path]    # Harbor pe actually push honi wali files
             _raw_json_data: dict = {}  # version_metadata.json se (ZIP mein hoga to)
 
             if _zf.is_zipfile(temp_path):
-                gguf_temp_dir = tempfile.mkdtemp(prefix="gguf_extract_")
+                gguf_temp_dir = tempfile.mkdtemp(prefix="llm_extract_", dir=_STORAGE_TEMP_DIR)
                 with _zf.ZipFile(temp_path, "r") as _z:
                     # version_metadata.json — ZIP ke andar any depth pe search karo
-                    _meta_names = [
-                        "version_metadata.json", "metadata.json",
-                        "model_metadata.json", "model_info.json",
-                    ]
                     _meta_entry = next(
                         (n for n in _z.namelist()
-                         if os.path.basename(n).lower() in _meta_names),
+                         if os.path.basename(n).lower() in _META_FILE_NAMES),
                         None,
                     )
                     if _meta_entry:
@@ -642,17 +716,20 @@ def llm_push_activity(params: dict) -> dict:
                         except Exception as _je:
                             logger.warning(f"[LLMPush] ZIP metadata parse failed ({_meta_entry}): {_je}")
 
-                    gguf_entry = next(
-                        (n for n in _z.namelist() if n.lower().endswith(".gguf")),
-                        None,
-                    )
-                    if gguf_entry:
-                        _z.extract(gguf_entry, gguf_temp_dir)
-                        actual_push_path = os.path.join(gguf_temp_dir, gguf_entry)
-                        logger.info(f"[LLMPush] GGUF extracted from ZIP: {actual_push_path}")
-                    else:
-                        logger.warning("[LLMPush] No .gguf found in ZIP, using ZIP as-is")
-                        gguf_temp_dir = None
+                # Metadata ke alawa ZIP ke andar ki SAARI files push honi hain —
+                # koi extension filter nahi, jo bhi ho sab jaayega.
+                push_file_paths = _extract_all_except_metadata(temp_path, gguf_temp_dir)
+                if not push_file_paths:
+                    logger.warning("[LLMPush] ZIP me metadata ke alawa koi file nahi mili, ZIP as-is push hogi")
+                    push_file_paths = [temp_path]
+
+                # GGUF binary header read karne ke liye — pushed files me se .gguf dhoondo
+                gguf_path = next((p for p in push_file_paths if p.lower().endswith(".gguf")), None)
+                actual_push_path = gguf_path or temp_path
+                if gguf_path:
+                    logger.info(f"[LLMPush] GGUF extracted from ZIP: {actual_push_path}")
+                else:
+                    logger.warning("[LLMPush] No .gguf found in ZIP — binary header metadata skip hogi")
 
             # Fallback 2: DB mein metadata_json hai? (upload API se pass kiya tha to)
             if not _raw_json_data and item.metadata_json:
@@ -689,9 +766,22 @@ def llm_push_activity(params: dict) -> dict:
         else:
             # llm_template
             import json as _j
-            actual_push_path = temp_path
-            tmeta = _read_template_metadata(temp_path)
+            import zipfile as _zf
+
+            tmeta = _read_template_metadata(temp_path)  # ZIP path se hi peek karta hai, extraction ki zaroorat nahi
             _raw_json_data = tmeta.get("_raw", {})  # ZIP se mila JSON
+
+            # Metadata ke alawa ZIP ke andar ki SAARI files push honi hain —
+            # koi extension filter nahi. Agar ZIP hi nahi hai (raw .qcow2/.img
+            # seedha upload hui ho), to wahi file as-is push hogi.
+            if _zf.is_zipfile(temp_path):
+                gguf_temp_dir = tempfile.mkdtemp(prefix="llm_extract_", dir=_STORAGE_TEMP_DIR)
+                push_file_paths = _extract_all_except_metadata(temp_path, gguf_temp_dir)
+                if not push_file_paths:
+                    logger.warning("[LLMPush] ZIP me metadata ke alawa koi file nahi mili, ZIP as-is push hogi")
+                    push_file_paths = [temp_path]
+            else:
+                push_file_paths = [temp_path]
             # DB fallback (upload API se pass kiya tha to)
             if not _raw_json_data and item.metadata_json:
                 try:
@@ -753,11 +843,17 @@ def llm_push_activity(params: dict) -> dict:
             _ann_source = {}
         oci_annotations = _build_oci_annotations_from_raw(_ann_source)
 
-        # ── 5. Direct OCI push → Harbor (no wrapper, no pod, no oras) ─────────
-        _push_oci_artifact_direct(
+        # ── 5. push-image wrapper (image-push-tool pod) ke through push ───────
+        # File shared PV (_STORAGE_TEMP_DIR) pe already extract ho chuki hai —
+        # image-push-tool bhi wahi PV mount karta hai, isliye bytes dobara
+        # bhejne ki zaroorat nahi, sirf path bata dete hain aur pod internally
+        # `oras push` chalata hai.
+        # push_file_paths me metadata JSON ko chhodkar ZIP ki saari files hain
+        # (koi extension filtering nahi).
+        _push_artifact_via_api(
             harbor_host, harbor_user, harbor_pass,
             project, f"{author_slug}/{model_name}", version,
-            actual_push_path,
+            push_file_paths,
             annotations=oci_annotations,
         )
         logger.info(f"[LLMPush] push done: {harbor_image}")
