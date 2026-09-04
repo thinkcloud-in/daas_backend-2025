@@ -142,24 +142,16 @@ def _parse_from_filename(filename: str) -> dict:
 
 # ── Template metadata reader (ZIP → version_metadata.json) ───────────────────
 
-def _read_template_metadata(zip_path: str) -> dict:
-    """ZIP ke andar version_metadata.json padho — rich format support."""
-    import zipfile
-    import json as _json
+def _build_template_meta_from_raw(data: dict) -> dict:
+    """
+    version_metadata.json ka already-parsed dict (chahe wo DB ke
+    metadata_json se aaya ho ya kahi aur se) se rich meta fields banao.
+    """
+    if not data:
+        return {}
 
     try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            meta_file = next(
-                (n for n in z.namelist() if os.path.basename(n) == "version_metadata.json"),
-                None,
-            )
-            if not meta_file:
-                logger.warning("[LLMPush] version_metadata.json not found in ZIP")
-                return {}
-            with z.open(meta_file) as f:
-                data = _json.loads(f.read().decode("utf-8"))
-
-        logger.info(f"[LLMPush] version_metadata.json loaded: artifact={data.get('artifact_name')} v={data.get('version')}")
+        logger.info(f"[LLMPush] version_metadata loaded: artifact={data.get('artifact_name')} v={data.get('version')}")
 
         # Components — list of dicts ya list of strings dono handle karo
         raw_components = data.get("components", [])
@@ -226,6 +218,36 @@ def _read_template_metadata(zip_path: str) -> dict:
             # Full raw JSON (DB mein store ke liye)
             "_raw": data,
         }
+    except Exception as exc:
+        logger.warning(f"[LLMPush] Template metadata parse failed: {exc}")
+        return {}
+
+
+def _read_template_metadata(zip_path: str) -> dict:
+    """
+    ZIP ke andar version_metadata.json padho — rich format support.
+    NOTE: llm_push_activity ab isse call NAHI karta (backend push ke time
+    ZIP ke andar nahi jhaankta — jo bhi upload hui wahi as-is push hoti hai).
+    Metadata ab seedha DB ke item.metadata_json se (_build_template_meta_from_raw
+    ke through) aata hai, jo upload ke time hi library_controller.py ne
+    ZIP se padh kar save kiya tha. Ye function sirf future reference/reuse
+    ke liye rakha gaya hai.
+    """
+    import zipfile
+    import json as _json
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as z:
+            meta_file = next(
+                (n for n in z.namelist() if os.path.basename(n) == "version_metadata.json"),
+                None,
+            )
+            if not meta_file:
+                logger.warning("[LLMPush] version_metadata.json not found in ZIP")
+                return {}
+            with z.open(meta_file) as f:
+                data = _json.loads(f.read().decode("utf-8"))
+        return _build_template_meta_from_raw(data)
     except zipfile.BadZipFile:
         logger.warning("[LLMPush] File is not a valid ZIP")
         return {}
@@ -688,59 +710,27 @@ def llm_push_activity(params: dict) -> dict:
         # ── 3. Metadata nikalo — type ke hisab se ────────────────────────────
         is_gguf = item.type == "llm_model"
 
+        # Backend ab ZIP ke andar bilkul nahi jhaankta — jo bhi upload hui
+        # (ZIP ho ya koi aur file), wahi as-is push hogi. Saara metadata
+        # DB ke item.metadata_json se aata hai, jo upload ke time hi
+        # library_controller.py ne ZIP se padh kar save kiya tha.
+        push_file_paths = [temp_path]
+
         if is_gguf:
-            import zipfile as _zf
             import json as _j
 
-            actual_push_path = temp_path      # GGUF binary-header read karne ke liye
-            push_file_paths  = [temp_path]    # Harbor pe actually push honi wali files
-            _raw_json_data: dict = {}  # version_metadata.json se (ZIP mein hoga to)
-
-            if _zf.is_zipfile(temp_path):
-                gguf_temp_dir = tempfile.mkdtemp(prefix="llm_extract_", dir=_STORAGE_TEMP_DIR)
-                with _zf.ZipFile(temp_path, "r") as _z:
-                    # version_metadata.json — ZIP ke andar any depth pe search karo
-                    _meta_entry = next(
-                        (n for n in _z.namelist()
-                         if os.path.basename(n).lower() in _META_FILE_NAMES),
-                        None,
-                    )
-                    if _meta_entry:
-                        try:
-                            raw_bytes = _z.open(_meta_entry).read().decode("utf-8")
-                            # JS-style comments strip karo (//) — standard JSON parser nahi samajhta
-                            import re as _re
-                            raw_clean = _re.sub(r'(?m)//[^\n]*', '', raw_bytes)
-                            _raw_json_data = _j.loads(raw_clean)
-                            logger.info(f"[LLMPush] {_meta_entry} found in ZIP: {list(_raw_json_data.keys())}")
-                        except Exception as _je:
-                            logger.warning(f"[LLMPush] ZIP metadata parse failed ({_meta_entry}): {_je}")
-
-                # Metadata ke alawa ZIP ke andar ki SAARI files push honi hain —
-                # koi extension filter nahi, jo bhi ho sab jaayega.
-                push_file_paths = _extract_all_except_metadata(temp_path, gguf_temp_dir)
-                if not push_file_paths:
-                    logger.warning("[LLMPush] ZIP me metadata ke alawa koi file nahi mili, ZIP as-is push hogi")
-                    push_file_paths = [temp_path]
-
-                # GGUF binary header read karne ke liye — pushed files me se .gguf dhoondo
-                gguf_path = next((p for p in push_file_paths if p.lower().endswith(".gguf")), None)
-                actual_push_path = gguf_path or temp_path
-                if gguf_path:
-                    logger.info(f"[LLMPush] GGUF extracted from ZIP: {actual_push_path}")
-                else:
-                    logger.warning("[LLMPush] No .gguf found in ZIP — binary header metadata skip hogi")
-
-            # Fallback 2: DB mein metadata_json hai? (upload API se pass kiya tha to)
-            if not _raw_json_data and item.metadata_json:
+            _raw_json_data: dict = {}
+            if item.metadata_json:
                 try:
                     _raw_json_data = _j.loads(item.metadata_json)
                     logger.info(f"[LLMPush] Using DB metadata_json: {list(_raw_json_data.keys())}")
                 except Exception as _de:
                     logger.warning(f"[LLMPush] DB metadata_json parse failed: {_de}")
 
-            # GGUF binary header se meta nikalo (name/version/arch ke liye)
-            meta = _read_gguf_metadata(actual_push_path)
+            # GGUF binary header se meta nikalne ki koshish — agar temp_path
+            # khud ek .gguf file na ho (jaise ZIP ho), to filename-fallback
+            # (_read_gguf_metadata ke andar hi handle hota hai) chal jaata hai.
+            meta = _read_gguf_metadata(temp_path)
 
             # version_metadata.json fields se override karo (JSON > GGUF binary header)
             if _raw_json_data:
@@ -766,29 +756,16 @@ def llm_push_activity(params: dict) -> dict:
         else:
             # llm_template
             import json as _j
-            import zipfile as _zf
 
-            tmeta = _read_template_metadata(temp_path)  # ZIP path se hi peek karta hai, extraction ki zaroorat nahi
-            _raw_json_data = tmeta.get("_raw", {})  # ZIP se mila JSON
-
-            # Metadata ke alawa ZIP ke andar ki SAARI files push honi hain —
-            # koi extension filter nahi. Agar ZIP hi nahi hai (raw .qcow2/.img
-            # seedha upload hui ho), to wahi file as-is push hogi.
-            if _zf.is_zipfile(temp_path):
-                gguf_temp_dir = tempfile.mkdtemp(prefix="llm_extract_", dir=_STORAGE_TEMP_DIR)
-                push_file_paths = _extract_all_except_metadata(temp_path, gguf_temp_dir)
-                if not push_file_paths:
-                    logger.warning("[LLMPush] ZIP me metadata ke alawa koi file nahi mili, ZIP as-is push hogi")
-                    push_file_paths = [temp_path]
-            else:
-                push_file_paths = [temp_path]
-            # DB fallback (upload API se pass kiya tha to)
-            if not _raw_json_data and item.metadata_json:
+            _raw_json_data: dict = {}
+            if item.metadata_json:
                 try:
                     _raw_json_data = _j.loads(item.metadata_json)
                     logger.info(f"[LLMPush] Template: Using DB metadata_json: {list(_raw_json_data.keys())}")
-                except Exception:
-                    pass
+                except Exception as _de:
+                    logger.warning(f"[LLMPush] Template DB metadata_json parse failed: {_de}")
+
+            tmeta = _build_template_meta_from_raw(_raw_json_data)
             meta  = {
                 "name":            tmeta.get("name")           or item.name,
                 "display_name":    tmeta.get("display_name")   or "",
