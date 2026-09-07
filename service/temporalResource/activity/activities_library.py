@@ -40,7 +40,11 @@ def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
     path_parts = path.split("/")               # ["library", "openwebui", "openwebui"]
     project    = path_parts[0]                 # "library"
     repo_path  = "/".join(path_parts[1:])      # "openwebui/openwebui"
-    repo_enc   = _url_quote(repo_path, safe="")  # "openwebui%2Fopenwebui"
+    # Harbor ka API gateway ek layer % -decode kar deta hai isse pahle ki
+    # request Harbor core tak pahunche — single-encoded "%2F" isliye ek "/"
+    # ban jaata hai aur router route hi match nahi kar paata (404 "path not
+    # found"). Double-encoding se yeh survive karta hai. Verified live.
+    repo_enc   = _url_quote(_url_quote(repo_path, safe=""), safe="")  # "openwebui%252Fopenwebui"
 
     base_url = f"http://{host}"
     api_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"

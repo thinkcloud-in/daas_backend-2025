@@ -325,9 +325,12 @@ def _set_harbor_repo_description(
         return
 
     description = "\n".join(desc_lines)
+    # Double-encoding zaroori hai — Harbor ke gateway se guzarte waqt ek layer
+    # % -decode ho jaata hai, isliye single-encoded "%2F" wapas "/" ban jaata
+    # hai aur repository route match hi nahi hota (verified live).
     url  = (
         f"http://{harbor_host}/api/v2.0/projects/{project}/repositories/"
-        f"{urllib.parse.quote(repo_name, safe='')}"
+        f"{urllib.parse.quote(urllib.parse.quote(repo_name, safe=''), safe='')}"
     )
     data = _json.dumps({"description": description}).encode("utf-8")
     req  = urllib.request.Request(url, data=data, method="PUT")
