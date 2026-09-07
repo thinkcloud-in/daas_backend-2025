@@ -47,7 +47,18 @@ def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
     repo_enc   = _url_quote(_url_quote(repo_path, safe=""), safe="")  # "openwebui%252Fopenwebui"
 
     base_url = f"http://{host}"
-    api_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"
+    tag_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"
+
+    # Tag se digest resolve karo — tag se seedha delete karne par sirf tag
+    # hatta tha, artifact (manifest+blobs) orphan reh jaata tha. Digest se
+    # delete karne par asli artifact bhi hat jaata hai.
+    get_resp = _req.get(tag_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+    if get_resp.status_code == 404:
+        logger.info(f"[LibraryDelete] artifact already gone (tag={tag})")
+        return
+    get_resp.raise_for_status()
+    digest  = get_resp.json()["digest"]
+    api_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{digest}"
 
     logger.info(f"[LibraryDelete] Harbor API DELETE: {api_url}")
     resp = _req.delete(

@@ -273,7 +273,7 @@ def _put_file_to_webdav_with_progress(
     return requests.put(
         url,
         data=_chunks(),
-        headers={"Content-Length": str(total_bytes), "Content-Type": "application/octet-stream"},
+        headers={"Content-Type": "application/octet-stream"},
         verify=False,
         timeout=None,
     )
