@@ -70,8 +70,37 @@ def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
     if resp.status_code in (200, 202, 404):
         # 404 = already deleted — theek hai
         logger.info(f"[LibraryDelete] Harbor delete status={resp.status_code}")
+        _harbor_delete_repo_if_empty(base_url, project, repo_enc, harbor_user, harbor_pass)
         return
     raise RuntimeError(f"Harbor delete failed: {resp.status_code} {resp.text[:200]}")
+
+
+def _harbor_delete_repo_if_empty(base_url, project, repo_enc, harbor_user, harbor_pass):
+    """
+    Artifact delete karne ke baad repository khud Harbor mein empty entry ke
+    roop mein reh jaata hai. Check karo ki repo mein ab koi artifact bacha
+    hai ya nahi (agar isi repo mein doosre version/tag pushed hain to unhe
+    touch mat karo) -- sirf tab repo delete karo jab wo pura khaali ho.
+    Non-fatal: fail ho to bas warning, kyunki asli artifact delete already
+    ho chuka hai.
+    """
+    list_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts"
+    try:
+        resp = _req.get(list_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
+        if resp.json():
+            return  # abhi bhi artifacts bache hain -- repo mat chhedo
+
+        repo_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}"
+        del_resp = _req.delete(repo_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+        if del_resp.status_code in (200, 202, 404):
+            logger.info(f"[LibraryDelete] empty Harbor repository removed: {project}/{repo_enc}")
+        else:
+            logger.warning(f"[LibraryDelete] repo cleanup failed (non-fatal): {del_resp.status_code} {del_resp.text[:200]}")
+    except Exception as exc:
+        logger.warning(f"[LibraryDelete] repo cleanup failed (non-fatal): {exc}")
 
 
 _MAX_POLL_SECONDS = 6 * 3600  # 6 hours max — iske baad timeout

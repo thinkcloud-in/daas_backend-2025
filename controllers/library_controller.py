@@ -519,6 +519,8 @@ async def upload_library_file(
             raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
     except Exception as exc:
         logger.error(f"[Library] WebDAV PUT failed item={item_id}: {exc}")
+        record.status = "failed"
+        db.commit()
         raise HTTPException(status_code=500, detail=f"Upload failed — WebDAV error: {exc}")
     finally:
         try:
@@ -734,6 +736,8 @@ async def upload_library_direct(request: Request, db: Session):
             if r.status_code not in (200, 201, 204):
                 raise RuntimeError(f"WebDAV PUT {r.status_code}: {r.text[:200]}")
         except Exception as exc:
+            record.status = "failed"
+            db.commit()
             raise HTTPException(status_code=500, detail=f"WebDAV upload failed: {exc}")
         finally:
             try: os.remove(temp_path)
@@ -770,6 +774,8 @@ async def upload_library_direct(request: Request, db: Session):
             raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
     except Exception as exc:
         logger.error(f"[Library] Direct upload WebDAV failed item={item_id}: {exc}")
+        record.status = "failed"
+        db.commit()
         raise HTTPException(status_code=500, detail=f"WebDAV error: {exc}")
     finally:
         try: os.remove(temp_path)
