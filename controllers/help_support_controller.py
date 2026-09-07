@@ -1,6 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
+import zipstream
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -70,10 +71,11 @@ def download_backend_logs(
     batch_size: int = 1000,
 ):
     """
-    Poore matching date range ke logs ko ek .log file ke roop me directly
-    browser download karwata hai — StreamingResponse use hoti hai, koi server
-    pe file/storage nahi banti, data seedha OpenSearch se client tak stream
-    hota hai.
+    Poore matching date range ke logs ko ek .zip file ke roop me directly
+    browser download karwata hai — dono layers genuinely streaming hain:
+    OpenSearch se scroll-batches (koi buffering nahi) aur us par zipstream-ng
+    ka ZIP encoding (jo bhi chunk ready ho turant client ko chala jaata hai,
+    poori ZIP kabhi memory/disk pe nahi banti).
     Pehla batch YAHIN (generator ke bahar) fetch karte hain jaanbujhke — agar
     OpenSearch unreachable ho ya auth/date galat ho, to error yahi turant
     proper HTTP status ke saath raise ho jata hai, streaming shuru hone se
@@ -87,9 +89,17 @@ def download_backend_logs(
         start_date, end_date, start_time, end_time, service_list, batch_size
     )
 
-    filename = f"backend-logs_{start_date}_to_{end_date}.log"
+    log_filename = f"backend-logs_{start_date}_to_{end_date}.log"
+    zip_filename = f"backend-logs_{start_date}_to_{end_date}.zip"
+
+    zs = zipstream.ZipStream(compress_type=zipstream.ZIP_DEFLATED)
+    zs.add(
+        (line.encode("utf-8") for line in help_support_service.stream_log_batches(first_batch)),
+        arcname=log_filename,
+    )
+
     return StreamingResponse(
-        help_support_service.stream_log_batches(first_batch),
-        media_type="text/plain",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        zs,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )

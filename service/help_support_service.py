@@ -180,14 +180,35 @@ def close_log_scroll(scroll_id: str) -> None:
         pass
 
 
+_LOG_LINE_HEADLINE_KEYS = {"timestamp", "@timestamp", "level", "service", "logger", "event"}
+
+
 def _format_log_line(entry: dict) -> str:
-    """Ek OpenSearch log document ko ek readable .log line me convert karo."""
-    ts      = entry.get("timestamp") or entry.get("@timestamp") or ""
-    level   = (entry.get("level") or "info").upper()
-    service = entry.get("service") or ""
+    """
+    Ek OpenSearch log document ko ek readable .log line me convert karo.
+    Headline (timestamp/level/service/logger/event) upar dikhta hai, baaki
+    SAARE fields (response_body, status_code, duration_ms, request_id,
+    kubernetes metadata, temporal_activity, waghera) key=value ke roop me
+    aage jate hain — kuch bhi drop nahi hota.
+    """
+    import json as _json
+
+    ts          = entry.get("timestamp") or entry.get("@timestamp") or ""
+    level       = (entry.get("level") or "info").upper()
+    service     = entry.get("service") or ""
     logger_name = entry.get("logger") or ""
-    event   = entry.get("event") or ""
-    return f"{ts} [{level}] {service} {logger_name} - {event}\n"
+    event       = entry.get("event") or ""
+
+    extra_parts = []
+    for k, v in entry.items():
+        if k in _LOG_LINE_HEADLINE_KEYS:
+            continue
+        if isinstance(v, (dict, list)):
+            v = _json.dumps(v, ensure_ascii=False)
+        extra_parts.append(f"{k}={v}")
+
+    extra_str = ("  " + " ".join(extra_parts)) if extra_parts else ""
+    return f"{ts} [{level}] {service} {logger_name} - {event}{extra_str}\n"
 
 
 def stream_log_batches(first_batch: dict) -> Generator[str, None, None]:

@@ -53,11 +53,11 @@ async def update_retentionPeriod_worker():
 async def run_all_retention_workers():
     """Starts all retention-related workers concurrently in the same event loop."""
     import asyncio
-    
+
     tasks = [
         get_namespaces_worker(),
-        update_retentionPeriod_worker()
+        update_retentionPeriod_worker(),
     ]
-    
+
     print("Starting all retention workers...")
     await asyncio.gather(*tasks)
