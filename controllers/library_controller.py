@@ -974,11 +974,19 @@ def get_library_item(item_id: int, db: Session):
 
 
 def _parse_artifact_annotations(raw_ann: dict) -> dict:
-    """Harbor artifact ke OCI + ai.artifact.* annotations parse karo."""
+    """
+    Harbor artifact ke OCI + ai.artifact.* annotations parse karo.
+    llm_model/llm_template push "ai.artifact.<key>" prefix ke saath likhta
+    hai, VM-template (Proxmox) push bina prefix ke bare keys likhta hai --
+    isliye prefixed key pehle try karo, phir bare key fallback.
+    """
     import ast as _ast, json as _json
 
+    def _ann(key: str) -> str:
+        return raw_ann.get(f"ai.artifact.{key}") or raw_ann.get(key) or ""
+
     vm_details = {}
-    raw_details = (raw_ann.get("ai.artifact.vm_template_details") or "").strip()
+    raw_details = _ann("vm_template_details").strip()
     if raw_details:
         try:
             vm_details = _ast.literal_eval(raw_details)
@@ -989,11 +997,11 @@ def _parse_artifact_annotations(raw_ann: dict) -> dict:
                 pass
 
     return {
-        "artifact_type":       raw_ann.get("ai.artifact.artifact_type", ""),
-        "hypervisor":          raw_ann.get("ai.artifact.hypervisor", ""),
-        "size_bytes":          raw_ann.get("ai.artifact.size_bytes", ""),
-        "uploaded_by":         raw_ann.get("ai.artifact.uploaded_by", ""),
-        "type":                raw_ann.get("ai.artifact.type", ""),
+        "artifact_type":       _ann("artifact_type"),
+        "hypervisor":          _ann("hypervisor"),
+        "size_bytes":          _ann("size_bytes"),
+        "uploaded_by":         _ann("uploaded_by"),
+        "type":                _ann("type"),
         "title":               raw_ann.get("org.opencontainers.image.title", ""),
         "description":         raw_ann.get("org.opencontainers.image.description", ""),
         "version":             raw_ann.get("org.opencontainers.image.version", ""),
