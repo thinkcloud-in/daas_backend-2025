@@ -13,8 +13,7 @@ pipeline {
         REMOTE_USER     = "root"
         REMOTE_TAR_DIR  = "/home/rcv/daas_installer/daas_tar"
         REMOTE_BASE_DIR = "/home/rcv/daas_installer/daas_v1/devraq-backend"
-        SCRIPT_DIR      = "/home/rcv/Desktop/scrpit"
-        DEPLOY_SCRIPT   = "backend.sh"
+        DEPLOY_SCRIPT   = "backend-deploy.sh"
         SSH_KEY         = "/root/.ssh/id_ed25519"
     }
 
@@ -64,20 +63,26 @@ pipeline {
                     ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no \
                         ${REMOTE_USER}@${REMOTE_HOST} "mkdir -p ${REMOTE_TAR_DIR} ${REMOTE_BASE_DIR}"
 
-                    # Remove any old/stale yaml so a rename or removed file never
-                    # lingers on the remote host and gets silently re-applied later
+                    # Remove any old/stale yaml or deploy script so a rename or
+                    # removed file never lingers on the remote host and gets
+                    # silently re-applied/re-run later
                     ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no \
-                        ${REMOTE_USER}@${REMOTE_HOST} "rm -f ${REMOTE_BASE_DIR}/*.yaml"
+                        ${REMOTE_USER}@${REMOTE_HOST} "rm -f ${REMOTE_BASE_DIR}/*.yaml ${REMOTE_BASE_DIR}/*.sh"
 
                     # Copy TAR file
                     scp -i ${SSH_KEY} -o StrictHostKeyChecking=no \
                         ${TAR_DIR}/${TAR_FILE} \
                         ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_TAR_DIR}/
 
-                    # Copy Kubernetes YAML files (from repo) to BASE_DIR
+                    # Copy Kubernetes YAML files + deploy script (from repo's k8s/) to BASE_DIR
                     scp -i ${SSH_KEY} -o StrictHostKeyChecking=no \
                         ${WORKDIR}/k8s/*.yaml \
+                        ${WORKDIR}/k8s/*.sh \
                         ${REMOTE_USER}@${REMOTE_HOST}:${REMOTE_BASE_DIR}/
+
+                    # Deploy script needs to be executable on the remote host
+                    ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no \
+                        ${REMOTE_USER}@${REMOTE_HOST} "chmod +x ${REMOTE_BASE_DIR}/${DEPLOY_SCRIPT}"
                 """
             }
         }
@@ -87,7 +92,7 @@ pipeline {
                 sh """
                 echo "➡️ Deploying Devraq Backend on remote server..."
                 ssh -i ${SSH_KEY} -o StrictHostKeyChecking=no ${REMOTE_USER}@${REMOTE_HOST} \
-                    "bash ${SCRIPT_DIR}/${DEPLOY_SCRIPT}"
+                    "bash ${REMOTE_BASE_DIR}/${DEPLOY_SCRIPT}"
                 """
             }
         }
