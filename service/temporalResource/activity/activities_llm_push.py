@@ -339,7 +339,7 @@ def _set_harbor_repo_description(
     req.add_header("Authorization", f"Basic {creds}")
 
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
+        with urllib.request.urlopen(req, timeout=3600) as resp:
             logger.info(f"[LLMPush] Harbor repo description set: {resp.status}")
     except Exception as exc:
         logger.warning(f"[LLMPush] Harbor description set failed (non-fatal): {exc}")
@@ -452,7 +452,7 @@ def _push_artifact_via_api(
     resp = requests.post(
         f"{_PUSH_IMAGE_BASE_URL}/push/artifact",
         json=payload,
-        timeout=900,
+        timeout=3600,
         verify=False,
     )
     if not resp.ok:
@@ -481,12 +481,12 @@ def _push_blob(reg_url: str, harbor_host: str, auth: tuple, file_path: str) -> t
     file_digest = f"sha256:{h.hexdigest()}"
     logger.info(f"[LLMPush] blob digest={file_digest} size={file_size / 1e6:.1f} MB ({os.path.basename(file_path)})")
 
-    if requests.head(f"{reg_url}/blobs/{file_digest}", auth=auth, timeout=30, verify=False).status_code == 200:
+    if requests.head(f"{reg_url}/blobs/{file_digest}", auth=auth, timeout=3600, verify=False).status_code == 200:
         logger.info(f"[LLMPush] Blob already exists — skip upload ({os.path.basename(file_path)}).")
         return file_digest, file_size
 
     # Start upload session
-    post_r = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=30, verify=False)
+    post_r = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=3600, verify=False)
     if not post_r.ok:
         raise RuntimeError(f"OCI upload session failed: {post_r.status_code} {post_r.text[:300]}")
     session_url = post_r.headers.get("Location", "")
@@ -512,7 +512,7 @@ def _push_blob(reg_url: str, harbor_host: str, auth: tuple, file_path: str) -> t
     put_r = requests.put(
         f"{put_url}{sep}digest={file_digest}",
         auth=auth, headers={"Content-Type": "application/octet-stream"},
-        timeout=60, verify=False,
+        timeout=3600, verify=False,
     )
     if not put_r.ok:
         raise RuntimeError(f"OCI blob commit failed: {put_r.status_code} {put_r.text[:300]}")
@@ -570,19 +570,19 @@ def _push_oci_artifact_direct(
     # ── 3. Empty config blob ──────────────────────────────────────────────────
     _empty        = b"{}"
     _empty_digest = f"sha256:{hashlib.sha256(_empty).hexdigest()}"
-    if requests.head(f"{reg_url}/blobs/{_empty_digest}", auth=auth, timeout=15, verify=False).status_code != 200:
-        _pr  = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=15, verify=False)
+    if requests.head(f"{reg_url}/blobs/{_empty_digest}", auth=auth, timeout=3600, verify=False).status_code != 200:
+        _pr  = requests.post(f"{reg_url}/blobs/uploads/", auth=auth, timeout=3600, verify=False)
         _su  = _pr.headers.get("Location", "")
         if not _su.startswith("http"): _su = f"http://{harbor_host}{_su}"
         _par = requests.patch(_su, data=_empty, auth=auth,
                               headers={"Content-Type": "application/octet-stream"},
-                              timeout=30, verify=False)
+                              timeout=3600, verify=False)
         _pu  = _par.headers.get("Location", "")
         if not _pu.startswith("http"): _pu = f"http://{harbor_host}{_pu}"
         _sep = "&" if "?" in _pu else "?"
         requests.put(f"{_pu}{_sep}digest={_empty_digest}", auth=auth,
                      headers={"Content-Type": "application/octet-stream"},
-                     timeout=30, verify=False)
+                     timeout=3600, verify=False)
 
     # ── 4. Manifest with annotations ─────────────────────────────────────────
     manifest: dict = {
@@ -606,7 +606,7 @@ def _push_oci_artifact_direct(
         f"{reg_url}/manifests/{tag}",
         auth=auth, data=manifest_bytes,
         headers={"Content-Type": "application/vnd.oci.image.manifest.v1+json"},
-        timeout=60, verify=False,
+        timeout=3600, verify=False,
     )
     if not mani_r.ok:
         raise RuntimeError(f"OCI manifest push failed: {mani_r.status_code} {mani_r.text[:500]}")
