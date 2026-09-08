@@ -161,13 +161,13 @@ spec:
                   name: daas-host-config
                   key: daas-host
             - name: INFLUXDB_URL
-              value: http://DAAS_HOST
+              value: http://$(DAAS_HOST)
             - name: STORAGE_BASE_URL
-              value: https://DAAS_HOST/library
+              value: https://$(DAAS_HOST)/library
             - name: STORAGE_TEMP_DIR
               value: /library/harbor/push_artifacts
             - name: PUSH_IMAGE_BASE_URL
-              value: https://DAAS_HOST/push-image
+              value: https://$(DAAS_HOST)/push-image
             - name: LLM_VM_SSH_USER
               valueFrom:
                 secretKeyRef:
