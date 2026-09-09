@@ -1,3 +1,8 @@
+"""
+Backend-logs (Help & Support) controller — router/help_support_router.py
+("/v1/help-support") is par delegate karta hai. Actual OpenSearch queries
+service/help_support_service.py mein hain.
+"""
 from datetime import datetime
 from typing import Optional
 
@@ -10,6 +15,7 @@ from utils import response_format
 
 
 def _validate_range(start_date: str, end_date: str, start_time: str, end_time: str):
+    """start_date/end_date (YYYY-MM-DD) + start_time/end_time (HH:MM:SS) validate karo — raises HTTPException(400) agar invalid ya start > end."""
     if not start_date or not end_date:
         raise HTTPException(status_code=400, detail="start_date and end_date are required (format: YYYY-MM-DD)")
     try:
@@ -25,6 +31,7 @@ def _validate_range(start_date: str, end_date: str, start_time: str, end_time: s
 
 
 def _parse_services(services: Optional[str]):
+    """Comma-separated services string ko list mein todo (None-safe)."""
     return [s.strip() for s in services.split(",") if s.strip()] if services else None
 
 
@@ -34,6 +41,16 @@ def get_backend_logs(
     page: int, page_size: int,
     services: Optional[str] = None,
 ):
+    """
+    OpenSearch se backend logs search karo, date/time range + optional
+    service-filter ke saath (offset pagination).
+
+    Used by: GET /v1/help-support/logs
+    Returns: success_response ke `data` mein {"total", "page", "page_size",
+    "total_pages", "has_next", "has_prev", "logs": [...]}
+    Raises: 400 invalid range, 400 agar page window OpenSearch ki 10k-result
+    limit se aage jaaye.
+    """
     _validate_range(start_date, end_date, start_time, end_time)
     result = help_support_service.search_backend_logs(
         start_date, end_date, start_time, end_time, page, page_size, _parse_services(services)
@@ -47,6 +64,13 @@ def start_log_scroll(
     services: Optional[str] = None,
     batch_size: int = 1000,
 ):
+    """
+    Bade date-range exports ke liye OpenSearch scroll-context kholo (10k
+    result-window ki limit bypass karne ke liye).
+
+    Used by: POST /v1/help-support/logs/scroll/start
+    Returns: success_response ke `data` mein {"scroll_id", "total", "count", "has_more", "logs"}
+    """
     _validate_range(start_date, end_date, start_time, end_time)
     result = help_support_service.start_log_scroll(
         start_date, end_date, start_time, end_time, _parse_services(services), batch_size
@@ -55,11 +79,24 @@ def start_log_scroll(
 
 
 def continue_log_scroll(scroll_id: str):
+    """
+    Scroll ka agla batch fetch karo.
+
+    Used by: POST /v1/help-support/logs/scroll/next
+    Returns: success_response ke `data` mein {"scroll_id", "total", "count", "has_more", "logs"}
+    (naya scroll_id mil sakta hai — hamesha latest use karo).
+    """
     result = help_support_service.continue_log_scroll(scroll_id)
     return response_format.success_response(200, "Next batch fetched", result)
 
 
 def close_log_scroll(scroll_id: str):
+    """
+    Scroll context release karo (best-effort — fail ho to bhi silently ignore).
+
+    Used by: DELETE /v1/help-support/logs/scroll
+    Returns: success_response ke `data` mein {"scroll_id": str}
+    """
     help_support_service.close_log_scroll(scroll_id)
     return response_format.success_response(200, "Scroll closed", {"scroll_id": scroll_id})
 
@@ -81,6 +118,11 @@ def download_backend_logs(
     proper HTTP status ke saath raise ho jata hai, streaming shuru hone se
     pehle hi (streaming shuru hone ke baad HTTP status badalna possible nahi
     hota).
+
+    Used by: GET /v1/help-support/logs/download
+    Returns: StreamingResponse — `application/zip`, ek `.log` file zip ke
+    andar (koi JSON envelope nahi).
+    Raises: 400 invalid range, 500/upstream errors agar pehla batch fetch fail ho.
     """
     _validate_range(start_date, end_date, start_time, end_time)
     service_list = _parse_services(services)

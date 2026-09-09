@@ -28,6 +28,17 @@ def get_backend_logs(
     (optional) service names ke liye — page/page_size se poore matching range
     ke through paginate kiya ja sakta hai, chahe wahan hazaro logs kyu na hon
     (Help & Support ke liye — troubleshooting/support ke waqt use hoga).
+
+    Response 200 — `data`:
+        {
+          "total": int, "page": int, "page_size": int, "total_pages": int,
+          "has_next": bool, "has_prev": bool,
+          "logs": [ {..structlog JSON fields: event, level, logger, timestamp, ...}, ... ]
+        }
+
+    Errors: 400 agar date/time format invalid ho, ya requested page
+    OpenSearch ki 10,000-result window se aage chala jaaye (bade range ke
+    liye scroll endpoints — neeche — use karo).
     """
     return help_support_controller.get_backend_logs(start_date, end_date, start_time, end_time, page, page_size, services)
 
@@ -46,6 +57,9 @@ def start_log_scroll(
     results 10,000 se aage jaa sakte hain — jahan page/page_size wali normal
     pagination kaam nahi karti). Pehla batch turant milta hai; agla batch
     /logs/scroll/next se lo, aur khatam hone par /logs/scroll close karo.
+
+    Response 200 — `data`:
+        {"scroll_id": str, "total": int, "count": int, "has_more": bool, "logs": [...]}
     """
     return help_support_controller.start_log_scroll(start_date, end_date, start_time, end_time, services, batch_size)
 
@@ -56,6 +70,12 @@ def continue_log_scroll(body: ScrollIdBody):
     Pichhle scroll response (start ya isi endpoint) se mile scroll_id se
     agla batch lo. Response me `has_more: false` aaye to loop rok do aur
     /logs/scroll se cleanup karo.
+
+    Request body: ScrollIdBody = {"scroll_id": str}  — hamesha LATEST
+    response ka scroll_id use karo (har batch pe naya mil sakta hai).
+
+    Response 200 — `data`: {"scroll_id": str, "total": int, "count": int, "has_more": bool, "logs": [...]}
+    Errors: 400 agar scroll_id missing/expired ho.
     """
     return help_support_controller.continue_log_scroll(body.scroll_id)
 
@@ -64,6 +84,10 @@ def continue_log_scroll(body: ScrollIdBody):
 def close_log_scroll(body: ScrollIdBody):
     """
     Scroll context ko explicitly release karo jab scrolling khatam ho jaye.
+    Best-effort hai — na bhi karo to OpenSearch scroll TTL khatam hone par
+    khud cleanup kar deta hai.
+
+    Response 200 — `data`: {"scroll_id": str}
     """
     return help_support_controller.close_log_scroll(body.scroll_id)
 
@@ -85,5 +109,9 @@ def download_backend_logs(
     dena nahi. Koi server-side storage/temp-file nahi banti.
     Frontend me seedha <a href="...">/window.location se hit karo, fetch+Blob
     ki zaroorat nahi.
+
+    Response: 200, `Content-Type: text/plain` (ya similar), raw log lines
+    ka streaming body — koi JSON/APIResponse envelope nahi (isliye is route
+    pe `response_model` bhi declare nahi hai).
     """
     return help_support_controller.download_backend_logs(start_date, end_date, start_time, end_time, services, batch_size)
