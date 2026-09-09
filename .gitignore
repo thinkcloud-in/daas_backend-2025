@@ -22,4 +22,3 @@ Dockerfile.prod
 *.db
 *.sql
 ./temp
-Jenkinsfile

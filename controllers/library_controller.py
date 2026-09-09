@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import queue
+import requests
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import List
@@ -229,6 +230,55 @@ def _update_progress_in_db(item_id: int, pct: int, db_session):
         db_session.rollback()
 
 
+def _put_file_to_webdav_with_progress(
+    item_id:     int,
+    temp_path:   str,
+    url:         str,
+    total_bytes: int,
+    db_session,
+    pct_start:   int = 50,
+    pct_end:     int = 99,
+    chunk_size:  int = 8 * 1024 * 1024,
+):
+    """
+    Phase 2 (backend temp file -> WebDAV storage) chunk-by-chunk stream karo,
+    taaki progress_pct pct_start se pct_end tak granularly (1% steps) update
+    hoti rahe -- pehle poori file ek hi blocking PUT me jaati thi, tab tak
+    progress 50% pe atki dikhti thi (badi files ke liye ye kaafi der tak
+    "stuck" jaisa dikhta tha).
+
+    Ye asyncio.to_thread() se ek alag thread me chalta hai (jabki caller
+    coroutine sirf await karke wait karta hai, DB session ko concurrently
+    kahin aur touch nahi karta) — isliye yahan se db_session use karna safe hai.
+    """
+    last_bucket = pct_start - 1
+    sent = 0
+
+    def _chunks():
+        nonlocal sent, last_bucket
+        with open(temp_path, "rb") as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                sent += len(chunk)
+                yield chunk
+                if total_bytes > 0:
+                    frac = min(sent / total_bytes, 1.0)
+                    pct = pct_start + int(frac * (pct_end - pct_start))
+                    if pct > last_bucket:
+                        last_bucket = pct
+                        _update_progress_in_db(item_id, pct, db_session)
+
+    return requests.put(
+        url,
+        data=_chunks(),
+        headers={"Content-Type": "application/octet-stream"},
+        verify=False,
+        timeout=None,
+    )
+
+
 async def _upload_harbor_direct_to_webdav(
     record,
     request:    Request,
@@ -253,12 +303,19 @@ async def _upload_harbor_direct_to_webdav(
     webdav_url = f"{storage_url}/{subdir}/{record.file_name}"
     pod_path   = f"{LIBRARY_BASE_PATH}/{subdir}/{record.file_name}"
     bytes_written = 0
+    last_bucket   = -1
 
     async def _stream_gen():
-        nonlocal bytes_written
+        nonlocal bytes_written, last_bucket
         async for chunk in request.stream():
             bytes_written += len(chunk)
             yield chunk
+            if total_size > 0:
+                pct = min(int(bytes_written / total_size * 100), 99)
+                if pct > last_bucket:
+                    last_bucket          = pct
+                    record.progress_pct  = pct
+                    db.commit()
 
     try:
         async with _httpx.AsyncClient(verify=False, timeout=None) as client:
@@ -332,7 +389,6 @@ async def upload_library_file(
     db:      Session,
 ):
     import tempfile
-    import requests as _req
 
     record = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not record:
@@ -364,11 +420,10 @@ async def upload_library_file(
                 f.write(chunk)
                 bytes_written += len(chunk)
                 if total_size > 0:
-                    pct    = min(int(bytes_written / total_size * 100), 49)
-                    bucket = (pct // 5) * 5
-                    if bucket > last_bucket:
-                        last_bucket         = bucket
-                        record.progress_pct = bucket
+                    pct = min(int(bytes_written / total_size * 100), 49)
+                    if pct > last_bucket:
+                        last_bucket         = pct
+                        record.progress_pct = pct
                         db.commit()
     except Exception as exc:
         logger.error(f"[Library] Disk write failed item={item_id}: {exc}")
@@ -455,22 +510,17 @@ async def upload_library_file(
     # PUT + file_path dono STORAGE_BASE_URL se — APISIX pe client_max_body_size badha rakha hai
     public_url = f"{storage_base}/{subdir}/{record.file_name}"
 
-    def _put_to_webdav():
-        with open(temp_path, "rb") as f:
-            return _req.put(
-                public_url,
-                data=f,
-                headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
-                verify=False,
-                timeout=None,
-            )
-
     try:
-        resp = await asyncio.to_thread(_put_to_webdav)
+        resp = await asyncio.to_thread(
+            _put_file_to_webdav_with_progress,
+            item_id, temp_path, public_url, bytes_written, db,
+        )
         if resp.status_code not in (200, 201, 204):
             raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
     except Exception as exc:
         logger.error(f"[Library] WebDAV PUT failed item={item_id}: {exc}")
+        record.status = "failed"
+        db.commit()
         raise HTTPException(status_code=500, detail=f"Upload failed — WebDAV error: {exc}")
     finally:
         try:
@@ -517,7 +567,6 @@ async def upload_library_direct(request: Request, db: Session):
     """
     import json as _json
     import tempfile
-    import requests as _req
 
     username = _extract_username(request)
 
@@ -605,11 +654,10 @@ async def upload_library_direct(request: Request, db: Session):
                 f.write(chunk)
                 bytes_written += len(chunk)
                 if total_size > 0:
-                    pct    = min(int(bytes_written / total_size * 100), 49)
-                    bucket = (pct // 5) * 5
-                    if bucket > last_bucket:
-                        last_bucket         = bucket
-                        record.progress_pct = bucket
+                    pct = min(int(bytes_written / total_size * 100), 49)
+                    if pct > last_bucket:
+                        last_bucket         = pct
+                        record.progress_pct = pct
                         db.commit()
     except Exception as exc:
         logger.error(f"[Library] Direct upload disk write failed item={item_id}: {exc}")
@@ -680,16 +728,16 @@ async def upload_library_direct(request: Request, db: Session):
         pod_path   = f"/data/library/{subdir}/{file_name}"
         webdav_url = f"{storage_base}/{subdir}/{file_name}"
 
-        def _put_c():
-            with open(temp_path, "rb") as f:
-                return _req.put(webdav_url, data=f,
-                    headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
-                    verify=False, timeout=None)
         try:
-            r = await asyncio.to_thread(_put_c)
+            r = await asyncio.to_thread(
+                _put_file_to_webdav_with_progress,
+                item_id, temp_path, webdav_url, bytes_written, db,
+            )
             if r.status_code not in (200, 201, 204):
                 raise RuntimeError(f"WebDAV PUT {r.status_code}: {r.text[:200]}")
         except Exception as exc:
+            record.status = "failed"
+            db.commit()
             raise HTTPException(status_code=500, detail=f"WebDAV upload failed: {exc}")
         finally:
             try: os.remove(temp_path)
@@ -717,17 +765,17 @@ async def upload_library_direct(request: Request, db: Session):
     storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
     public_url   = f"{storage_base}/{subdir}/{file_name}"
 
-    def _put_to_webdav():
-        with open(temp_path, "rb") as f:
-            return _req.put(public_url, data=f,
-                headers={"Content-Length": str(bytes_written), "Content-Type": "application/octet-stream"},
-                verify=False, timeout=None)
     try:
-        resp = await asyncio.to_thread(_put_to_webdav)
+        resp = await asyncio.to_thread(
+            _put_file_to_webdav_with_progress,
+            item_id, temp_path, public_url, bytes_written, db,
+        )
         if resp.status_code not in (200, 201, 204):
             raise RuntimeError(f"WebDAV PUT failed: {resp.status_code} {resp.text[:200]}")
     except Exception as exc:
         logger.error(f"[Library] Direct upload WebDAV failed item={item_id}: {exc}")
+        record.status = "failed"
+        db.commit()
         raise HTTPException(status_code=500, detail=f"WebDAV error: {exc}")
     finally:
         try: os.remove(temp_path)
@@ -926,10 +974,19 @@ def get_library_item(item_id: int, db: Session):
 
 
 def _parse_artifact_annotations(raw_ann: dict) -> dict:
+    """
+    Harbor artifact ke OCI + ai.artifact.* annotations parse karo.
+    llm_model/llm_template push "ai.artifact.<key>" prefix ke saath likhta
+    hai, VM-template (Proxmox) push bina prefix ke bare keys likhta hai --
+    isliye prefixed key pehle try karo, phir bare key fallback.
+    """
     import ast as _ast, json as _json
 
+    def _ann(key: str) -> str:
+        return raw_ann.get(f"ai.artifact.{key}") or raw_ann.get(key) or ""
+
     vm_details = {}
-    raw_details = (raw_ann.get("vm_template_details") or "").strip()
+    raw_details = _ann("vm_template_details").strip()
     if raw_details:
         try:
             vm_details = _ast.literal_eval(raw_details)
@@ -940,11 +997,11 @@ def _parse_artifact_annotations(raw_ann: dict) -> dict:
                 pass
 
     return {
-        "artifact_type":       raw_ann.get("artifact_type", ""),
-        "hypervisor":          raw_ann.get("hypervisor", ""),
-        "size_bytes":          raw_ann.get("size_bytes", ""),
-        "uploaded_by":         raw_ann.get("uploaded_by", ""),
-        "type":                raw_ann.get("type", ""),
+        "artifact_type":       _ann("artifact_type"),
+        "hypervisor":          _ann("hypervisor"),
+        "size_bytes":          _ann("size_bytes"),
+        "uploaded_by":         _ann("uploaded_by"),
+        "type":                _ann("type"),
         "title":               raw_ann.get("org.opencontainers.image.title", ""),
         "description":         raw_ann.get("org.opencontainers.image.description", ""),
         "version":             raw_ann.get("org.opencontainers.image.version", ""),

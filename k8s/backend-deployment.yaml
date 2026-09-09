@@ -1,0 +1,212 @@
+# Backend API Deployment + Service (thinkcloud namespace).
+#
+# All sensitive/environment-specific config comes from Kubernetes Secrets —
+# never hardcode real values into this file. Secrets referenced below:
+#
+#   devraq-backend-secret     keys: default-database, postgres-host, postgres-port,
+#                                   keycloak-realm, client-id, temporal-server,
+#                                   grafana-token, influxdb-org, influxdb-bucket,
+#                                   influxdb-linux-metrics-bucket, influxdb-token,
+#                                   influxdb-port, llm-vm-ssh-user, llm-vm-ssh-pass,
+#                                   cluster-secret-key
+#   devraq-keycloak-secret    keys: username, password
+#   devraq-postgres-secret    keys: username, password
+#   devraq-guacamole-secret   keys: guacadmin-username, guacadmin-password
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: thinkcloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backend
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+        - name: backend-code
+          image: docker.io/library/devraq-backend:1.1.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: ENVIRONMENT
+              value: production
+            - name: CLUSTER_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: cluster-secret-key
+            - name: KEYCLOAK_ROOT_URL_ROOT
+              value: http://keycloak.thinkcloud.svc.cluster.local:8080/devraqauth
+            - name: KEYCLOAK_ROOT_URL
+              value: http://keycloak.thinkcloud.svc.cluster.local:8080/devraqauth
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-keycloak-secret
+                  key: username
+            - name: KEYCLOAK_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-keycloak-secret
+                  key: password
+            - name: DEFAULT_DATABASE
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: default-database
+            - name: HOST_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: postgres-host
+            - name: PORT
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: postgres-port
+            - name: USER_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-postgres-secret
+                  key: username
+            - name: PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-postgres-secret
+                  key: password
+            - name: KEYCLOAK_RELAM
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: keycloak-realm
+            - name: CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: client-id
+            - name: GUCAMOLE_BASE_URL
+              value: http://guacamole.thinkcloud.svc.cluster.local:9080/guacamole
+            - name: GUCAMOLE_DATASOURCE
+              value: postgresql
+            # - name: TELEGRAF_CONF_FILE
+            #   value: /data/telegraf/telegraf.conf   #/home/admin-01/Desktop
+            # - name: TELEGRAF_METRIC_FILE
+            #   value: /data/telegraf/metrics.txt    #/home/admin-01/Desktop/
+            - name: USER_GUACA
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-guacamole-secret
+                  key: guacadmin-username
+            - name: GUACA_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-guacamole-secret
+                  key: guacadmin-password
+            - name: TEMPORAL_SERVER
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: temporal-server
+            - name: GUACAMOLE_REPORT_URL
+              value: http://backend:8000
+            - name: GRAFANA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: grafana-token
+            - name: TEMPORAL_SERVER_ADDRESS   # This is the address of the java code
+              value: http://temporal-retention.thinkcloud.svc.cluster.local:9191
+            - name: INFLUXDB_ORG
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: influxdb-org
+            - name: INFLUXDB_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: influxdb-bucket
+            - name: INFLUXDB_LINUX_METRICS_BUCKET
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: influxdb-linux-metrics-bucket
+            - name: INFLUXDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: influxdb-token
+            - name: INFLUXDB_PORT
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: influxdb-port
+            # DAAS_HOST: synced into devraq-backend-secret by daas_deployment.sh
+            # on every run (kubectl patch, not just first-create) so it always
+            # reflects the current host. The three URLs below build off it via
+            # Kubernetes' $(VAR_NAME) dependent-env-var substitution — a
+            # rebuild/redeploy from CI never needs to know or touch the host.
+            - name: DAAS_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: daas-host-config
+                  key: daas-host
+            - name: INFLUXDB_URL
+              value: http://$(DAAS_HOST)
+            - name: STORAGE_BASE_URL
+              value: https://$(DAAS_HOST)/library
+            - name: STORAGE_TEMP_DIR
+              value: /library/harbor/push_artifacts
+            - name: PUSH_IMAGE_BASE_URL
+              value: https://$(DAAS_HOST)/push-image
+            - name: LLM_VM_SSH_USER
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: llm-vm-ssh-user
+            - name: LLM_VM_SSH_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: llm-vm-ssh-pass
+            - name: TELEGRAF_CONF_FILE # for linux metrics
+              value: /etc/telegraf/telegraf.conf
+          volumeMounts:
+            - name: library-storage
+              mountPath: /library
+      volumes:
+        - name: library-storage
+          persistentVolumeClaim:
+            claimName: library-pvc
+      #     volumeMounts:
+      #       - name: shared-config-volume
+      #         mountPath: /data/telegraf
+      # volumes:
+      #   - name: shared-config-volume
+      #     persistentVolumeClaim:
+      #       claimName: telegraf-pvc
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: thinkcloud
+spec:
+  selector:
+    app: backend
+  type: NodePort
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000
+      nodePort: 30080

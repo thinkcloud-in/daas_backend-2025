@@ -10,7 +10,11 @@ from models.library_model import LibraryItem
 from utils.k8s_pod_exec import delete_file_from_pod
 
 logger = activity.logger
-_HARBOR_PUSH_TYPES = {"container"}
+# container: activities_harbor_push.py (skopeo) se push hote hain.
+# llm_model/llm_template: activities_llm_push.py (oras) se push hote hain.
+# Dono cases mein harbor_image column "host/project/owner/name:tag" format mein
+# bharta hai, isliye ek hi _harbor_delete_image() dono ke liye kaam karta hai.
+_HARBOR_PUSH_TYPES = {"container", "llm_model", "llm_template"}
 
 
 def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
@@ -36,10 +40,25 @@ def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
     path_parts = path.split("/")               # ["library", "openwebui", "openwebui"]
     project    = path_parts[0]                 # "library"
     repo_path  = "/".join(path_parts[1:])      # "openwebui/openwebui"
-    repo_enc   = _url_quote(repo_path, safe="")  # "openwebui%2Fopenwebui"
+    # Harbor ka API gateway ek layer % -decode kar deta hai isse pahle ki
+    # request Harbor core tak pahunche — single-encoded "%2F" isliye ek "/"
+    # ban jaata hai aur router route hi match nahi kar paata (404 "path not
+    # found"). Double-encoding se yeh survive karta hai. Verified live.
+    repo_enc   = _url_quote(_url_quote(repo_path, safe=""), safe="")  # "openwebui%252Fopenwebui"
 
     base_url = f"http://{host}"
-    api_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"
+    tag_url  = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{tag}"
+
+    # Tag se digest resolve karo — tag se seedha delete karne par sirf tag
+    # hatta tha, artifact (manifest+blobs) orphan reh jaata tha. Digest se
+    # delete karne par asli artifact bhi hat jaata hai.
+    get_resp = _req.get(tag_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+    if get_resp.status_code == 404:
+        logger.info(f"[LibraryDelete] artifact already gone (tag={tag})")
+        return
+    get_resp.raise_for_status()
+    digest  = get_resp.json()["digest"]
+    api_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts/{digest}"
 
     logger.info(f"[LibraryDelete] Harbor API DELETE: {api_url}")
     resp = _req.delete(
@@ -51,8 +70,37 @@ def _harbor_delete_image(harbor_image: str, harbor_user: str, harbor_pass: str):
     if resp.status_code in (200, 202, 404):
         # 404 = already deleted — theek hai
         logger.info(f"[LibraryDelete] Harbor delete status={resp.status_code}")
+        _harbor_delete_repo_if_empty(base_url, project, repo_enc, harbor_user, harbor_pass)
         return
     raise RuntimeError(f"Harbor delete failed: {resp.status_code} {resp.text[:200]}")
+
+
+def _harbor_delete_repo_if_empty(base_url, project, repo_enc, harbor_user, harbor_pass):
+    """
+    Artifact delete karne ke baad repository khud Harbor mein empty entry ke
+    roop mein reh jaata hai. Check karo ki repo mein ab koi artifact bacha
+    hai ya nahi (agar isi repo mein doosre version/tag pushed hain to unhe
+    touch mat karo) -- sirf tab repo delete karo jab wo pura khaali ho.
+    Non-fatal: fail ho to bas warning, kyunki asli artifact delete already
+    ho chuka hai.
+    """
+    list_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}/artifacts"
+    try:
+        resp = _req.get(list_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+        if resp.status_code == 404:
+            return
+        resp.raise_for_status()
+        if resp.json():
+            return  # abhi bhi artifacts bache hain -- repo mat chhedo
+
+        repo_url = f"{base_url}/api/v2.0/projects/{project}/repositories/{repo_enc}"
+        del_resp = _req.delete(repo_url, auth=(harbor_user, harbor_pass), verify=False, timeout=30)
+        if del_resp.status_code in (200, 202, 404):
+            logger.info(f"[LibraryDelete] empty Harbor repository removed: {project}/{repo_enc}")
+        else:
+            logger.warning(f"[LibraryDelete] repo cleanup failed (non-fatal): {del_resp.status_code} {del_resp.text[:200]}")
+    except Exception as exc:
+        logger.warning(f"[LibraryDelete] repo cleanup failed (non-fatal): {exc}")
 
 
 _MAX_POLL_SECONDS = 6 * 3600  # 6 hours max — iske baad timeout
@@ -152,7 +200,14 @@ def mark_upload_failed_activity(payload: dict) -> dict:
 
 @activity.defn(name="Library-Delete-File-from-Pod-and-DB")
 def delete_library_file_activity(payload: dict) -> dict:
-    """Pod se file delete karo aur DB record remove karo."""
+    """
+    Harbor image (agar pushed hai) delete karo, pod se file delete karo, phir
+    DB record remove karo — is order mein, taaki Harbor cleanup na ho paaye to
+    DB record bhi na hate (warna orphan image Harbor mein reh jaata, jisका
+    trace karne ka koi record hi nahi bachta). Harbor delete fail hone par
+    activity exception raise karti hai — workflow-level retry policy (5
+    attempts) khud dobara try karegi.
+    """
     item_id = payload["item_id"]
 
     db = SessionLocal()
@@ -166,23 +221,25 @@ def delete_library_file_activity(payload: dict) -> dict:
         logger.info(f"[Library] delete item={item_id} type={item.type} file={file_path}")
 
         if item.type in _HARBOR_PUSH_TYPES and item.harbor_image:
-            # Harbor se image delete karo
-            try:
-                _harbor_delete_image(
-                    harbor_image=item.harbor_image,
-                    harbor_user=item.harbor_user or "admin",
-                    harbor_pass=item.harbor_pass or "Harbor12345",
-                )
-                logger.info(f"[Library] Harbor image deleted: {item.harbor_image}")
-            except Exception as exc:
-                logger.warning(f"[Library] Harbor delete failed: {exc} — removing DB record anyway")
-        elif file_path:
-            # Storage (WebDAV/pod) se file delete karo
+            # Harbor se image delete karo — yahan koi try/except nahi: fail hone
+            # par exception upar propagate hogi, DB record delete hi nahi hoga,
+            # aur Temporal poori activity retry karega.
+            _harbor_delete_image(
+                harbor_image=item.harbor_image,
+                harbor_user=item.harbor_user or "admin",
+                harbor_pass=item.harbor_pass or "Harbor12345",
+            )
+            logger.info(f"[Library] Harbor image deleted: {item.harbor_image}")
+
+        if file_path:
+            # Storage (WebDAV/pod) se file delete karo — Harbor-push types ke
+            # liye bhi try karo (agar koi original upload file abhi bhi pod pe
+            # padi ho); `rm -f` idempotent hai, missing file pe error nahi deta.
             try:
                 delete_file_from_pod(file_path)
                 logger.info(f"[Library] pod file deleted: {file_path}")
             except Exception as exc:
-                logger.warning(f"[Library] pod delete failed {file_path}: {exc} — removing DB record anyway")
+                logger.warning(f"[Library] pod delete failed {file_path}: {exc} — continuing")
 
         db.delete(item)
         db.commit()

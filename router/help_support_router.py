@@ -66,3 +66,24 @@ def close_log_scroll(body: ScrollIdBody):
     Scroll context ko explicitly release karo jab scrolling khatam ho jaye.
     """
     return help_support_controller.close_log_scroll(body.scroll_id)
+
+
+@help_support_router.get("/logs/download")
+def download_backend_logs(
+    start_date: str = Query(..., description="Start date, format YYYY-MM-DD"),
+    end_date:   str = Query(..., description="End date, format YYYY-MM-DD"),
+    start_time: str = Query("00:00:00", description="Start time, format HH:MM:SS (default: start of day)"),
+    end_time:   str = Query("23:59:59", description="End time, format HH:MM:SS (default: end of day)"),
+    services:   Optional[str] = Query(None, description="Comma-separated service names to filter by"),
+    batch_size: int = Query(1000, ge=1, le=10000, description="Docs per scroll batch fetched internally"),
+):
+    """
+    Poore matching date range ke logs ko seedha ek .log file ke roop me
+    stream karta hai — browser me click karte hi native download trigger
+    hota hai (Content-Disposition: attachment). Andar hi scroll lifecycle
+    (start/next/close) manage hoti hai, client ko scroll_id se kuch lena-
+    dena nahi. Koi server-side storage/temp-file nahi banti.
+    Frontend me seedha <a href="...">/window.location se hit karo, fetch+Blob
+    ki zaroorat nahi.
+    """
+    return help_support_controller.download_backend_logs(start_date, end_date, start_time, end_time, services, batch_size)

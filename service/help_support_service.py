@@ -1,8 +1,11 @@
 import os
-from typing import List, Optional
+from typing import Generator, List, Optional
 
 import httpx
+import structlog
 from fastapi import HTTPException
+
+logger = structlog.get_logger("help_support_service")
 
 _OPENSEARCH_URL      = os.getenv("OPENSEARCH_URL", "https://172.16.0.101:30920").rstrip("/")
 _OPENSEARCH_USER     = os.getenv("OPENSEARCH_USER", "log-reader")
@@ -175,3 +178,68 @@ def close_log_scroll(scroll_id: str) -> None:
         )
     except Exception:
         pass
+
+
+_LOG_LINE_HEADLINE_KEYS = {"timestamp", "@timestamp", "level", "service", "logger", "event"}
+
+
+def _format_log_line(entry: dict) -> str:
+    """
+    Ek OpenSearch log document ko ek readable .log line me convert karo.
+    Headline (timestamp/level/service/logger/event) upar dikhta hai, baaki
+    SAARE fields (response_body, status_code, duration_ms, request_id,
+    kubernetes metadata, temporal_activity, waghera) key=value ke roop me
+    aage jate hain — kuch bhi drop nahi hota.
+    """
+    import json as _json
+
+    ts          = entry.get("timestamp") or entry.get("@timestamp") or ""
+    level       = (entry.get("level") or "info").upper()
+    service     = entry.get("service") or ""
+    logger_name = entry.get("logger") or ""
+    event       = entry.get("event") or ""
+
+    extra_parts = []
+    for k, v in entry.items():
+        if k in _LOG_LINE_HEADLINE_KEYS:
+            continue
+        if isinstance(v, (dict, list)):
+            v = _json.dumps(v, ensure_ascii=False)
+        extra_parts.append(f"{k}={v}")
+
+    extra_str = ("  " + " ".join(extra_parts)) if extra_parts else ""
+    return f"{ts} [{level}] {service} {logger_name} - {event}{extra_str}\n"
+
+
+def stream_log_batches(first_batch: dict) -> Generator[str, None, None]:
+    """
+    Generator jo ek already-fetched pehle batch (start_log_scroll se, jo
+    controller me alag se call hota hai taaki connection/auth errors turant
+    proper HTTP error ban ke jayein, streaming shuru hone se PEHLE) se aage
+    scroll continue karta hai aur har log entry ko ek formatted line ke roop
+    me yield karta hai. Poora result kabhi memory me ikattha nahi hota — ek
+    batch process hote hi agla fetch hota hai.
+    StreamingResponse ke saath use hota hai (download endpoint) — koi bhi
+    server-side file/storage nahi banti.
+    """
+    batch = first_batch
+    scroll_id = batch.get("scroll_id")
+    try:
+        while True:
+            for entry in batch.get("logs", []):
+                yield _format_log_line(entry)
+            if not batch.get("has_more"):
+                break
+            try:
+                batch = continue_log_scroll(scroll_id)
+            except HTTPException as e:
+                # Streaming already shuru ho chuki hai — ab HTTP status badal
+                # nahi sakte, isliye error ko file ke andar hi likh ke stream
+                # rok dete hain, taaki client ko pata chale kuch adhoora reh gaya.
+                logger.error("log_download_stream_failed", detail=str(e.detail))
+                yield f"\n--- ERROR: log export incomplete: {e.detail} ---\n"
+                break
+            scroll_id = batch.get("scroll_id") or scroll_id
+    finally:
+        if scroll_id:
+            close_log_scroll(scroll_id)

@@ -28,6 +28,10 @@ psycopg2-binary==2.9.10
 # Structured logging
 structlog==26.1.0
 
+# Streaming ZIP creation (log download endpoint) — genuinely progressive,
+# no buffering of the full archive in memory
+zipstream-ng==1.9.3
+
 # Data processing
 pandas==2.1.4
 

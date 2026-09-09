@@ -29,7 +29,19 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         try:
             try:
                 response = await call_next(request)
-                if hasattr(response, "body_iterator"):
+                # NOTE: Starlette ka call_next() HAR response ko apne internal
+                # _StreamingResponse wrapper me deta hai (chahe endpoint ne
+                # normal Response diya ho ya asli StreamingResponse) — isliye
+                # type(response) se "ye genuinely streaming hai" pata nahi
+                # chal sakta, hasattr(response, "body_iterator") bhi hamesha
+                # True milega. File-download responses (jaise log-download)
+                # Content-Disposition header set karte hain — isi se pehchano
+                # aur unka body kabhi capture/consume mat karo, warna poora
+                # stream yahi turant buffer ho jaata (client ko tab tak kuch
+                # nahi milta jab tak SAARA data fetch na ho jaaye) — streaming
+                # ka poora purpose khatam ho jaata hai.
+                is_file_download = "content-disposition" in response.headers
+                if hasattr(response, "body_iterator") and not is_file_download:
                     body = [chunk async for chunk in response.body_iterator]
                     response.body_iterator = iter(body)
                     try:
@@ -38,11 +50,13 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
                         response_data = "<binary data>"
 
                     response = Response(
-                        content=response_data,
+                        content=b"".join(body),
                         status_code=response.status_code,
                         headers=dict(response.headers),
                         media_type=response.media_type
                     )
+                elif is_file_download:
+                    response_data = f"<file download: {response.headers.get('content-disposition', '')}>"
 
             except Exception as e:
                 status = "FAILED"

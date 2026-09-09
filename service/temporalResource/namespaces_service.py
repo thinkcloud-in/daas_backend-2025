@@ -19,13 +19,18 @@ class CreateNamespaceRequest(BaseModel):
     description: Optional[str] = ""
 
 class UpdateRetentionRequest(BaseModel):
-    namespace: str
     retention_days: int
-    email:str
+    email: str
 
-from temporalio.client import Client
+# Namespace hamesha static "default" hai -- Temporal aur OpenSearch dono ke liye.
+# Frontend se namespace kabhi nahi bheja jaata.
+DEFAULT_NAMESPACE = "default"
+
+from sqlalchemy.orm import Session
+
 from service.temporalResource.workflows import workflows_retentionPeriod
 from utils.temporal_client import TemporalClientManager
+from service import retention_service
 
 def unique_id():
     unique_id = datetime.now()
@@ -75,8 +80,9 @@ async def get_current_retention_days(namespace: str) -> Optional[int]:
 
         ttl = namespace_info["config"].get("workflowExecutionRetentionTtl", "0s")
         return parse_ttl_to_seconds(ttl) // 86400  # return days
-    except subprocess.CalledProcessError as e:
-        
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        # FileNotFoundError: 'temporal' CLI is not installed / not on PATH on this host.
+        # Non-critical -- this value is only used for a log message.
         return None
 
 
@@ -100,28 +106,66 @@ async def list_namespaces():
     namespaces = await handle.result()
     return namespaces
 
-async def update_namespace_retention(request: UpdateRetentionRequest):
+async def update_namespace_retention(request: UpdateRetentionRequest, db: Session):
+    """
+    Ek hi call se DONO retention set hoti hain:
+      1. Temporal namespace ki apni workflowExecutionRetentionTtl (existing)
+      2. OpenSearch (backend-logs-*) ke liye ISM retention policy -- OpenSearch
+         khud is policy ko periodically check karke purani indices delete
+         karta hai, koi Temporal schedule/worker nahi chahiye. DB me bhi
+         record hota hai (retention_settings), kyunki OpenSearch ke paas
+         "abhi kya set hai" query karne ka koi seedha tareeka nahi hai.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     if client is None:
-        
-        return 
 
-    current_retention = await get_current_retention_days(request.namespace)
+        return
+
+    current_retention = await get_current_retention_days(DEFAULT_NAMESPACE)
     action_message = f"Retention-Updation ({current_retention}d - {request.retention_days}d)"
 
 
-    
+
     handle = await client.start_workflow(
         workflows_retentionPeriod.UpdateRetentionWorkflow.run,
-        args=[request.namespace, request.retention_days],
-        id=f"update-retention-{request.namespace}-{uniqueId}",
+        args=[DEFAULT_NAMESPACE, request.retention_days],
+        id=f"update-retention-{DEFAULT_NAMESPACE}-{uniqueId}",
         task_queue="update-Retention-tasks",
         search_attributes={
-            "Entity": [request.namespace],
+            "Entity": [DEFAULT_NAMESPACE],
             "Action": [action_message],
             "UserName": [request.email]
         },
     )
     namespaces = await handle.result()
+
+    # OpenSearch side — ISM policy create/update karo, aur DB me record karo
+    retention_service.ensure_ism_retention_policy(request.retention_days)
+    retention_service.upsert_retention_setting(
+        db, request.retention_days, DEFAULT_NAMESPACE, updated_by=request.email,
+    )
+
     return namespaces
+
+
+async def get_retention_settings(db: Session) -> dict:
+    """Current retention config — DB se (agar kabhi set na hua ho to default 30 din)."""
+    row = retention_service.get_current_retention(db)
+    if not row:
+        return {
+            "retention_days": retention_service.DEFAULT_RETENTION_DAYS,
+            "temporal_namespace": None,
+            "opensearch_index_pattern": retention_service._OPENSEARCH_INDEX,
+            "updated_by": None,
+            "updated_at": None,
+            "is_default": True,
+        }
+    return {
+        "retention_days": row.retention_days,
+        "temporal_namespace": row.temporal_namespace,
+        "opensearch_index_pattern": row.opensearch_index_pattern,
+        "updated_by": row.updated_by,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+        "is_default": False,
+    }
