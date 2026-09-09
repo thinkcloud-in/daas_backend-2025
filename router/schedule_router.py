@@ -16,12 +16,26 @@ async def create_item(
     item: Schedule_report,
     db: Session = Depends(get_db)
 ):
+    """
+    Naya recurring report-schedule banao (kis report ko, kab, kisko email
+    karna hai).
+
+    Request body: Schedule_report.
+
+    Response 201 — `data`: saved schedule record (id included).
+    Errors: 500 (error_response) agar save fail ho.
+    """
     return schedule_controller.create_item(item, db)
 
 
 # ---------------------- READ ALL ----------------------
 @schedule_router.get("/get_schedules", response_model=APIResponse[List[Schedule_report]])
 async def get_items(db: Session = Depends(get_db)):
+    """
+    Saare schedules list karo.
+
+    Response 200 — `data`: [ <Schedule_report>, ... ]
+    """
     return await schedule_controller.get_items(db)
 
 
@@ -31,7 +45,12 @@ async def get_item_id(
     item_id: int,
     db: Session = Depends(get_db)
 ):
-   return await schedule_controller.get_item_id(item_id, db)
+    """
+    Ek schedule ki detail lo, id se.
+
+    Response 200 — `data`: <Schedule_report>
+    """
+    return await schedule_controller.get_item_id(item_id, db)
 
 # ---------------------- READ BY REPORT ----------------------
 @schedule_router.get("/get_schedules_report")
@@ -40,6 +59,12 @@ async def get_item_report(
     offset: int = Query(0, ge=0, description="Pagination offset"),
     db: Session = Depends(get_db)
 ):
+    """
+    Schedule-runs ki report/history nikalo (kab-kab run hua, kya status raha).
+
+    Response 200 — `data`: [ {..run summary.., "status": str, "ran_at": ...}, ... ]
+    (limit/offset se manually paginated, `total`/`pagination` object nahi milta.)
+    """
     return await schedule_controller.get_item_report(limit, offset, db)
 
 # ---------------------- UPDATE ----------------------
@@ -49,6 +74,13 @@ async def update_item(
     item: Schedule_report,
     db: Session = Depends(get_db)
 ):
+    """
+    Existing schedule update karo (frequency, recipients, report-type, etc.).
+
+    Request body: Schedule_report (poori object bhejo, overwrite hoti hai).
+
+    Response 200 — `data`: updated <Schedule_report>.
+    """
     return await schedule_controller.update_item(item_id, item, db)
 
 # ---------------------- DELETE ----------------------
@@ -57,6 +89,11 @@ async def delete_item(
     item_id: int,
     db: Session = Depends(get_db)
 ):
+    """
+    Schedule delete karo.
+
+    Response 200 — `data`: deleted item ka id/summary.
+    """
     return await schedule_controller.delete_item(item_id, db)
 
 # ---------------------- STATUS ----------------------
@@ -64,4 +101,9 @@ async def delete_item(
 async def get_status(
     schedule_id: str
 ):
+    """
+    Ek schedule ke Temporal workflow (schedule) ki current status lo.
+
+    Response 200 — `data`: {"schedule_id": str, "status": str, ...}
+    """
     return await schedule_controller.get_status(schedule_id)

@@ -1,3 +1,9 @@
+"""
+Shared-PV (WebDAV) storage controller — router/pod_storage_router.py is par
+delegate karta hai. Yeh backend seedha ek WebDAV server (nginx dav module)
+ke aage ek thin HTTP proxy/wrapper hai — library upload/Harbor-push flows
+isi shared storage ko use karte hain.
+"""
 import logging
 import os
 import re
@@ -18,6 +24,7 @@ VALID_DIRS          = {"harbor", "os", "container", "llm_model", "llm_template",
 
 
 def _validate_dir(directory: str):
+    """`directory` VALID_DIRS mein hai ya nahi check karo — raises HTTPException(400) agar nahi."""
     if directory not in VALID_DIRS:
         raise HTTPException(
             status_code=400,
@@ -26,12 +33,21 @@ def _validate_dir(directory: str):
 
 
 def _validate_filename(filename: str):
+    """Filename mein path-traversal ("..") ya "/" na ho, yeh check karo — raises HTTPException(400)."""
     if not filename or "/" in filename or ".." in filename:
         raise HTTPException(status_code=400, detail="Invalid filename")
 
 
 async def handle_upload(directory: str, filename: str, request) -> dict:
-    """Request stream seedha WebDAV server pe PUT karo (Content-Length ke saath)."""
+    """
+    Request stream seedha WebDAV server pe PUT karo (Content-Length ke
+    saath) — file kabhi is backend ki apni disk pe nahi likhi jaati,
+    bytes seedhe stream-through hote hain.
+
+    Used by: PUT /{directory}/{filename}
+    Returns: success_response ke `data` mein {"filename", "directory", "size", "url"}
+    Raises: 400 invalid directory/filename, 500 WebDAV upload fail.
+    """
     _validate_dir(directory)
     _validate_filename(filename)
 
@@ -80,7 +96,13 @@ async def handle_upload(directory: str, filename: str, request) -> dict:
 
 
 def handle_delete(directory: str, filename: str) -> dict:
-    """WebDAV pe DELETE request bhejo."""
+    """
+    WebDAV pe DELETE request bhejo.
+
+    Used by: DELETE /{directory}/{filename}
+    Returns: success_response ke `data` mein {"filename", "directory"}
+    Raises: 404 agar file na mile, 500 WebDAV delete fail.
+    """
     _validate_dir(directory)
     _validate_filename(filename)
 
@@ -100,7 +122,7 @@ def handle_delete(directory: str, filename: str) -> dict:
 
 
 def _parse_autoindex(html: str) -> list[dict]:
-    """nginx autoindex HTML se filenames aur sizes parse karo."""
+    """nginx autoindex HTML se filenames aur sizes parse karo (regex-based, koi HTML parser nahi)."""
     files = []
     for m in re.finditer(
         r'<a href="([^"./][^"/]*)">.*?</a>\s+[\d\-]+\s[\d:]+\s+([\d]+|-)',
@@ -115,7 +137,16 @@ def _parse_autoindex(html: str) -> list[dict]:
 
 
 def handle_list(directory: str | None = None) -> dict:
-    """WebDAV se directory listing fetch karo."""
+    """
+    WebDAV se directory listing fetch karo (nginx autoindex HTML parse
+    karke) — `directory=None` ho to VALID_DIRS ki saari directories.
+
+    Used by: GET /library, GET /library/{directory}
+    Returns: success_response ke `data` mein
+        {"base_url": str, "total_files": int, "directories": {"<dir>": [{"name","size","url"}, ...], ...}}
+    Individual directory list-fail hone pe us dir ke liye empty list milti
+    hai (poora request fail nahi hota).
+    """
     if directory:
         _validate_dir(directory)
     dirs_to_list = [directory] if directory else sorted(VALID_DIRS)
@@ -146,7 +177,13 @@ def handle_list(directory: str | None = None) -> dict:
 
 
 def handle_download(directory: str, filename: str) -> RedirectResponse:
-    """WebDAV URL pe redirect karo."""
+    """
+    WebDAV URL pe redirect karo (file khud stream nahi karta).
+
+    Used by: GET /{directory}/{filename}, GET /library/{directory}/{filename}
+    Returns: RedirectResponse, 302 → WebDAV file URL.
+    Raises: 400 invalid directory/filename.
+    """
     _validate_dir(directory)
     _validate_filename(filename)
     url = f"{_WEBDAV_BASE}/{directory}/{filename}"

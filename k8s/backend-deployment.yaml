@@ -168,6 +168,8 @@ spec:
               value: /library/harbor/push_artifacts
             - name: PUSH_IMAGE_BASE_URL
               value: https://$(DAAS_HOST)/push-image
+            - name: GUACAMOLE_RETENTION_API_BASE_URL
+              value: https://$(DAAS_HOST)/push-image
             - name: LLM_VM_SSH_USER
               valueFrom:
                 secretKeyRef:
