@@ -92,6 +92,12 @@ class LLMInferenceJobCreate(BaseModel):
     vllmExtraParams: Optional[str] = None      # raw YAML/key:value text from the UI textarea, parsed below
     ssh_user: Optional[str] = None      # VM SSH user  (falls back to LLM_VM_SSH_USER env var)
     ssh_pass: Optional[str] = None      # VM SSH password (falls back to LLM_VM_SSH_PASS env var)
+    # Where the Harbor template gets staged+built -- temporary, cleaned up
+    # right after cloning. "auto" (default) needs no other fields; "manual"
+    # requires templateStorageNode + templateStorageStorage.
+    templateStorageMode: Optional[str] = "auto"      # "auto" | "manual"
+    templateStorageNode: Optional[str] = None
+    templateStorageStorage: Optional[str] = None
     # ram: Optional[int] = None         # taken from template
     # cpu: Optional[int] = None         # taken from template
 

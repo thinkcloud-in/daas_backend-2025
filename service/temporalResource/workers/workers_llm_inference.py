@@ -25,7 +25,10 @@ async def llm_inference_worker():
         workflows=[CreateMultiNodeLLMWorkflow, PoolVMActionWorkflow, DeleteLLMPoolWorkflow],
         activities=[
             activities_llm_inference.reserve_vmids_activity,
-            activities_llm_inference.pull_and_restore_harbor_template_activity,
+            activities_llm_inference.pull_harbor_template_to_pv_activity,
+            activities_llm_inference.push_template_to_proxmox_activity,
+            activities_llm_inference.create_vm_from_import_activity,
+            activities_llm_inference.convert_to_template_activity,
             activities_llm_inference.delete_harbor_template_activity,
             activities_llm_inference.provision_model_volume_activity,
             activities_llm_inference.pull_harbor_model_to_vm_activity,
@@ -41,7 +44,7 @@ async def llm_inference_worker():
             activities_llm_inference.delete_llm_pool_activity,
             activities_llm_inference.add_affinity_rule_activity,
             activities_llm_inference.configure_ray_activity,
-            activities_llm_inference.install_ray_vllm_activity,
+            activities_llm_inference.configure_llm_node_activity,
             activities_llm_inference.lunch_configure_influxdb_activity
         ],
         activity_executor=activity_executor,

@@ -334,7 +334,7 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
     """
     JSON dict ke SAARE fields → OCI annotation dict.
     - Known fields   → org.opencontainers.image.* standard keys
-    - Baaki sab      → ai.artifact.<key> prefix ke saath
+    - Baaki sab      → <key> prefix ke saath
     Harbor Overview tab mein jo bhi fields hain sab dikh jaayenge.
     Wrapper in annotations ko oras --annotation key=value flags mein pass karega.
     """
@@ -362,7 +362,7 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
             # Key → DNS-label safe format
             clean = re.sub(r"[^a-zA-Z0-9._-]", "_", str(key)).lower().strip("_.-")
             if clean:
-                ann[f"ai.artifact.{clean}"] = val_str
+                ann[f"{clean}"] = val_str
 
     # display_name → title mein highest priority (name se override)
     if raw_data.get("display_name"):

@@ -22,6 +22,16 @@ _RETRY_TEMPLATE_PULL = RetryPolicy(
     maximum_attempts=2,
 )
 
+# The push (PV -> Proxmox + VM create) is split from the pull above
+# specifically so it can retry more freely -- it never re-touches Harbor,
+# so a higher attempt count here doesn't cost a 40-50GB+ re-download each
+# time, unlike the pull.
+_RETRY_TEMPLATE_PUSH = RetryPolicy(
+    initial_interval=timedelta(seconds=10),
+    backoff_coefficient=2.0,
+    maximum_attempts=2,
+)
+
 # Logging is configured centrally in utils/logging_config.py (called from
 # main.py at startup) — do not reconfigure it per-module.
 logger = workflow.logger
@@ -81,13 +91,113 @@ class CreateMultiNodeLLMWorkflow:
                 "between GPU workers during multi-node vLLM launch."
             )
 
-        # ── Phase 0.5: Reserve one VMID + one name per node UP FRONT, sequentially ─
+        # ── Phase 0.5: Harbor-sourced OS disk -> import, templatize ───────────
+        # Runs once for the whole pool, not per node -- every node below clones
+        # from this one resulting template exactly like a manually-picked one.
+        #
+        # Deliberately BEFORE the VMID reservation below: this activity picks
+        # its own VMID via /cluster/nextid, independent of that reservation's
+        # snapshot of "what's in use". Reserving first and templatizing second
+        # let both calls see the same not-yet-created state and hand out the
+        # same id to both -- the reservation would then never know 111 (say)
+        # was about to become the template, and a later clone attempting to
+        # create its own VM 111 would collide with the template that already
+        # exists there. Templatizing first makes the template a real VM before
+        # the reservation's own live cluster query runs, so its existing
+        # exclusion logic (used_ids from the current VM list) naturally skips
+        # it -- no special-casing needed.
+        template_vmid = payload["template"]
+        harbor = payload.get("harbor")
+        vm_config = payload.get("vm_config") or {}
+        if payload.get("template_source") == "harbor" and harbor:
+            template_conn = harbor["template_conn"]
+            template_storage = payload.get("template_storage")
+            # Split into pull (Harbor -> PV) then push (PV -> Proxmox + VM
+            # create) as two separate activities. A push-side failure
+            # (chunked-encoding quirks, storage space, VMID collisions --
+            # all seen in testing) used to force a full re-pull of a
+            # 40-50GB+ file on every retry since it was one combined
+            # activity; now retrying the push alone never touches Harbor.
+            pull_result = await workflow.execute_activity(
+                activities_llm_inference.pull_harbor_template_to_pv_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "harbor_url":  template_conn["harbor_url"],
+                    "harbor_user": template_conn["harbor_user"],
+                    "harbor_pass": template_conn["harbor_pass"],
+                    "project":     template_conn["project"],
+                    "repository":  template_conn["repository"],
+                    "tag":         template_conn["tag"],
+                    "template_storage": template_storage,
+                }],
+                retry_policy=_RETRY_TEMPLATE_PULL,
+                start_to_close_timeout=timedelta(hours=3),
+                # Without this, a worker that dies mid-transfer (crash, killed
+                # process, lost connection) leaves the activity frozen at
+                # "Started" forever -- nothing ever notices or retries it,
+                # since Temporal has no independent way to check the worker
+                # is still alive. The activity heartbeats every ~20s while
+                # waiting on the pod's pull call (see _post_with_heartbeat);
+                # if none arrive within this window, Temporal marks it failed
+                # and retries automatically instead of hanging indefinitely.
+                heartbeat_timeout=timedelta(seconds=60),
+            )
+            push_result = await workflow.execute_activity(
+                activities_llm_inference.push_template_to_proxmox_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "template_storage": template_storage,
+                    "staged_path": pull_result["staged_path"],
+                    "filename":    pull_result["filename"],
+                }],
+                retry_policy=_RETRY_TEMPLATE_PUSH,
+                start_to_close_timeout=timedelta(hours=3),
+                heartbeat_timeout=timedelta(seconds=60),
+            )
+            create_result = await workflow.execute_activity(
+                activities_llm_inference.create_vm_from_import_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "storage":     payload.get("storage", "local-lvm"),
+                    # A qcow2 carries no VM config -- these come from the form.
+                    "cores":       vm_config.get("cores"),
+                    "memory":      vm_config.get("memory"),
+                    "network":     vm_config.get("network"),
+                    "template_storage": template_storage,
+                    "new_vmid":    pull_result["new_vmid"],
+                    "import_volid": push_result["import_volid"],
+                }],
+                retry_policy=_RETRY_TEMPLATE_PUSH,
+                start_to_close_timeout=timedelta(hours=3),
+                heartbeat_timeout=timedelta(seconds=60),
+            )
+            restore_result = await workflow.execute_activity(
+                activities_llm_inference.convert_to_template_activity,
+                args=[{
+                    "cluster_id":  payload["cluster_id"],
+                    "template_storage": template_storage,
+                    "vmid":        create_result["vmid"],
+                    "import_volid": push_result["import_volid"],
+                }],
+                retry_policy=_RETRY,
+                start_to_close_timeout=timedelta(minutes=10),
+            )
+            template_vmid = str(restore_result["template_vmid"])
+            await workflow.execute_activity(
+                activities_llm_inference.update_llm_inference_job_activity,
+                args=[{"job_id": job_id, "template": template_vmid}],
+                retry_policy=_RETRY,
+                start_to_close_timeout=timedelta(minutes=2),
+            )
+
+        # ── Phase 0.6: Reserve one VMID + one name per node UP FRONT, sequentially ─
         # Must happen before the parallel clone tasks below -- if each node's
         # clone activity independently called /cluster/nextid or computed its
         # own "next free name", two nodes cloning at the same moment could
         # both be handed the same id (Proxmox's nextid has no locking) or the
         # same name (e.g. both "lucky-001"), since neither sees the other's
-        # not-yet-created VM.
+        # not-yet-created VM. Runs AFTER the template above so its live query
+        # of existing VMs already sees the template and excludes its VMID.
         reservation = await workflow.execute_activity(
             activities_llm_inference.reserve_vmids_activity,
             args=[{
@@ -101,51 +211,6 @@ class CreateMultiNodeLLMWorkflow:
         )
         reserved_vmids = reservation["vmids"]
         reserved_names = reservation["vm_names"]
-
-        # ── Phase 0.6: Harbor-sourced OS disk -> import, templatize ───────────
-        # Runs once for the whole pool, not per node -- every node below clones
-        # from this one resulting template exactly like a manually-picked one.
-        template_vmid = payload["template"]
-        harbor = payload.get("harbor")
-        vm_config = payload.get("vm_config") or {}
-        if payload.get("template_source") == "harbor" and harbor:
-            template_conn = harbor["template_conn"]
-            restore_result = await workflow.execute_activity(
-                activities_llm_inference.pull_and_restore_harbor_template_activity,
-                args=[{
-                    "cluster_id":  payload["cluster_id"],
-                    "target_node": nodes[0]["node"],
-                    "storage":     payload.get("storage", "local-lvm"),
-                    "harbor_url":  template_conn["harbor_url"],
-                    "harbor_user": template_conn["harbor_user"],
-                    "harbor_pass": template_conn["harbor_pass"],
-                    "project":     template_conn["project"],
-                    "repository":  template_conn["repository"],
-                    "tag":         template_conn["tag"],
-                    # A qcow2 carries no VM config -- these come from the form.
-                    "cores":       vm_config.get("cores"),
-                    "memory":      vm_config.get("memory"),
-                    "network":     vm_config.get("network"),
-                }],
-                retry_policy=_RETRY_TEMPLATE_PULL,
-                start_to_close_timeout=timedelta(hours=3),
-                # Without this, a worker that dies mid-transfer (crash, killed
-                # process, lost connection) leaves the activity frozen at
-                # "Started" forever -- nothing ever notices or retries it,
-                # since Temporal has no independent way to check the worker
-                # is still alive. The activity now heartbeats every ~5s
-                # during the transfer (see _SizedStream.read); if none
-                # arrive within this window, Temporal marks it failed and
-                # retries automatically instead of hanging indefinitely.
-                heartbeat_timeout=timedelta(seconds=60),
-            )
-            template_vmid = str(restore_result["template_vmid"])
-            await workflow.execute_activity(
-                activities_llm_inference.update_llm_inference_job_activity,
-                args=[{"job_id": job_id, "template": template_vmid}],
-                retry_policy=_RETRY,
-                start_to_close_timeout=timedelta(minutes=2),
-            )
 
         # ── Phase 1: Clone + configure all VMs in parallel ───────────────────
         clone_tasks = []
@@ -224,7 +289,7 @@ class CreateMultiNodeLLMWorkflow:
         # ── Phase 2.5: Install NVIDIA + CUDA + Ray + vLLM on all VMs (parallel) ─
         install_tasks = [
             workflow.execute_activity(
-                activities_llm_inference.install_ray_vllm_activity,
+                activities_llm_inference.configure_llm_node_activity,
                 args=[{
                     "ip_address": ip,
                     # The VM's actual reserved name (e.g. "lucky-001") --
@@ -238,6 +303,7 @@ class CreateMultiNodeLLMWorkflow:
                     "net_iface":  payload.get("net_iface"),  # None -> activity auto-detects the VM's real interface
                     "model":      payload.get("model", ""),
                     "model_path": payload.get("model_path", "/vllm_data/hf_cache"),
+                    "role":       "head" if i == 0 else "worker",
                     **ssh_creds,
                 }],
                 retry_policy=RetryPolicy(maximum_attempts=1),
@@ -268,11 +334,17 @@ class CreateMultiNodeLLMWorkflow:
         # ── Phase 2.65: Harbor-sourced model -> pull once, share if multi-node ─
         # Pulled onto the head node only, ever -- on a multi-node pool it's
         # shared out over NFS so workers read it from there instead of each
-        # pulling their own copy. install_ray_vllm_activity is re-run per node
+        # pulling their own copy. configure_llm_node_activity is re-run per node
         # afterward purely to (re)write LLM_MODEL_PATH/LLM_MODEL_NAME -- its
         # driver/venv install steps are already-satisfied no-ops at that point.
         if payload.get("template_source") == "harbor" and harbor and harbor.get("model_repository"):
-            model_dir = "/vllm_data/hf_cache/harbor_model"
+            # Base dir only -- pull_harbor_model_to_vm_activity creates the
+            # model's own subfolder inside this (named from whatever Harbor
+            # actually returns, e.g. "qwen2.5-0.5b-instruct"), matching the
+            # dedicated volume's own mount_path below exactly so the model
+            # folder lands directly on that volume, not nested under an
+            # extra fixed "harbor_model" layer.
+            model_dir = "/vllm_data/hf_cache"
 
             # Dedicated volume for the weights, mounted at the path the pull
             # below writes into. The activity sizes it from the artifact's own
@@ -339,7 +411,7 @@ class CreateMultiNodeLLMWorkflow:
 
             env_tasks = [
                 workflow.execute_activity(
-                    activities_llm_inference.install_ray_vllm_activity,
+                    activities_llm_inference.configure_llm_node_activity,
                     args=[{
                         "ip_address": ip,
                         "name":       reserved_names[i],
@@ -347,6 +419,7 @@ class CreateMultiNodeLLMWorkflow:
                         "net_iface":  payload.get("net_iface"),
                         "model":      model_file,
                         "model_path": model_dir,
+                        "role":       "head" if i == 0 else "worker",
                         **ssh_creds,
                     }],
                     retry_policy=RetryPolicy(maximum_attempts=1),

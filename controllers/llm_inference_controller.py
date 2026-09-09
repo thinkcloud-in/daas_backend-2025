@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import pytz
+import requests
 import yaml
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -17,8 +18,56 @@ from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
 from service.temporalResource.activity.activities_llm_inference import _netmask_to_cidr
+from service.clusterService import get_api_token, getting_Proxmox_host
 from service import proxmoxService
 from utils import response_format
+
+# Content types a storage must have BOTH of to be usable for staging a
+# Harbor template upload: "import" (Proxmox requires this to accept the
+# uploaded qcow2) and "iso" (this org's own convention for which storages
+# are meant for this kind of temporary staging file).
+_TEMPLATE_STAGING_CONTENT = ("import", "iso")
+
+
+def _get_node_storages(db: Session, cluster: Cluster, node: str) -> list:
+    api_token = get_api_token(db, cluster.name)
+    headers = {"Authorization": f"PVEAPIToken={api_token}"}
+    host = getting_Proxmox_host(cluster)
+    if not host:
+        raise HTTPException(status_code=502, detail=f"No reachable Proxmox host for cluster '{cluster.name}'")
+    resp = requests.get(f"{host}/api2/json/nodes/{node}/storage", headers=headers, verify=False, timeout=15)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Failed to list storages on node '{node}': {resp.text}")
+    return resp.json().get("data", [])
+
+
+def _pick_import_storage(db: Session, cluster: Cluster, node: str) -> str:
+    """Auto mode: first storage on `node` with both 'import' and 'iso' content enabled."""
+    for s in _get_node_storages(db, cluster, node):
+        content = (s.get("content") or "").split(",")
+        if all(c in content for c in _TEMPLATE_STAGING_CONTENT):
+            return s["storage"]
+    raise HTTPException(
+        status_code=400,
+        detail=f"No storage on node '{node}' has both 'import' and 'iso' content enabled -- "
+               f"required to stage a Harbor template upload. Enable both on a storage for this "
+               f"node in Proxmox, or select one manually.",
+    )
+
+
+def _validate_import_storage(db: Session, cluster: Cluster, node: str, storage: str) -> None:
+    """Manual mode: confirm the user's chosen storage actually qualifies."""
+    for s in _get_node_storages(db, cluster, node):
+        if s.get("storage") == storage:
+            content = (s.get("content") or "").split(",")
+            if all(c in content for c in _TEMPLATE_STAGING_CONTENT):
+                return
+            raise HTTPException(
+                status_code=400,
+                detail=f"Storage '{storage}' on node '{node}' does not have both 'import' and "
+                       f"'iso' content enabled -- cannot be used for template staging.",
+            )
+    raise HTTPException(status_code=404, detail=f"Storage '{storage}' not found on node '{node}'")
 
 _IST = pytz.timezone("Asia/Kolkata")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
@@ -27,9 +76,13 @@ _VLLM_SERVE_PORT = 8000  # matches --port 8000 in launch_vllm_from_template_acti
 _ACTIVITY_DISPLAY = {
     # LLM inference
     "reserve_vmids_activity":             "Reserve VM IDs",
+    "pull_harbor_template_to_pv_activity": "Pull Template from Harbor",
+    "push_template_to_proxmox_activity":   "Push Template to Proxmox",
+    "create_vm_from_import_activity":      "Create VM from Template",
+    "convert_to_template_activity":        "Convert VM to Template",
     "clone_and_configure_vm_activity":    "VM Clone & Configure",
     "update_llm_inference_job_activity":  "Update Job Status",
-    "install_ray_vllm_activity":          "Install Ray + vLLM",
+    "configure_llm_node_activity":        "Configure LLM Node",
     "add_affinity_rule_activity":         "Set Affinity Rules",
     "configure_ray_activity":             "Configure Ray",
     "launch_vllm_from_template_activity": "Launch vLLM",
@@ -180,6 +233,24 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster '{data.clusterName}' not found")
 
+        # ── Resolve where the Harbor template gets staged+built ────────────────
+        # Always resolved to explicit node+storage here, regardless of mode --
+        # the activity just trusts these, no auto/manual branching downstream.
+        template_storage = None
+        if is_harbor_source:
+            if data.templateStorageMode == "manual":
+                if not data.templateStorageNode or not data.templateStorageStorage:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="templateStorageNode and templateStorageStorage are required when templateStorageMode is 'manual'.",
+                    )
+                _validate_import_storage(db, cluster, data.templateStorageNode, data.templateStorageStorage)
+                template_storage = {"node": data.templateStorageNode, "storage": data.templateStorageStorage}
+            else:
+                ts_node = data.nodes[0].node
+                ts_storage = _pick_import_storage(db, cluster, ts_node)
+                template_storage = {"node": ts_node, "storage": ts_storage}
+
         # ── Resolve ipPools → IPSModel list ───────────────────────────────────
         ip_pool_objects = []
         for pool_name in data.ipPools:
@@ -255,6 +326,18 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             # passed to the workflow below as name_template) is. It gets
             # filled in by the workflow's Phase 2 DB update once cloning
             # resolves the real names.
+            #
+            # ip_addresses IS set here, at creation, from the IPs just
+            # reserved above -- deliberately not left to Phase 2 like
+            # machines_name. If the workflow fails before Phase 2 ever runs
+            # (e.g. during Harbor template creation), delete_llm_pool_activity
+            # still needs to know which IPs to release; leaving this null
+            # until Phase 2 meant a pool that failed before cloning could
+            # never release its reserved IPs on delete -- they were marked
+            # "used" here at creation but nothing downstream ever pointed
+            # back to them. Phase 2 still re-sets this later (harmless,
+            # same values) once the real per-VM order is confirmed.
+            ip_addresses=[r["ip"] for r in reserved_ips],
             storage=data.storage or "local-lvm",
             model=data.model,
             model_type=data.modelType,
@@ -297,6 +380,9 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "api_key":       api_key,
             "ssh_user":      data.ssh_user or _SSH_USER,
             "ssh_pass":      data.ssh_pass or _SSH_PASS,
+            # Explicit node+storage resolved above -- auto or manual, the
+            # activity always receives a concrete pair, no branching there.
+            "template_storage": template_storage,
         }
 
         # ── Start Temporal workflow ───────────────────────────────────────────

@@ -926,11 +926,10 @@ def get_library_item(item_id: int, db: Session):
 
 
 def _parse_artifact_annotations(raw_ann: dict) -> dict:
-    """Harbor artifact ke OCI + ai.artifact.* annotations parse karo."""
     import ast as _ast, json as _json
 
     vm_details = {}
-    raw_details = (raw_ann.get("ai.artifact.vm_template_details") or "").strip()
+    raw_details = (raw_ann.get("vm_template_details") or "").strip()
     if raw_details:
         try:
             vm_details = _ast.literal_eval(raw_details)
@@ -941,11 +940,11 @@ def _parse_artifact_annotations(raw_ann: dict) -> dict:
                 pass
 
     return {
-        "artifact_type":       raw_ann.get("ai.artifact.artifact_type", ""),
-        "hypervisor":          raw_ann.get("ai.artifact.hypervisor", ""),
-        "size_bytes":          raw_ann.get("ai.artifact.size_bytes", ""),
-        "uploaded_by":         raw_ann.get("ai.artifact.uploaded_by", ""),
-        "type":                raw_ann.get("ai.artifact.type", ""),
+        "artifact_type":       raw_ann.get("artifact_type", ""),
+        "hypervisor":          raw_ann.get("hypervisor", ""),
+        "size_bytes":          raw_ann.get("size_bytes", ""),
+        "uploaded_by":         raw_ann.get("uploaded_by", ""),
+        "type":                raw_ann.get("type", ""),
         "title":               raw_ann.get("org.opencontainers.image.title", ""),
         "description":         raw_ann.get("org.opencontainers.image.description", ""),
         "version":             raw_ann.get("org.opencontainers.image.version", ""),
