@@ -26,8 +26,12 @@ import dotenv
 dotenv.load_dotenv()
 
 logger = activity.logger
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
-_SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
+# ssh_user/ssh_pass are NOT sourced from the environment anywhere in this
+# file -- every activity requires them as a real key in its own payload
+# (payload["ssh_user"]/payload["ssh_pass"]), threaded through from the
+# per-pool value persisted on LLMInferenceJob.ssh_user/ssh_pass (see
+# llm_inference_controller.py). A missing key raises KeyError immediately
+# rather than silently falling back to a shared credential.
 _VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launches/restarts
 # Room on the model volume beyond the weights themselves -- vLLM writes
 # compiled kernels, torch caches and tokenizer artifacts alongside them.
@@ -155,7 +159,7 @@ def _post_with_heartbeat(url: str, json_body: dict, timeout: int, heartbeat_msg:
     exceeds Temporal's heartbeat_timeout and the activity gets killed as
     presumed-dead even though it's still working fine.
     """
-    return _request_with_heartbeat("POST", url, timeout, heartbeat_msg, heartbeat_interval, json=json_body)
+    return _request_with_heartbeat("POST", url, timeout, heartbeat_msg, heartbeat_interval, json=json_body, verify=False)
 
 
 def _request_with_heartbeat(method: str, url: str, timeout: int, heartbeat_msg: str,
@@ -722,8 +726,8 @@ def provision_model_volume_activity(payload: dict) -> dict:
         storage    = payload.get("storage", "local-lvm")
         slot       = payload.get("slot", "scsi1")
         mount_path = payload.get("mount_path", "/vllm_data/hf_cache")
-        ssh_user   = payload.get("ssh_user", _SSH_USER)
-        ssh_pass   = payload.get("ssh_pass", _SSH_PASS)
+        ssh_user   = payload["ssh_user"]
+        ssh_pass   = payload["ssh_pass"]
 
         # Sized here rather than at create time so a slow or briefly unreachable
         # Harbor is retried by Temporal instead of failing the API request.
@@ -818,8 +822,8 @@ def pull_harbor_model_to_vm_activity(payload: dict) -> dict:
     not a single file). This activity just triggers each step and waits.
     """
     ip          = payload["ip_address"]
-    ssh_user    = payload.get("ssh_user", _SSH_USER)
-    ssh_pass    = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user    = payload["ssh_user"]
+    ssh_pass    = payload["ssh_pass"]
     harbor_url  = payload["harbor_url"]
     harbor_user = payload["harbor_user"]
     harbor_pass = payload["harbor_pass"]
@@ -896,8 +900,8 @@ def pull_harbor_model_to_vm_activity(payload: dict) -> dict:
 def share_model_nfs_activity(payload: dict) -> dict:
     """Export the head node's pulled-model folder over NFS, scoped to the pool subnet."""
     ip        = payload["ip_address"]
-    ssh_user  = payload.get("ssh_user", _SSH_USER)
-    ssh_pass  = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user  = payload["ssh_user"]
+    ssh_pass  = payload["ssh_pass"]
     model_dir = payload["model_dir"]
     subnet    = payload["subnet"]
 
@@ -918,8 +922,8 @@ def share_model_nfs_activity(payload: dict) -> dict:
 def mount_model_nfs_activity(payload: dict) -> dict:
     """Mount the head node's exported model folder on a worker, at the same local path."""
     ip        = payload["ip_address"]
-    ssh_user  = payload.get("ssh_user", _SSH_USER)
-    ssh_pass  = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user  = payload["ssh_user"]
+    ssh_pass  = payload["ssh_pass"]
     head_ip   = payload["head_ip"]
     model_dir = payload["model_dir"]
 
@@ -956,8 +960,8 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         template    = str(payload["template"])
         datastore    = payload.get("storage", os.getenv("PROXMOX_STORAGE", "local-lvm"))
         pool_name    = payload["pool_name"]
-        ssh_user     = payload.get("ssh_user", _SSH_USER)
-        ssh_pass     = payload.get("ssh_pass", _SSH_PASS)
+        ssh_user     = payload["ssh_user"]
+        ssh_pass     = payload["ssh_pass"]
 
         # ── Resolve cluster ───────────────────────────────────────────────
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -1267,8 +1271,8 @@ def verify_gpu_health_activity(payload: dict) -> dict:
     would reach for first (reboot), before giving up with a clear message.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
 
     _check = "nvidia-smi 2>&1"
 
@@ -1309,8 +1313,8 @@ def verify_ray_cluster_gpu_activity(payload: dict) -> dict:
     unhelpful "Log not found".
     """
     ip            = payload["ip_address"]  # head node
-    ssh_user      = payload.get("ssh_user", _SSH_USER)
-    ssh_pass      = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user      = payload["ssh_user"]
+    ssh_pass      = payload["ssh_pass"]
     expected_gpus = int(payload["expected_gpus"])
     home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
     venv_bin = f"{home_dir}/vllm-ray-env/bin"
@@ -1629,8 +1633,8 @@ def lunch_configure_influxdb_activity(payload: dict) -> dict:
     the head node.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
 
     influxdb_url    = payload.get("influxdb_url")
     influxdb_token  = payload.get("influxdb_token")
@@ -1688,8 +1692,8 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
     try:
         import time
         ip       = payload["ip_address"]
-        ssh_user = payload.get("ssh_user", _SSH_USER)
-        ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+        ssh_user = payload["ssh_user"]
+        ssh_pass = payload["ssh_pass"]
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
         model_type             = payload.get("model_type")
@@ -1860,8 +1864,8 @@ def restore_llm_services_activity(payload: dict) -> dict:
     3. Kills any stale vLLM process, then relaunches vLLM from /etc/environment config.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     role     = payload.get("role", "head")   # "head" | "worker"
     tp_size  = payload.get("tensor_parallel_size", 1)
     pp_size  = payload.get("pipeline_parallel_size", 1)
@@ -2291,8 +2295,8 @@ def configure_llm_node_activity(payload: dict) -> dict:
       - Hostname, /etc/hosts, SELinux permissive, env vars, firewall, dirs
     """
     ip = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     hostname = payload.get("name", "llm-node")
     role = payload.get("role", "head")   # "head" | "worker"
     subnet = payload.get("subnet")
@@ -2470,8 +2474,8 @@ def configure_ray_activity(payload: dict) -> dict:
       head_ip      : head node IP (only needed when role == "worker")
     """
     ip = payload["ip_address"]
-    ssh_user = payload.get("ssh_user") or _SSH_USER
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     role = payload.get("role", "head")
     head_ip = payload.get("head_ip", ip)
     num_gpus = payload.get("num_gpus", 1)

@@ -165,8 +165,11 @@ async def _fetch_steps(handle) -> list:
 
 logger = logging.getLogger(__name__)
 
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
-_SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
+# ssh_user/ssh_pass are NOT sourced from the environment -- at creation they
+# must come from the request (data.ssh_user/data.ssh_pass), and at
+# restart/power-action they're read back from LLMInferenceJob.ssh_user/
+# ssh_pass, persisted per-pool at creation time. See the validators below
+# and pool_vm_action for where each is enforced.
 
 
 async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
@@ -193,10 +196,19 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
                 raise HTTPException(status_code=404, detail=f"Harbor registry id={data.harborRegistryId} not found")
             if not harbor_dep.harbor_url:
                 raise HTTPException(status_code=409, detail=f"Harbor id={data.harborRegistryId} has no harbor_url configured")
+            # No hardcoded fallback -- a missing credential here means this
+            # Harbor registry record is misconfigured; better to fail loudly
+            # now than silently authenticate as a guessed "admin" user with
+            # an empty password against the real registry.
+            if not harbor_dep.harbor_user or not harbor_dep.harbor_pass:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Harbor id={data.harborRegistryId} has no harbor_user/harbor_pass configured",
+                )
             harbor_conn = {
                 "harbor_url":  harbor_dep.harbor_url,
-                "harbor_user": harbor_dep.harbor_user or "admin",
-                "harbor_pass": harbor_dep.harbor_pass or "",
+                "harbor_user": harbor_dep.harbor_user,
+                "harbor_pass": harbor_dep.harbor_pass,
                 "project":     "library",
             }
             harbor_model_repo, _, harbor_model_tag = data.harborArtifact.rpartition(":")
@@ -345,6 +357,10 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             max_images_per_request=data.maxImagesPerRequest,
             vllm_extra_params=vllm_extra_params,
             api_key=api_key,
+            # Persisted so a later restart/power-action reads back THIS
+            # pool's actual credential instead of a shared global default.
+            ssh_user=data.ssh_user,
+            ssh_pass=data.ssh_pass,
             status="provisioning",
         )
         db.add(record)
@@ -378,8 +394,8 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "max_images_per_request": data.maxImagesPerRequest,
             "vllm_extra_params":      vllm_extra_params,
             "api_key":       api_key,
-            "ssh_user":      data.ssh_user or _SSH_USER,
-            "ssh_pass":      data.ssh_pass or _SSH_PASS,
+            "ssh_user":      data.ssh_user,
+            "ssh_pass":      data.ssh_pass,
             # Explicit node+storage resolved above -- auto or manual, the
             # activity always receives a concrete pair, no branching there.
             "template_storage": template_storage,
@@ -657,6 +673,10 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
             raise HTTPException(status_code=404, detail="LLM inference job not found")
         if data.status is not None:
             record.status = data.status
+        if data.ssh_user is not None:
+            record.ssh_user = data.ssh_user
+        if data.ssh_pass is not None:
+            record.ssh_pass = data.ssh_pass
         db.commit()
         return response_format.success_response(200, "LLM inference job updated successfully", {"id": record.id})
     except HTTPException:
@@ -721,6 +741,15 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
         nodes = record.nodes or []
         if not vmids:
             raise HTTPException(status_code=400, detail="No VMs found in this pool")
+        # No env fallback -- a pool created before ssh_user/ssh_pass were
+        # persisted per-pool has no credential to restart its services with.
+        # Surface that clearly (editable via the update endpoint) rather
+        # than silently trying some other shared credential.
+        if not record.ssh_user or not record.ssh_pass:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pool '{record.name}' has no SSH credentials saved -- set them via the edit/update endpoint before performing this action.",
+            )
 
         # Mark pool as in-progress immediately
         record.status = _POOL_ACTION_PENDING_STATUS[data.action]
@@ -737,8 +766,8 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             "cluster_id":             record.cluster_id,
             "head_ip":                record.head_ip,
             "ip_addresses":           record.ip_addresses or [],
-            "ssh_user":               _SSH_USER,
-            "ssh_pass":               _SSH_PASS,
+            "ssh_user":               record.ssh_user,
+            "ssh_pass":               record.ssh_pass,
             # tensor_parallel_size = GPUs per node (within-node), pipeline_parallel_size
             # = number of nodes (cross-node) -- must match the convention used at
             # pool-creation time (see CreateMultiNodeLLMWorkflow._provision). These were

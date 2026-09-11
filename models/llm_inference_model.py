@@ -53,6 +53,12 @@ class LLMInferenceJob(Base):
     # creation, reused on every restart so the credential handed to
     # OpenWebUI/clients never changes underneath them.
     api_key = Column(String, nullable=True)
+    # The only source of these credentials anywhere in the LLM inference
+    # pipeline -- no env var fallback exists. Set at creation (required,
+    # from the request), editable afterward via the update endpoint. A
+    # later restart/power-action reads this back directly.
+    ssh_user = Column(String, nullable=True)
+    ssh_pass = Column(String, nullable=True)
     status = Column(String, nullable=False, default="provisioning")
     workflow_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
@@ -90,8 +96,8 @@ class LLMInferenceJobCreate(BaseModel):
     modelTypeOther: Optional[str] = None       # free-text label when modelType == "other"
     maxImagesPerRequest: Optional[int] = None  # vision_language only
     vllmExtraParams: Optional[str] = None      # raw YAML/key:value text from the UI textarea, parsed below
-    ssh_user: Optional[str] = None      # VM SSH user  (falls back to LLM_VM_SSH_USER env var)
-    ssh_pass: Optional[str] = None      # VM SSH password (falls back to LLM_VM_SSH_PASS env var)
+    ssh_user: str                       # VM SSH user -- required, no env fallback
+    ssh_pass: str                       # VM SSH password -- required, no env fallback
     # Where the Harbor template gets staged+built -- temporary, cleaned up
     # right after cloning. "auto" (default) needs no other fields; "manual"
     # requires templateStorageNode + templateStorageStorage.
@@ -158,6 +164,8 @@ class LLMInferenceJobCreate(BaseModel):
 class LLMInferenceJobUpdate(BaseModel):
     model: Optional[str] = None
     status: Optional[str] = None
+    ssh_user: Optional[str] = None
+    ssh_pass: Optional[str] = None
 
 
 class PoolActionRequest(BaseModel):
