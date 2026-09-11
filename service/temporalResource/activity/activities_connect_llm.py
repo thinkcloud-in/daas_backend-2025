@@ -44,21 +44,21 @@ def _db_update(deploy_id: int, **kwargs):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 helper — OpenWebUI HTTP API se config update karo
+# Stage 1 helper — update the config via the OpenWebUI HTTP API
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_password: str,
                    keys: list | None = None) -> str | None:
     """
-    OpenWebUI /openai/config/update API se config update karo.
-    Returns None on success, error string on failure.
+    Update the config via the OpenWebUI /openai/config/update API.
+    Returns None on success, an error string on failure.
     """
     import httpx
 
     svc = service_url.rstrip("/")
     resolved_keys = keys if (keys and len(keys) == len(urls)) else ["sk-EMPTY"] * len(urls)
     try:
-        # Admin JWT lo
+        # get an admin JWT
         token = None
         if admin_email and admin_password:
             sr = httpx.post(
@@ -76,7 +76,7 @@ def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_passwor
 
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        # OPENAI_API_CONFIGS: har URL ek key, value exactly working kubectl command jaisa
+        # OPENAI_API_CONFIGS: one key per URL, value exactly like the working kubectl command
         api_configs = {url: {"enable": True, "prefix_id": None} for url in urls}
 
         payload = {
@@ -95,14 +95,14 @@ def _try_http_sync(service_url: str, urls: list, admin_email: str, admin_passwor
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Stage 1.5 helper — PostgreSQL DB se direct config update karo
+# Stage 1.5 helper — update the config directly in the PostgreSQL DB
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list,
                  keys: list | None = None) -> str | None:
     """
-    OpenWebUI ke PostgreSQL DB ko directly update karo.
-    Returns None on success, error string on failure.
+    Update OpenWebUI's PostgreSQL DB directly.
+    Returns None on success, an error string on failure.
     """
     import json as _j, time as _t
 
@@ -421,7 +421,7 @@ def connect_llm_activity(payload: dict) -> dict:
             else:
                 _log_step(deploy_id, "Stage 6: WARNING — rollout timed out after 300s")
 
-            # ── Stage 6.5: Admin JWT se OpenWebUI config sync karo (after restart) ─
+            # ── Stage 6.5: sync the OpenWebUI config via the admin JWT (after restart) ─
             activity.logger.info("[ConnectLLM] Stage 6.5 — syncing OpenWebUI config via admin API")
             _log_step(deploy_id, "Stage 6.5: Syncing OpenWebUI config via admin API after pod restart (3 retries) ...")
 

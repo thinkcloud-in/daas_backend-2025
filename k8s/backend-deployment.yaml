@@ -150,6 +150,16 @@ spec:
                 secretKeyRef:
                   name: devraq-backend-secret
                   key: influxdb-port
+            - name: OPENSEARCH_USER
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-opensearch-secret
+                  key: reader-username
+            - name: OPENSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-opensearch-secret
+                  key: reader-password
             # DAAS_HOST: synced into devraq-backend-secret by daas_deployment.sh
             # on every run (kubectl patch, not just first-create) so it always
             # reflects the current host. The three URLs below build off it via

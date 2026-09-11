@@ -6,9 +6,9 @@ Base = declarative_base()
 
 
 class GuacamoleRetentionSetting(Base):
-    """Singleton row -- Guacamole connection-history retention ke liye
-    abhi kya set hai, ye track karta hai (jaise Temporal/OpenSearch
-    retention_settings, lekin Guacamole ke liye alag)."""
+    """Singleton row -- tracks what is currently set for Guacamole
+    connection-history retention (like Temporal/OpenSearch
+    retention_settings, but separate, for Guacamole)."""
 
     __tablename__ = "guacamole_retention_settings"
 

@@ -1,3 +1,26 @@
+"""
+App-deployment controller — router/app_deploy_router.py ("/v1/app-deploy")
+delegates to this. It is the largest controller in this codebase.
+An "AppDeployment" row represents a K8s deployment of OpenWebUI, VectorDB, or
+PostgreSQL (from a Harbor image). Broad sections:
+
+1. Create/List/Get/Delete — basic CRUD; the initial deploy runs via a Temporal
+   workflow (AppDeployWorkflow) (SSH + kubectl apply, in the activities).
+2. VectorDB connect/disconnect — patches the OpenWebUI Deployment's env vars
+   directly via the K8s API (`_load_k8s_apps_client`, no SSH).
+3. Private-LLM connect/disconnect/sync — wiring OpenWebUI to private vLLM
+   endpoints, primarily via the OpenWebUI REST API (instant), with the Temporal
+   workflow only as a fallback (the one-time path that restarts the pod).
+4. Keycloak SSO connect/disconnect — the most complex part: create the Keycloak
+   client, disable/restore OpenWebUI's own login form (both via the REST API and
+   directly in Postgres, whichever works), patch the K8s env vars, restart the pod.
+5. User management — Keycloak realm users list/search + OpenWebUI
+   admin/member role assignment (keeping both systems in sync).
+
+Fields like `admin_password`/`api_key` deliberately go into the response
+(these are the app's own generated deployment credentials, which the user
+needs to copy — not a third-party secret leak).
+"""
 import logging
 import uuid
 from urllib.parse import urlparse
@@ -17,7 +40,7 @@ logger = logging.getLogger(__name__)
 _LIB_TYPE_MAP = {
     "open_web_ui": "openwebui",
     "vectordb":    "vectordb",
-    "container":   "openwebui",   # generic container bhi accept
+    "container":   "openwebui",   # accept a generic container too
 }
 # acceptable library.types for each deployment_type (set)
 _EXPECTED_LIB_TYPE = {
@@ -45,6 +68,12 @@ _PROGRESS = {
 
 
 def _to_dict(d: AppDeployment, db: Session = None) -> dict:
+    """
+    Convert an AppDeployment ORM row into an API dict — also maps `status` via
+    the `_PROGRESS` map into a step/label/pct progress object, and parses
+    `linked_llm_ids` (a JSON array) to attach each LLM's summary (when `db` is
+    given).
+    """
     import json as _json
     progress = _PROGRESS.get(d.status, {"step": 0, "label": d.status, "pct": 0})
     try:
@@ -116,6 +145,26 @@ def _to_dict(d: AppDeployment, db: Session = None) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def create_app_deployment(body: dict, db: Session) -> dict:
+    """
+    Deploy OpenWebUI/VectorDB/PostgreSQL onto K8s — resolve the Harbor image
+    from the library item (it must have been pushed), create the AppDeployment
+    record in "pending" status, and start AppDeployWorkflow (Temporal) (async —
+    SSH + kubectl apply in the activities).
+
+    For the openwebui type, `postgresql_deploy_id` must be the id of an
+    already-deployed postgresql AppDeployment in "deployed" status (this is
+    validated).
+
+    Used by: POST /v1/app-deploy
+    Args: body = AppDeployBody (see the router docstring — name,
+    deployment_type, k8s_cluster_id, harbor_registry_id, version_id,
+    namespace, storage_class, postgresql_deploy_id, admin_email, admin_password).
+    Returns: success_response(201) with `_to_dict()` + `message` in `data`.
+    Errors: 400 for an invalid deployment_type / missing postgresql_deploy_id /
+    library type mismatch, 404 if cluster/library-item/postgresql-deployment is
+    not found, 409 for postgresql not-ready / a missing library harbor_image,
+    500 if the workflow fails to start (the record is marked "failed").
+    """
     from service.temporalResource.workers.workers_app_deploy import TASK_QUEUE
     from service.temporalResource.workflows.workflows_app_deploy import AppDeployWorkflow
     from utils.temporal_client import TemporalClientManager
@@ -138,12 +187,12 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
             detail=f"deployment_type '{deployment_type}' invalid. Allowed: {sorted(VALID_DEPLOY_TYPES)}"
         )
 
-    # OpenWebUI ke liye postgresql_deploy_id mandatory hai
+    # postgresql_deploy_id is mandatory for OpenWebUI
     if deployment_type == "openwebui":
         if not postgresql_deploy_id:
             raise HTTPException(
                 status_code=400,
-                detail="openwebui deployment ke liye 'postgresql_deploy_id' mandatory hai — pehle postgresql deploy karo"
+                detail="'postgresql_deploy_id' is mandatory for an openwebui deployment — deploy postgresql first"
             )
         _pg = db.query(AppDeployment).filter(AppDeployment.id == postgresql_deploy_id).first()
         if not _pg:
@@ -151,7 +200,7 @@ async def create_app_deployment(body: dict, db: Session) -> dict:
         if _pg.deployment_type != "postgresql":
             raise HTTPException(status_code=400, detail=f"id={postgresql_deploy_id} is not a postgresql deployment")
         if _pg.status != "deployed":
-            raise HTTPException(status_code=409, detail=f"PostgreSQL deployment id={postgresql_deploy_id} is '{_pg.status}' — deployed hona chahiye")
+            raise HTTPException(status_code=409, detail=f"PostgreSQL deployment id={postgresql_deploy_id} is '{_pg.status}' — it must be deployed")
         if not _pg.service_url:
             raise HTTPException(status_code=409, detail=f"PostgreSQL id={postgresql_deploy_id} service_url not set")
 
@@ -297,6 +346,13 @@ def list_app_deployments(
     page_size: int = 10,
     deployment_type: str | None = None,
 ) -> dict:
+    """
+    List app deployments (paginated), optionally filtered by deployment_type.
+
+    Used by: GET /v1/app-deploy
+    Returns: success_response with, in `data`, {"items": [ {..`_to_dict()`..}, ... ],
+    "pagination": {page, page_size, total, total_pages, has_next, has_prev}}
+    """
     try:
         page      = max(1, page)
         page_size = max(1, min(page_size, 100))
@@ -331,6 +387,13 @@ def list_app_deployments(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_app_deployment(deploy_id: int, db: Session) -> dict:
+    """
+    Get an app deployment's full detail.
+
+    Used by: GET /v1/app-deploy/{deploy_id}
+    Returns: success_response with `_to_dict()` in `data`.
+    Errors: 404 if deploy_id is not found.
+    """
     d = db.query(AppDeployment).filter(AppDeployment.id == deploy_id).first()
     if not d:
         raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} not found")
@@ -342,6 +405,18 @@ def get_app_deployment(deploy_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def delete_app_deployment(deploy_id: int, db: Session) -> dict:
+    """
+    Delete an app deployment — tries to clean up via SSH + kubectl
+    (Deployment/Service/PVC), and if the namespace is non-default and has no
+    pods left, deletes the namespace too. The K8s cleanup is best-effort — even
+    if it fails (or there are no cluster credentials), the DB record is deleted,
+    with a warning.
+
+    Used by: DELETE /v1/app-deploy/{deploy_id}
+    Returns: success_response with, in `data`, {"id", "k8s_cleaned": bool,
+    "k8s_warning": str (if cleanup failed)}.
+    Errors: 404 if deploy_id is not found.
+    """
     import re
     import shlex
     import paramiko
@@ -350,7 +425,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
     if not d:
         raise HTTPException(status_code=404, detail=f"App deployment id={deploy_id} not found")
 
-    # ── K8s resources delete karo ────────────────────────────────────────────
+    # ── Delete the K8s resources ────────────────────────────────────────────
     k8s_cleaned = False
     k8s_warning = None
 
@@ -361,7 +436,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
 
         if cluster and cluster.control_ip and cluster.username and cluster.password:
             try:
-                # svc_name reconstruct karo (same logic as activity)
+                # reconstruct svc_name (same logic as the activity)
                 rname    = re.sub(r"[^a-z0-9-]", "-", d.name.lower())
                 rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
                 svc_name = f"{rname}-{d.deployment_type}"
@@ -396,7 +471,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
                     f"-n {ns_q} --ignore-not-found=true 2>&1"
                 )
 
-                # Namespace delete karo agar bilkul khaali ho (default kabhi delete nahi hoga)
+                # delete the namespace if it is completely empty (default is never deleted)
                 ns_actual = d.namespace or "default"
                 if ns_actual != "default":
                     _pods_raw = _run(
@@ -406,7 +481,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
                     try:
                         _pod_count = int(_pods_raw.strip())
                     except ValueError:
-                        _pod_count = 1  # safe default — delete mat karo
+                        _pod_count = 1  # safe default — do not delete
                     if _pod_count == 0:
                         _run(f"kubectl delete namespace {ns_q} --ignore-not-found=true 2>&1")
                         logger.info(f"[AppDeploy] Namespace {ns_actual} deleted (empty)")
@@ -422,7 +497,7 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
                 k8s_warning = str(e)[:300]
                 logger.warning(f"[AppDeploy] K8s cleanup failed id={deploy_id}: {e}")
 
-    # ── DB se delete karo ────────────────────────────────────────────────────
+    # ── Delete from the DB ──────────────────────────────────────────────────
     db.delete(d)
     db.commit()
     logger.info(f"[AppDeploy] id={deploy_id} deleted from DB")
@@ -439,6 +514,18 @@ def delete_app_deployment(deploy_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) -> dict:
+    """
+    Inject the `VECTOR_DB`/`PGVECTOR_DB_URL` env vars into the OpenWebUI
+    Deployment's pod spec (a direct patch via the K8s API, not SSH) — both
+    deploy_type and status are validated. If DATABASE_URL is missing (from an
+    old bug) it is also auto-restored, and the linked LLM env-vars are
+    preserved too (`_inject_llm_env_vars`) so the patch does not overwrite them.
+
+    Used by: POST /v1/app-deploy/{openwebui_id}/connect-vectordb
+    Returns: success_response with, in `data`, {"openwebui_id", "vectordb_id", "pgvector_url", "note"}.
+    Errors: 404 if openwebui_id/vectordb_deploy_id is not found, 400 for a wrong deployment_type,
+    409 for a wrong status / missing cluster kubeconfig, 500 if the K8s patch fails.
+    """
     import re
     from kubernetes.client.models import V1EnvVar
 
@@ -482,7 +569,7 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
                 clean_env = [e for e in (container.env or []) if e.name not in _VECTORDB_ENV_KEYS]
                 clean_env.append(V1EnvVar(name="VECTOR_DB",       value="pgvector"))
                 clean_env.append(V1EnvVar(name="PGVECTOR_DB_URL", value=pgurl))
-                # DATABASE_URL restore karo agar purane bug se remove ho gaya tha
+                # restore DATABASE_URL if it was removed by an old bug
                 if not any(e.name == "DATABASE_URL" for e in clean_env) and ow.postgresql_deploy_id:
                     _pg = db.query(AppDeployment).filter(AppDeployment.id == ow.postgresql_deploy_id).first()
                     if _pg:
@@ -519,6 +606,15 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
 # ─────────────────────────────────────────────────────────────────────────────
 
 def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
+    """
+    Remove the VectorDB link from OpenWebUI — remove the K8s env vars and
+    trigger a rollout (DATABASE_URL is also auto-restored here if it is
+    missing). Even if the K8s step fails, the DB is unlinked, with a warning.
+
+    Used by: DELETE /v1/app-deploy/{openwebui_id}/connect-vectordb
+    Returns: success_response with, in `data`, {"openwebui_id", "linked_vectordb_id": null, "k8s_warning"?}.
+    Errors: 404 if openwebui_id is not found or no VectorDB is linked, 400 for a wrong deployment_type.
+    """
     import re
     from kubernetes.client.models import V1EnvVar
 
@@ -547,7 +643,7 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
         for container in (deployment.spec.template.spec.containers or []):
             if container.name == "openwebui":
                 clean_env = [e for e in (container.env or []) if e.name not in _VECTORDB_ENV_KEYS]
-                # DATABASE_URL restore karo agar purane bug se remove ho gaya tha
+                # restore DATABASE_URL if it was removed by an old bug
                 if not any(e.name == "DATABASE_URL" for e in clean_env) and ow.postgresql_deploy_id:
                     _pg = db.query(AppDeployment).filter(AppDeployment.id == ow.postgresql_deploy_id).first()
                     if _pg:
@@ -558,7 +654,7 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
                         _dburl   = f"postgresql://postgres:postgres123@{_pg_rn}-postgresql.{_pg_ns}.svc.cluster.local:5432/{_ow_db}"
                         clean_env.append(V1EnvVar(name="DATABASE_URL", value=_dburl))
                         logger.info(f"[AppDeploy] DATABASE_URL auto-restored on disconnect db={_ow_db}")
-                # Pod restart hone par linked LLMs ko env vars me preserve karo
+                # preserve the linked LLMs in the env vars across the pod restart
                 clean_env = _inject_llm_env_vars(ow, clean_env, db)
                 container.env = clean_env
                 break
@@ -583,7 +679,7 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _load_k8s_apps_client(cluster: KubernetesCluster):
-    """kubeconfig DB se load karo, AppsV1Api return karo. No SSH."""
+    """Load the kubeconfig from the DB and return an AppsV1Api. No SSH."""
     import re, yaml, tempfile, os
     from kubernetes import client as kc, config as kcfg
 
@@ -627,15 +723,15 @@ def _ow_apply_keycloak_config(
     provider_name: str, oauth_scopes: str,
 ) -> str:
     """
-    OpenWebUI DB mein Keycloak config + login form disable karo via admin API.
-    K8s env vars ke saath-saath call karo taaki change turant dikhe (no pod restart needed).
-    Returns "ok" on success, error string on failure.
+    Set the Keycloak config + disable the login form in the OpenWebUI DB via the admin API.
+    Call this alongside the K8s env vars so the change takes effect immediately (no pod restart needed).
+    Returns "ok" on success, an error string on failure.
     """
     import httpx as _hx
 
     svc = service_url.rstrip("/")
     try:
-        # Admin JWT lo
+        # get an admin JWT
         _sr = _hx.post(
             f"{svc}/api/v1/auths/signin",
             json={"email": admin_email, "password": admin_password},
@@ -646,20 +742,20 @@ def _ow_apply_keycloak_config(
         _tok  = _sr.json().get("token", "")
         _hdrs = {"Authorization": f"Bearer {_tok}", "Content-Type": "application/json"}
 
-        # Login form disable, OAuth signup OFF (sirf admin assign-roles se user banega)
+        # disable the login form, OAuth signup OFF (users are only created via admin assign-roles)
         _ar = _hx.post(
             f"{svc}/api/v1/auths/config/update",
             headers=_hdrs,
             json={
                 "enable_login_form":             False,
                 "enable_signup":                 False,
-                "enable_oauth_signup":           False,   # auto user creation band
+                "enable_oauth_signup":           False,   # auto user creation off
                 "oauth_provider_name":           provider_name,
                 "openid_provider_url":           openid_url,
                 "oauth_client_id":               client_id,
                 "oauth_client_secret":           client_secret,
                 "oauth_scopes":                  oauth_scopes,
-                "oauth_merge_accounts_by_email": True,    # email se existing account link
+                "oauth_merge_accounts_by_email": True,    # link an existing account by email
             },
             timeout=10,
         )
@@ -675,8 +771,8 @@ def _ow_apply_keycloak_config(
 
 def _ow_remove_keycloak_config(service_url: str, admin_email: str, admin_password: str) -> str:
     """
-    OpenWebUI DB mein login form wapas enable karo (Keycloak disconnect ke baad).
-    Returns "ok" on success, error string on failure.
+    Re-enable the login form in the OpenWebUI DB (after a Keycloak disconnect).
+    Returns "ok" on success, an error string on failure.
     """
     import httpx as _hx
 
@@ -708,8 +804,8 @@ def _ow_remove_keycloak_config(service_url: str, admin_email: str, admin_passwor
 
 def _ow_pg_set_config(ow_id: int, postgresql_deploy_id, patch: dict, db_session: "Session") -> str | None:
     """
-    OpenWebUI PostgreSQL config table mein directly values patch karo.
-    Returns None on success, error string on failure.
+    Patch values directly in the OpenWebUI PostgreSQL config table.
+    Returns None on success, an error string on failure.
     Same approach as _try_pg_sync for LLM — proven to work immediately (no pod restart).
     """
     import json as _j, time as _t
@@ -780,10 +876,10 @@ def _ow_pg_set_config(ow_id: int, postgresql_deploy_id, patch: dict, db_session:
 
 def _ow_pg_exec_set_config(ow: "AppDeployment", patch: dict, db: "Session") -> str | None:
     """
-    PostgreSQL pod ke andar exec karke config table directly update karo.
-    OW API ya network routing ki zaroorat nahi — K8s API se PG pod ke andar psql chalate hain.
-    patch: flat dict e.g. {"enable_login_form": False, "enable_signup": False}
-    Returns None on success, error string on failure.
+    Exec inside the PostgreSQL pod and update the config table directly.
+    No OW API or network routing needed — we run psql inside the PG pod via the K8s API.
+    patch: a flat dict e.g. {"enable_login_form": False, "enable_signup": False}
+    Returns None on success, an error string on failure.
     """
     import json as _j, yaml, tempfile, os as _os, re as _re
     from kubernetes import client as kc, config as kcfg
@@ -817,9 +913,9 @@ def _ow_pg_exec_set_config(ow: "AppDeployment", patch: dict, db: "Session") -> s
             try: _os.unlink(kc_path)
             except OSError: pass
 
-    # Pod template sirf "app": svc_name label carry karta hai (Deployment metadata
-    # ka "daas-type" label pod tak propagate nahi hota) — isliye svc_name se hi
-    # derive karke "app" label match karo, "daas-type" se nahi.
+    # The pod template only carries the "app": svc_name label (the Deployment
+    # metadata's "daas-type" label does not propagate to the pod) — so derive
+    # from svc_name and match the "app" label, not "daas-type".
     _pg_rn   = _re.sub(r"[^a-z0-9-]", "-", pg.name.lower())
     _pg_rn   = _re.sub(r"-+", "-", _pg_rn).strip("-")[:52]
     svc_name = f"{_pg_rn}-postgresql"
@@ -833,7 +929,7 @@ def _ow_pg_exec_set_config(ow: "AppDeployment", patch: dict, db: "Session") -> s
             None,
         )
         if pod is None:
-            # Fallback: label match na mile to naam-prefix se dhoondo
+            # Fallback: if the label match fails, find by name prefix
             all_pods = core_v1.list_namespaced_pod(pg_ns)
             pod = next(
                 (p for p in all_pods.items
@@ -920,12 +1016,17 @@ _KEYCLOAK_ENV_KEYS = {
 
 
 def _parse_keycloak_config(raw: str | None) -> dict | None:
+    """
+    Parse `AppDeployment.keycloak_config` (a JSON string) into a dict,
+    and strip `client_secret` before it reaches the response (never expose it).
+    Returns None if raw is empty or invalid JSON.
+    """
     if not raw:
         return None
     try:
         import json as _j
         cfg = _j.loads(raw)
-        cfg.pop("client_secret", None)   # secret response mein nahi bhejenge
+        cfg.pop("client_secret", None)   # do not send the secret in the response
         return cfg
     except Exception:
         return None
@@ -933,8 +1034,8 @@ def _parse_keycloak_config(raw: str | None) -> dict | None:
 
 def _inject_llm_env_vars(ow: AppDeployment, env_list: list, db: Session) -> list:
     """
-    Pod restart (Keycloak/VectorDB connect) ke time linked LLMs ko env vars me preserve karo.
-    SQLite wipe hone par bhi LLM connections survive karti hain.
+    Preserve the linked LLMs in the env vars across a pod restart (Keycloak/VectorDB connect).
+    So the LLM connections survive even a SQLite wipe.
     """
     import json as _json
     from kubernetes.client.models import V1EnvVar
@@ -970,9 +1071,9 @@ def _inject_llm_env_vars(ow: AppDeployment, env_list: list, db: Session) -> list
 
 def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None, db: Session) -> str | None:
     """
-    OpenWebUI K8s deployment mein Keycloak env vars set (connect) ya remove (disconnect) karo.
-    oauth_env_vars=None means disconnect — sab KEYCLOAK env vars hata do.
-    Returns None on success, error string on failure.
+    Set (connect) or remove (disconnect) the Keycloak env vars on the OpenWebUI K8s deployment.
+    oauth_env_vars=None means disconnect — remove all KEYCLOAK env vars.
+    Returns None on success, an error string on failure.
     """
     import re
     from kubernetes.client.models import V1EnvVar
@@ -999,7 +1100,7 @@ def _k8s_patch_keycloak(ow, oauth_env_vars: dict | None, db: Session) -> str | N
                 if oauth_env_vars:
                     for k, v in oauth_env_vars.items():
                         clean_env.append(V1EnvVar(name=k, value=str(v)))
-                # Pod restart hone par linked LLMs ko env vars me preserve karo
+                # preserve the linked LLMs in the env vars across the pod restart
                 clean_env = _inject_llm_env_vars(ow, clean_env, db)
                 container.env = clean_env
                 break
@@ -1016,7 +1117,7 @@ def _ow_sync_connections(service_url: str, desired_urls: list[str],
                           api_keys: list[str] = None) -> str | None:
     """
     OpenWebUI connections sync via admin config API.
-    Admin JWT se try karta hai pehle (reliable), fallback WEBUI_API_KEY.
+    Tries the admin JWT first (reliable), falls back to WEBUI_API_KEY.
     GET  /openai/config         → read current URLs
     POST /openai/config/update  → write new URL list
     Returns None on success, error string on failure.
@@ -1053,7 +1154,7 @@ def _ow_sync_connections(service_url: str, desired_urls: list[str],
         logger.info(f"[OWSync] GET /openai/config → {r.status_code} body={r.text[:400]}")
 
         if r.status_code in (401, 403):
-            return f"Auth failed ({r.status_code}) — admin signin aur WEBUI_API_KEY dono reject"
+            return f"Auth failed ({r.status_code}) — both admin signin and WEBUI_API_KEY rejected"
         if r.status_code != 200:
             return f"GET /openai/config → {r.status_code}: {r.text[:200]}"
         if not r.text.strip():
@@ -1065,7 +1166,7 @@ def _ow_sync_connections(service_url: str, desired_urls: list[str],
             return f"GET /openai/config → non-JSON: {r.text[:200]}"
 
         # ── Step 3: Write desired URLs ────────────────────────────────────────
-        # OPENAI_API_CONFIGS: har URL ek key, value exactly working kubectl command jaisa
+        # OPENAI_API_CONFIGS: one key per URL, value exactly like the working kubectl command
         _api_configs = {u: {"enable": True, "prefix_id": None} for u in desired_urls}
         payload = {
             "ENABLE_OPENAI_API":    True,
@@ -1089,9 +1190,9 @@ def _ow_sync_connections(service_url: str, desired_urls: list[str],
 
 def _auto_inject_api_key(ow: AppDeployment, db: Session) -> str | None:
     """
-    WEBUI_API_KEY ko K8s deployment mein auto-inject karo if missing.
-    Returns None on success, error string on failure.
-    Triggers ONE rolling update (first-time only); future calls use API directly.
+    Auto-inject WEBUI_API_KEY into the K8s deployment if it is missing.
+    Returns None on success, an error string on failure.
+    Triggers ONE rolling update (first-time only); future calls use the API directly.
     """
     import re
     from kubernetes.client.models import V1EnvVar
@@ -1129,9 +1230,9 @@ def _auto_inject_api_key(ow: AppDeployment, db: Session) -> str | None:
 
 def _ow_direct_pg_sync(ow: "AppDeployment", urls: list, db_session: "Session") -> str | None:
     """
-    OpenWebUI ke PostgreSQL DB ko directly update karo — no kubectl, no JWT, no pod exec.
-    DB update ke baad Temporal pod restart karega jisse pod naye values DB se padhega.
-    Returns None on success, error string on failure.
+    Update OpenWebUI's PostgreSQL DB directly — no kubectl, no JWT, no pod exec.
+    After the DB update, Temporal restarts the pod so it reads the new values from the DB.
+    Returns None on success, an error string on failure.
     """
     import json as _j, time as _t
 
@@ -1162,7 +1263,7 @@ def _ow_direct_pg_sync(ow: "AppDeployment", urls: list, db_session: "Session") -
         )
         cur = conn.cursor()
 
-        # Kaunse tables hain pehle check karo
+        # first check which tables exist
         cur.execute(
             "SELECT table_name FROM information_schema.tables "
             "WHERE table_schema='public' ORDER BY table_name"
@@ -1216,9 +1317,9 @@ def _ow_direct_pg_sync(ow: "AppDeployment", urls: list, db_session: "Session") -
 def _ow_pod_exec_sync(kubeconfig: str, dep_name: str, namespace: str,
                        urls: list, admin_email: str = "", admin_password: str = "") -> str | None:
     """
-    OpenWebUI pod ke andar directly config update karo via kubectl exec.
-    Same mechanism as manual kubectl exec command — 100% reliable.
-    Returns None on success, error string on failure.
+    Update the config directly inside the OpenWebUI pod via kubectl exec.
+    Same mechanism as the manual kubectl exec command — 100% reliable.
+    Returns None on success, an error string on failure.
     """
     import json as _json, tempfile, os, subprocess
 
@@ -1228,7 +1329,7 @@ def _ow_pod_exec_sync(kubeconfig: str, dep_name: str, namespace: str,
             _f.write(kubeconfig)
             _kf = _f.name
 
-        # Running pod name dhundo
+        # find the running pod name
         _gp = subprocess.run(
             ["kubectl", "--kubeconfig", _kf, "get", "pod", "-n", namespace,
              "--no-headers", "-o", "custom-columns=NAME:.metadata.name,PHASE:.status.phase"],
@@ -1251,7 +1352,7 @@ def _ow_pod_exec_sync(kubeconfig: str, dep_name: str, namespace: str,
         _keys_json = _json.dumps(["sk-EMPTY"] * len(urls))
 
         # Exact same script as manual kubectl command —
-        # jose = OpenWebUI ka JWT library (python-jose), PyJWT fallback bhi hai
+        # jose = OpenWebUI's JWT library (python-jose), with a PyJWT fallback
         _script = f"""
 import json, urllib.request, os, time, sys
 BASE           = 'http://localhost:8080'
@@ -1336,6 +1437,16 @@ print('UPDATE_OK')
 
 
 def update_admin_credentials(openwebui_id: int, admin_email: str, admin_password: str, db: Session) -> dict:
+    """
+    Set the OpenWebUI deployment's `admin_email`/`admin_password` in the DB
+    (the DB record only — it does not change the user's password inside
+    OpenWebUI; needed when a deployment already exists and admin_password is
+    NULL, so flows like connect-llm/sync-connections can obtain an admin JWT).
+
+    Used by: PATCH /v1/app-deploy/{openwebui_id}/admin-credentials
+    Returns: success_response with, in `data`, {"openwebui_id", "admin_email"}.
+    Errors: 404 if openwebui_id is not found, 400 if deployment_type is not openwebui.
+    """
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
         raise HTTPException(status_code=404, detail=f"Deployment id={openwebui_id} not found")
@@ -1352,6 +1463,24 @@ def update_admin_credentials(openwebui_id: int, admin_email: str, admin_password
 
 
 async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session) -> dict:
+    """
+    Connect one or more Private LLM(s) to OpenWebUI.
+
+    - If all the given llm_ids are already linked → just re-sync
+      (idempotent, no 409) — try the OpenWebUI REST API first, fall back to a
+      direct Postgres update (`_ow_direct_pg_sync`).
+    - If there are new llm_ids → ConnectLLMWorkflow (Temporal) starts, whose
+      activity itself tries the REST API first (instant, no restart), falling
+      back to a K8s env-var patch + pod restart.
+
+    Used by: POST /v1/app-deploy/{openwebui_id}/connect-llm
+    Args: llm_ids = list[int] (llm_inference_jobs.id).
+    Returns: (already-linked path) success_response with, in `data`, {"openwebui_id",
+    "llm_ids", "all_ids", "urls", "method": "resync_http"|"resync_pg_direct"};
+    (new-connect path) {"openwebui_id","llm_ids","all_ids","urls","workflow_id","note"}.
+    Errors: 400 for empty llm_ids / a wrong deployment_type, 404 if openwebui_id/llm_id
+    is not found, 409 for a wrong status / an LLM with no endpoint / a missing kubeconfig.
+    """
     import json as _json, re, uuid
     from models.llm_inference_model import LLMInferenceJob
     from service.temporalResource.workers.workers_connect_llm import TASK_QUEUE
@@ -1391,7 +1520,7 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
         if not db.query(LLMInferenceJob).filter(LLMInferenceJob.id == lid).first():
             raise HTTPException(status_code=404, detail=f"Private LLM id={lid} not found")
 
-    # Sabhi already connected hain → sirf re-sync karo (no 409, idempotent)
+    # all already connected → just re-sync (no 409, idempotent)
     if not to_add:
         all_urls = []
         for lid in current_ids:
@@ -1399,7 +1528,7 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
             if llm:
                 all_urls.append(_llm_url(llm))
 
-        # HTTP API path try karo
+        # try the HTTP API path
         sync_err = None
         method   = "resync_http"
         if ow.service_url:
@@ -1486,14 +1615,14 @@ async def connect_private_llm(openwebui_id: int, llm_ids: list[int], db: Session
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sync LLM connections — bina pod restart ke OpenWebUI DB update karo
+# Sync LLM connections — update the OpenWebUI DB without a pod restart
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def sync_llm_connections(openwebui_id: int, db: Session) -> dict:
     """
-    OpenWebUI ke DB me currently linked LLM URLs sync karo via REST API.
-    No pod restart. Useful jab env var inject ho chuka hai lekin DB me
-    purani URLs hain (PersistentConfig mismatch).
+    Sync the currently linked LLM URLs into OpenWebUI's DB via the REST API.
+    No pod restart. Useful when the env var has been injected but the DB still
+    has the old URLs (a PersistentConfig mismatch).
     """
     import json as _json
     from models.llm_inference_model import LLMInferenceJob
@@ -1545,6 +1674,17 @@ async def sync_llm_connections(openwebui_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def disconnect_private_llm(openwebui_id: int, llm_id: int | None, db: Session) -> dict:
+    """
+    Disconnect one Private LLM from OpenWebUI (`llm_id` given) or ALL of them
+    (`llm_id=None`) — DisconnectLLMWorkflow (Temporal), whose activity tries the
+    REST API first, falling back to a K8s env-var patch + pod restart.
+
+    Used by: DELETE /v1/app-deploy/{openwebui_id}/connect-llm?llm_id=...
+    Returns: success_response with, in `data`, {"openwebui_id", "disconnected_id",
+    "remaining_ids", "workflow_id", ...}.
+    Errors: 404 if openwebui_id is not found or llm_id is not linked, 409 if a
+    connect/disconnect workflow is already running, or the kubeconfig is missing.
+    """
     import re, json as _json, uuid
     from models.llm_inference_model import LLMInferenceJob
     from service.temporalResource.workers.workers_connect_llm import TASK_QUEUE
@@ -1660,7 +1800,7 @@ def _keycloak_ensure_client(
     kc_url: str, token: str, realm: str, client_id: str, redirect_uris: list
 ) -> tuple:
     """
-    Keycloak me OpenWebUI client dhundo ya banao.
+    Find or create the OpenWebUI client in Keycloak.
     Returns (client_uuid, client_secret).
     """
     import httpx
@@ -1677,7 +1817,7 @@ def _keycloak_ensure_client(
     clients = r.json()
     if clients:
         client_uuid = clients[0]["id"]
-        # Redirect URIs update karo
+        # update the redirect URIs
         updated = dict(clients[0])
         updated["redirectUris"] = redirect_uris
         updated["webOrigins"]   = ["*"]
@@ -1687,7 +1827,7 @@ def _keycloak_ensure_client(
         )
         logger.info(f"[Keycloak] Client '{client_id}' found, redirect URIs updated")
     else:
-        # Naya client banao
+        # create a new client
         r2 = httpx.post(
             f"{kc_url}/admin/realms/{realm}/clients",
             headers=headers,
@@ -1712,7 +1852,7 @@ def _keycloak_ensure_client(
         client_uuid = r3.json()[0]["id"]
         logger.info(f"[Keycloak] Client '{client_id}' created (uuid={client_uuid})")
 
-    # Secret get karo
+    # get the secret
     r4 = httpx.get(
         f"{kc_url}/admin/realms/{realm}/clients/{client_uuid}/client-secret",
         headers=headers, timeout=15, verify=False,
@@ -1722,7 +1862,7 @@ def _keycloak_ensure_client(
 
     secret = (r4.json() or {}).get("value") or ""
     if not secret:
-        # Secret regenerate karo
+        # regenerate the secret
         r5 = httpx.post(
             f"{kc_url}/admin/realms/{realm}/clients/{client_uuid}/client-secret",
             headers=headers, timeout=15, verify=False,
@@ -1734,9 +1874,9 @@ def _keycloak_ensure_client(
 
 def repair_database_url(openwebui_id: int, db: Session) -> dict:
     """
-    OpenWebUI pod mein DATABASE_URL restore karo.
-    Ye tab use karo jab pgvector bug se DATABASE_URL remove ho gaya ho aur login fail ho raha ho.
-    Linked postgresql_deploy_id se URL rebuild karke K8s deployment patch karta hai.
+    Restore DATABASE_URL in the OpenWebUI pod.
+    Use this when the pgvector bug removed DATABASE_URL and login is failing.
+    Rebuilds the URL from the linked postgresql_deploy_id and patches the K8s deployment.
     """
     import re
     from kubernetes.client.models import V1EnvVar
@@ -1787,19 +1927,19 @@ def repair_database_url(openwebui_id: int, db: Session) -> dict:
     return response_format.success_response(200, "DATABASE_URL restored — pod rolling update in progress (~60s)", {
         "openwebui_id": openwebui_id,
         "database_url": db_url,
-        "note":         "Pod restart ho raha hai (~60s). Phir admin@admin.com + deployment record ka admin_password use karo.",
+        "note":         "The pod is restarting (~60s). Then use admin@admin.com + the deployment record's admin_password.",
     })
 
 
 def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
     """
-    Keycloak ke liye CA cert auto-setup:
-    1. Keycloak se public cert extract (ssl module — no manual openssl cmd needed)
-    2. certifi bundle + custom cert combine karo
-    3. ConfigMap ow-combined-ca create/update karo
-    4. OW deployment pe volume + volumeMount add karo (idempotent)
-    SSL_CERT_FILE env var connect_keycloak mein oauth_env_vars ke through set hoti hai.
-    Returns None on success, error string on failure.
+    Auto-setup of the CA cert for Keycloak:
+    1. Extract the public cert from Keycloak (ssl module — no manual openssl cmd needed)
+    2. Combine the certifi bundle + the custom cert
+    3. Create/update the ConfigMap ow-combined-ca
+    4. Add a volume + volumeMount to the OW deployment (idempotent)
+    The SSL_CERT_FILE env var is set in connect_keycloak via oauth_env_vars.
+    Returns None on success, an error string on failure.
     """
     import ssl, socket, tempfile, os, yaml, re
     from urllib.parse import urlparse
@@ -1814,7 +1954,7 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
     if not host:
         return f"Cannot parse host from kc_url={kc_url!r}"
 
-    # Step 1: Keycloak ka public cert extract karo
+    # Step 1: extract Keycloak's public cert
     try:
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
@@ -1826,7 +1966,7 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
     except Exception as e:
         return f"Keycloak cert extract failed ({host}:{port}): {e}"
 
-    # Step 2: certifi bundle + custom cert combine karo
+    # Step 2: combine the certifi bundle + the custom cert
     try:
         import certifi
         with open(certifi.where(), "r") as f:
@@ -1836,7 +1976,7 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
 
     combined = certifi_bundle.rstrip() + "\n" + pem_cert
 
-    # Step 3: K8s client load karo
+    # Step 3: load the K8s client
     from db_configuration.config import SessionLocal as _SL
     _db = _SL()
     try:
@@ -1876,7 +2016,7 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
     core_v1   = kc_api.CoreV1Api()
     apps_v1   = kc_api.AppsV1Api()
 
-    # Step 4: ConfigMap create/update karo
+    # Step 4: create/update the ConfigMap
     cm_name = "ow-combined-ca"
     cm_body = kc_api.V1ConfigMap(
         metadata=kc_api.V1ObjectMeta(name=cm_name, namespace=namespace),
@@ -1896,7 +2036,7 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
     except Exception as e:
         return f"ConfigMap create/update failed: {e}"
 
-    # Step 5: Deployment pe volume + volumeMount add karo (idempotent)
+    # Step 5: add a volume + volumeMount to the Deployment (idempotent)
     rname    = re.sub(r"[^a-z0-9-]", "-", ow.name.lower())
     rname    = re.sub(r"-+", "-", rname).strip("-")[:52]
     dep_name = f"{rname}-openwebui"
@@ -1951,6 +2091,27 @@ def _setup_keycloak_ca_cert(ow, kc_url: str) -> str | None:
 
 
 def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
+    """
+    Connect Keycloak SSO to OpenWebUI — create/find the Keycloak client, then
+    try to disable OpenWebUI's own login-form/signup via three separate paths
+    (a failure of any one does not fail the whole request):
+    1. A direct HTTP API call (OW service_url, using an admin JWT) — best-effort.
+    2. A direct UPSERT into the config table via a Postgres pod-exec — the real
+       source of truth (an HTTP 200 has been seen without the DB persisting, so
+       this always runs).
+    3. CA-cert auto-setup (so the OW pod can trust a Keycloak self-signed/
+       internal CA — ConfigMap + volume mount).
+    4. K8s env-vars patch (OAuth client id/secret/URLs + SSL_CERT_FILE) +
+       pod restart.
+
+    Used by: POST /v1/app-deploy/{openwebui_id}/connect-keycloak
+    Args: body = ConnectKeycloakBody (client_id="openwebui", provider_name="Keycloak", oauth_scopes).
+    Returns: success_response with, in `data`, {"openwebui_id","realm","client_id",
+    "redirect_uris","status":"connected","login_form_disabled": bool,
+    "exec_error"?: str (if step 2 failed, the exact reason from pg_error/api_error)}.
+    Errors: 404/400/409 for the usual checks, 500 if the KEYCLOAK_ROOT_URL/REALM env is missing,
+    502 if the Keycloak Admin API or K8s patch fails.
+    """
     import os, json as _json
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
@@ -1987,8 +2148,8 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Keycloak Admin API error: {str(e)[:400]}")
 
-    # OW pod ke liye public URL — multinode cluster se reachable hona chahiye.
-    # KEYCLOAK_PUBLIC_URL set hai to wahi use karo, warna KEYCLOAK_ROOT_URL fallback.
+    # Public URL for the OW pod — must be reachable from a multinode cluster.
+    # Use KEYCLOAK_PUBLIC_URL if it is set, otherwise fall back to KEYCLOAK_ROOT_URL.
     _kc_public = (os.getenv("KEYCLOAK_PUBLIC_URL") or kc_url).strip().rstrip("/")
     openid_provider_url = f"{_kc_public}/realms/{kc_realm}/.well-known/openid-configuration"
 
@@ -2033,10 +2194,10 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
         )
         logger.info(f"[Keycloak] HTTP API → {_api_result}")
 
-    # ── Step 1.5: PostgreSQL pod exec — config table directly update karo ──────
-    # OW ke HTTP API status pe bharosa nahi karte (200 dekar bhi DB me persist
-    # na ho, aisa ho sakta hai) — hamesha PG me direct UPSERT karo, guaranteed
-    # source of truth yahi hai (same schema jo manual psql se verify kiya).
+    # ── Step 1.5: PostgreSQL pod exec — update the config table directly ──────
+    # Do not trust the OW HTTP API status (a 200 can be returned without the DB
+    # persisting) — always do a direct UPSERT in PG; that is the guaranteed
+    # source of truth (the same schema verified via manual psql).
     _exec_err_msg = _ow_pg_exec_set_config(ow, {
         "ui.enable_login_form":                  False,
         "ui.enable_signup":                      False,
@@ -2089,6 +2250,24 @@ def connect_keycloak(openwebui_id: int, body: dict, db: Session) -> dict:
 
 
 def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
+    """
+    Remove Keycloak SSO from OpenWebUI — the reverse of `connect_keycloak`:
+    restore the login-form via the HTTP API (best-effort) → guaranteed restore
+    via a Postgres pod-exec → capture the Keycloak realm's user emails (BEFORE
+    deleting, since after disconnect there is no point querying Keycloak) →
+    K8s env-vars patch (remove the OAuth vars) + pod restart → start a
+    **background thread** that waits for the pod to become ready (max 3 min
+    poll) and deletes those SSO-imported users from OpenWebUI (leaving the
+    admin itself) — it keeps running AFTER the response has RETURNED, so the
+    response only carries the "kc_emails_captured" count; the actual deletion
+    is async.
+
+    Used by: DELETE /v1/app-deploy/{openwebui_id}/connect-keycloak
+    Returns: success_response with, in `data`, {"openwebui_id","status":"disconnected",
+    "form_restored": bool, "kc_emails_captured": int, "exec_error"?, "note"}.
+    Errors: 404 if openwebui_id is not found or no Keycloak is connected, 400 for a
+    wrong deployment_type, 502 if the K8s patch fails.
+    """
     import os, threading as _thr
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
@@ -2099,13 +2278,13 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
     if not ow.keycloak_config:
         raise HTTPException(status_code=404, detail="No Keycloak SSO is connected to this OpenWebUI")
 
-    # ── Step 1: Direct HTTP API — login form wapas enable karo (best-effort) ─
+    # ── Step 1: Direct HTTP API — re-enable the login form (best-effort) ─
     if ow.service_url and ow.admin_email and ow.admin_password:
         _re_result = _ow_remove_keycloak_config(ow.service_url, ow.admin_email, ow.admin_password)
         logger.info(f"[Keycloak] HTTP API restore → {_re_result}")
 
-    # ── Step 1.5: PostgreSQL pod exec — config table restore karo ───────────────
-    # OW ke HTTP API status pe bharosa nahi karte — hamesha PG me direct UPSERT karo.
+    # ── Step 1.5: PostgreSQL pod exec — restore the config table ───────────────
+    # Do not trust the OW HTTP API status — always do a direct UPSERT in PG.
     _exec_restore_err = _ow_pg_exec_set_config(ow, {
         "ui.enable_login_form":               True,
         "ui.enable_signup":                   False,
@@ -2151,7 +2330,7 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
     ow.keycloak_config = None
     db.commit()
 
-    # ── Step 5: Background thread — pod wapas aane ke baad users delete ───────
+    # ── Step 5: Background thread — delete users once the pod is back ───────
     _svc_snap    = (ow.service_url or "").rstrip("/")
     _adm_email   = ow.admin_email or ""
     _adm_pass    = ow.admin_password or ""
@@ -2207,9 +2386,9 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
         "kc_emails_captured": len(_kc_emails),
         **({"exec_error": _exec_restore_note} if _exec_restore_note else {}),
         "note": (
-            f"Login form restore hua. {len(_kc_emails)} Keycloak user(s) background mein delete ho rahe hain (~60s)."
+            f"Login form restored. {len(_kc_emails)} Keycloak user(s) are being deleted in the background (~60s)."
             if _form_restored
-            else "Login form pod restart ke baad wapas aayega (env var se)."
+            else "The login form will come back after the pod restarts (from the env var)."
         ),
     })
 
@@ -2219,6 +2398,18 @@ def disconnect_keycloak(openwebui_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def get_keycloak_users(openwebui_id: int, page: int, page_size: int, db: Session, search: str = None) -> dict:
+    """
+    List the Keycloak realm's users (paginated, name/email/username search) —
+    directly from the Keycloak Admin API. The realm/URL come first from
+    `ow.keycloak_config` (if connected), otherwise fall back to env-vars.
+
+    Used by: GET /v1/app-deploy/{openwebui_id}/keycloak-users
+    Returns: success_response with, in `data`, {"openwebui_id","realm",
+    "users": [{"id","username","email","first_name","last_name","enabled"}, ...],
+    "pagination": {"page","page_size","total","total_pages"}}
+    Errors: 404 if openwebui_id is not found, 400 for a wrong deployment_type or if
+    Keycloak is not configured, 502 for a Keycloak API error.
+    """
     import httpx, os
 
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
@@ -2245,7 +2436,7 @@ def get_keycloak_users(openwebui_id: int, page: int, page_size: int, db: Session
         token   = _keycloak_admin_token(kc_url, kc_admin, kc_pass)
         headers = {"Authorization": f"Bearer {token}"}
 
-        # Total count (search ke saath bhi)
+        # Total count (also with search)
         count_params = {"search": search} if search else {}
         count_r = httpx.get(
             f"{kc_url}/admin/realms/{kc_realm}/users/count",
@@ -2257,7 +2448,7 @@ def get_keycloak_users(openwebui_id: int, page: int, page_size: int, db: Session
         offset      = (page - 1) * page_size
         user_params = {"first": offset, "max": page_size}
         if search:
-            user_params["search"] = search  # name, email, username sab mein search karta hai
+            user_params["search"] = search  # searches across name, email, and username
         r = httpx.get(
             f"{kc_url}/admin/realms/{kc_realm}/users",
             headers=headers,
@@ -2304,7 +2495,7 @@ def get_keycloak_users(openwebui_id: int, page: int, page_size: int, db: Session
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _kc_role_users(kc_url: str, kc_realm: str, headers: dict, role_name: str) -> list:
-    """Keycloak se ek role ke saare users fetch karo."""
+    """Fetch all users of a role from Keycloak."""
     import httpx
     r = httpx.get(
         f"{kc_url}/admin/realms/{kc_realm}/roles/{role_name}/users",
@@ -2325,7 +2516,7 @@ def _kc_role_users(kc_url: str, kc_realm: str, headers: dict, role_name: str) ->
 
 
 def _paginate_and_search(users: list, search: str | None, page: int, page_size: int) -> dict:
-    """Search filter + pagination apply karo."""
+    """Apply the search filter + pagination."""
     if search:
         q = search.lower()
         users = [
@@ -2350,7 +2541,7 @@ def _paginate_and_search(users: list, search: str | None, page: int, page_size: 
 
 
 def _kc_setup(ow) -> tuple:
-    """Keycloak credentials aur headers return karo."""
+    """Return the Keycloak credentials and headers."""
     import os
     kc_cfg = _parse_keycloak_config(ow.keycloak_config)
     if kc_cfg:
@@ -2368,7 +2559,7 @@ def _kc_setup(ow) -> tuple:
 
 
 def _kc_find_role_name(kc_url: str, kc_realm: str, headers: dict, target: str) -> str | None:
-    """Realm roles mein case-insensitive role name dhundo."""
+    """Find a role name case-insensitively among the realm roles."""
     import httpx
     r = httpx.get(f"{kc_url}/admin/realms/{kc_realm}/roles", headers=headers, timeout=15, verify=False)
     if r.status_code != 200:
@@ -2381,12 +2572,12 @@ def _kc_find_role_name(kc_url: str, kc_realm: str, headers: dict, target: str) -
 
 def _ow_all_users(svc: str, ow_headers: dict) -> list:
     """
-    OpenWebUI se saare users fetch karo.
-    Response list ya dict-wrapped dono handle karta hai.
+    Fetch all users from OpenWebUI.
+    Handles both a list and a dict-wrapped response.
     """
     import httpx
 
-    # skip/limit params se saare users ek baar mein lo
+    # get all users at once via the skip/limit params
     _users_r = httpx.get(
         f"{svc}/api/v1/users/",
         params={"skip": 0, "limit": 10000},
@@ -2413,12 +2604,12 @@ def _ow_all_users(svc: str, ow_headers: dict) -> list:
 
 
 def _ow_fetch_users_by_role(ow, role_filter: str, page: int, page_size: int, search: str | None) -> dict:
-    """OpenWebUI se users fetch karo aur role ke hisab se filter karo."""
+    """Fetch users from OpenWebUI and filter them by role."""
     import httpx
 
     svc = (ow.service_url or "").rstrip("/")
     if not svc:
-        raise HTTPException(status_code=400, detail="OpenWebUI service_url set nahi hai — pehle deploy karo")
+        raise HTTPException(status_code=400, detail="OpenWebUI service_url is not set — deploy it first")
     if not ow.admin_email or not ow.admin_password:
         raise HTTPException(status_code=400, detail="admin_email/admin_password not set — deployment incomplete")
 
@@ -2439,7 +2630,7 @@ def _ow_fetch_users_by_role(ow, role_filter: str, page: int, page_size: int, sea
 
     all_users = _ow_all_users(svc, _ow_headers)
 
-    # Role filter — admin user (ow.admin_email) ko list se bahar rakho
+    # Role filter — keep the admin user (ow.admin_email) out of the list
     admin_email_lower = (ow.admin_email or "").lower()
     filtered = [
         u for u in all_users
@@ -2448,7 +2639,7 @@ def _ow_fetch_users_by_role(ow, role_filter: str, page: int, page_size: int, sea
         and (u.get("email") or "").lower() != admin_email_lower
     ]
 
-    # Search filter (name, email par)
+    # Search filter (on name, email)
     if search:
         _s = search.lower()
         filtered = [
@@ -2471,6 +2662,14 @@ def _ow_fetch_users_by_role(ow, role_filter: str, page: int, page_size: int, sea
 
 
 def get_ow_admin_users(openwebui_id: int, page: int, page_size: int, search: str | None, db: Session) -> dict:
+    """
+    List OpenWebUI's users with the "admin" role (directly from the OW API,
+    not from Keycloak — `_ow_fetch_users_by_role`).
+
+    Used by: GET /v1/app-deploy/{openwebui_id}/ow-admin-users
+    Returns: success_response with, in `data`, {"openwebui_id","role":"admin", ...the result of `_ow_fetch_users_by_role()`}.
+    Errors: 404 if openwebui_id is not found, 400 for a wrong deployment_type, 502 for an OW API error.
+    """
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
         raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
@@ -2490,6 +2689,14 @@ def get_ow_admin_users(openwebui_id: int, page: int, page_size: int, search: str
 
 
 def get_ow_member_users(openwebui_id: int, page: int, page_size: int, search: str | None, db: Session) -> dict:
+    """
+    List OpenWebUI's users with the "user" (member) role — same as
+    `get_ow_admin_users`, just for role="user".
+
+    Used by: GET /v1/app-deploy/{openwebui_id}/ow-member-users
+    Returns: success_response with, in `data`, {"openwebui_id","role":"user", ...the result of `_ow_fetch_users_by_role()`}.
+    Errors: 404 if openwebui_id is not found, 400 for a wrong deployment_type, 502 for an OW API error.
+    """
     ow = db.query(AppDeployment).filter(AppDeployment.id == openwebui_id).first()
     if not ow:
         raise HTTPException(status_code=404, detail=f"OpenWebUI deployment id={openwebui_id} not found")
@@ -2513,6 +2720,16 @@ def get_ow_member_users(openwebui_id: int, page: int, page_size: int, search: st
 # ─────────────────────────────────────────────────────────────────────────────
 
 def update_ow_user_role(openwebui_id: int, ow_user_id: str, role: str, db: Session) -> dict:
+    """
+    Change a single OpenWebUI user's role directly via the OW API (no Keycloak involved).
+    Signs in with the OW admin JWT and calls `/api/v1/users/{ow_user_id}/update`
+    with {"role": role, "active": True}.
+
+    Used by: PATCH/PUT /v1/app-deploy/{openwebui_id}/ow-users/{ow_user_id}/role (body: {"role": "admin"|"user"})
+    Returns: success_response with, in `data`, {"openwebui_id","user_id","role","user": <updated OW user object>}.
+    Errors: 400 for an invalid role, 404 if openwebui_id/user is not found, 409 if service_url or the admin creds are missing,
+            502 if the OW signin/update fails.
+    """
     import httpx
 
     if role not in ("admin", "user"):
@@ -2569,6 +2786,30 @@ def update_ow_user_role(openwebui_id: int, ow_user_id: str, role: str, db: Sessi
 # ─────────────────────────────────────────────────────────────────────────────
 
 def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
+    """
+    Bulk role assignment: assign the "admin"/"user" realm role to Keycloak users,
+    and (best-effort) sync/create them with the same role in OpenWebUI too.
+
+    Flow per assignment {user_id, role}:
+      1. Find or create the Keycloak realm role "Admin"/"user" (`_get_or_create_role`).
+      2. Remove the opposite role from that user, then assign the target role
+         (DELETE + POST `/admin/realms/{realm}/users/{id}/role-mappings/realm`).
+      3. If the Keycloak assign succeeded and OW admin_email/admin_password is set:
+         take the user's email from Keycloak and, in OpenWebUI, activate/update the
+         user with that email, or (if it does not exist in OW at all) create a new
+         account with a random password (`/api/v1/auths/add`), or (if create returns
+         400/409 — already pending) find the existing pending account and activate it.
+
+    Used by: POST /v1/app-deploy/{openwebui_id}/assign-roles
+             (body: assignments = [{"user_id": "<keycloak-uuid>", "role": "admin"|"user"}, ...])
+    Returns: success_response with, in `data`:
+      {"openwebui_id", "succeeded": [{"user_id","role"}, ...], "failed": [{"user_id","role","error"}, ...],
+       "ow_sync": [{"user_id","email","status": "activated"|"created"|"skipped"|"update_failed"|"create_failed"|"error", ...}]}
+    Errors: 400 invalid role in any assignment, 404 openwebui_id not found, 400 wrong deployment_type,
+            502 Keycloak error (role fetch/create/setup fails).
+    Note: OW sync failures are non-fatal — Keycloak role assignment is the source of truth;
+          `ow_sync` entries only report what happened on the OpenWebUI side.
+    """
     import httpx
 
     valid_roles = {"admin", "user"}
@@ -2596,7 +2837,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
             )
             if r.status_code == 200:
                 return {"id": r.json()["id"], "name": r.json()["name"]}
-            # 404 → role nahi hai, create karo
+            # 404 → the role does not exist, create it
             cr = httpx.post(
                 f"{kc_url}/admin/realms/{kc_realm}/roles",
                 headers={**headers, "Content-Type": "application/json"},
@@ -2605,7 +2846,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
             )
             if cr.status_code not in (200, 201):
                 raise HTTPException(status_code=502, detail=f"Keycloak role '{kc_name}' create failed ({cr.status_code})")
-            # Create ke baad GET karo (id milta hai tabhi)
+            # GET after create (that is when the id is available)
             r2 = httpx.get(
                 f"{kc_url}/admin/realms/{kc_realm}/roles/{kc_name}",
                 headers=headers, timeout=10, verify=False,
@@ -2617,7 +2858,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
         succeeded = []
         failed    = []
 
-        # Keycloak user email cache — ek baar fetch, baar baar use
+        # Keycloak user email cache — fetch once, reuse many times
         _kc_user_cache: dict = {}
 
         def _kc_user_email(uid: str) -> str | None:
@@ -2645,7 +2886,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
             try:
                 role_url = f"{kc_url}/admin/realms/{kc_realm}/users/{user_id}/role-mappings/realm"
 
-                # Pehle opposite role remove karo (agar hai to)
+                # first remove the opposite role (if present)
                 import json as _json
                 _del_headers = {**headers, "Content-Type": "application/json"}
                 httpx.request(
@@ -2655,7 +2896,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                     timeout=10, verify=False,
                 )
 
-                # Naya role assign karo
+                # assign the new role
                 ar = httpx.post(
                     role_url,
                     headers={**headers, "Content-Type": "application/json"},
@@ -2678,7 +2919,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
 
         if svc and admin_email and admin_password and succeeded:
             try:
-                # Admin JWT lo
+                # get an admin JWT
                 _signin_r = httpx.post(
                     f"{svc}/api/v1/auths/signin",
                     json={"email": admin_email, "password": admin_password},
@@ -2688,7 +2929,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                     _ow_token = _signin_r.json().get("token", "")
                     _ow_headers = {"Authorization": f"Bearer {_ow_token}", "Content-Type": "application/json"}
 
-                    # Sare OW users ek baar fetch karo (helper handles list/dict both)
+                    # fetch all OW users once (the helper handles both list/dict)
                     _ow_users    = _ow_all_users(svc, _ow_headers)
                     _ow_by_email = {
                         (u.get("email") or "").lower(): u
@@ -2713,7 +2954,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                         _ow_user = _ow_by_email.get(_email_lower)
 
                         if _ow_user:
-                            # User exist karta hai (active ya pending) — role + active set karo
+                            # the user exists (active or pending) — set role + active
                             _ow_uid = _ow_user.get("id")
                             _upd_r = httpx.post(
                                 f"{svc}/api/v1/users/{_ow_uid}/update",
@@ -2729,9 +2970,9 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                                                 "status": "update_failed",
                                                 "error": _upd_r.text[:100]})
                         else:
-                            # User exist nahi karta — admin API se create karo
-                            # /api/v1/auths/add admin JWT se kaam karta hai,
-                            # signup disabled hone pe bhi (ENABLE_LOGIN_FORM=false ke baad)
+                            # the user does not exist — create it via the admin API
+                            # /api/v1/auths/add works with the admin JWT,
+                            # even when signup is disabled (after ENABLE_LOGIN_FORM=false)
                             _rand_pass = _sec.token_urlsafe(16)
                             _add_r = httpx.post(
                                 f"{svc}/api/v1/auths/add",
@@ -2744,7 +2985,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                                 _new_user = _add_r.json()
                                 _new_id   = (_new_user.get("id")
                                              or (_new_user.get("user") or {}).get("id"))
-                                # Role + active confirm karo
+                                # confirm role + active
                                 if _new_id:
                                     httpx.post(
                                         f"{svc}/api/v1/users/{_new_id}/update",
@@ -2755,7 +2996,7 @@ def assign_roles(openwebui_id: int, assignments: list, db: Session) -> dict:
                                 ow_sync.append({"user_id": _uid, "email": _email,
                                                 "status": "created", "ow_role": _role})
                             elif _add_r.status_code in (400, 409):
-                                # Email already exists (pending account) — GET se dhundo aur activate karo
+                                # email already exists (a pending account) — find it via GET and activate it
                                 _all_r = httpx.get(
                                     f"{svc}/api/v1/users/all",
                                     headers=_ow_headers, timeout=10,

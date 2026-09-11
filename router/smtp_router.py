@@ -14,22 +14,22 @@ smtp_router = APIRouter(prefix="/v1/smtp", tags=["SMTP"])
 @smtp_router.post("/smtp-post", summary="Create SMTP Configuration")
 def smtp_create(item: SMTP_Config, db: Session = Depends(get_db)):
     """
-    Nayi SMTP configuration create karo (email-sending settings — host, port,
+    Create a new SMTP configuration (email-sending settings — host, port,
     username/password, from-address).
 
     Request body: SMTP_Config.
 
-    Response 200 — `data`: saved SMTP_Config record (with generated id).
-    Note: yeh endpoint failure pe bhi HTTP 200 deta hai, body mein
-    `{"error": str}` — response_model se validate nahi hota, isliye
-    frontend ko `error` key check karni chahiye.
+    Response 200 — `data`: the saved SMTP_Config record (with generated id).
+    Note: this endpoint returns HTTP 200 even on failure, with
+    `{"error": str}` in the body — it isn't validated by response_model, so
+    the frontend needs to check for an `error` key.
     """
     return smtp_controller.smtp_create(item, db)
 
 @smtp_router.get("/smtp-get", summary="Get all SMTP configurations")
 def smtp_get(db: Session = Depends(get_db)):
     """
-    Saari saved SMTP configurations list karo.
+    List all saved SMTP configurations.
 
     Response 200 — `data`: [ {..SMTP_Config fields.., "id": int}, ... ]
     """
@@ -39,22 +39,22 @@ def smtp_get(db: Session = Depends(get_db)):
 @smtp_router.put("/smtp-update", summary="Update SMTP configuration")
 def smtp_update(item: SMTP_Config, db: Session = Depends(get_db)):
     """
-    Existing SMTP configuration update karo (item.id se match hoti hai).
+    Update an existing SMTP configuration (matched by item.id).
 
-    Request body: SMTP_Config (id required, baaki fields overwrite karti hain).
+    Request body: SMTP_Config (id required, the rest of the fields overwrite it).
 
-    Response 200 — `data`: updated record (dict of columns).
+    Response 200 — `data`: the updated record (dict of columns).
     """
     return smtp_controller.smtp_update(item, db)
 
 @smtp_router.patch("/smtp-update-status", summary="Enable or disable SMTP configuration", response_model=APIResponse)
 def smtp_update_status(data: dict, db: Session = Depends(get_db)):
     """
-    SMTP configuration ko enable/disable karo (ek hi active configuration
-    kaam mein aati hai emails bhejne ke liye).
+    Enable/disable an SMTP configuration (only one active configuration is
+    used for sending emails).
 
-    Request body: {"id": int, "smtpStatus": bool}  (exact keys service ke
-    andar consume hoti hain).
+    Request body: {"id": int, "smtpStatus": bool}  (these exact keys are
+    consumed inside the service).
 
     Response 200 — `data`: {"smtpStatus": bool}
     """
@@ -64,14 +64,14 @@ def smtp_update_status(data: dict, db: Session = Depends(get_db)):
 @smtp_router.post("/smtp-test-mail", summary="Send test mail via SMTP configuration", response_model=APIResponse)
 def smtp_test_mail(data: SMTP_Config, db: Session = Depends(get_db)):
     """
-    Diye gaye SMTP settings se ek test email bhejo (bina DB mein save kiye) —
-    "Test Connection" jaisa button ke liye.
+    Send a test email using the given SMTP settings (without saving to the
+    DB) — for a "Test Connection" style button.
 
-    Request body: SMTP_Config (poori settings jo test karni hain).
+    Request body: SMTP_Config (the full settings to test).
 
-    Response 200 — `data`: input SMTP_Config wapas (echo — confirmation ke liye).
-    Errors: agar SMTP server se connect na ho paaye to exception raise hoti
-    hai (500) — frontend ko yeh case bhi handle karna chahiye.
+    Response 200 — `data`: the input SMTP_Config echoed back (for confirmation).
+    Errors: if the SMTP server can't be connected to, an exception is raised
+    (500) — the frontend should handle this case too.
     """
     res = smtp_controller.smtp_test_mail(data, db)
     return response_format.success_response(200, "Test mail sent successfully.", res)

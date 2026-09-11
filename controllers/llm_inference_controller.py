@@ -1,3 +1,11 @@
+"""
+Private-LLM (multi-node GPU inference pool) controller —
+router/llm_inference_router.py ("/v1/llm-inference") delegates to this. A "job"
+here means a cluster of one or more Proxmox VMs (GPU-passthrough) running Ray +
+vLLM — provisioning/delete/power-actions happen via Temporal workflows
+(service/temporalResource/workflows/workflows_llm_inference.py); this controller
+only holds the DB record + workflow kickoff.
+"""
 import asyncio
 import ipaddress
 import logging
@@ -52,6 +60,7 @@ _ACTIVITY_DISPLAY = {
 
 
 def _fmt_time(ts):
+    """Format a UTC timestamp into an IST string ("%Y-%m-%d %H:%M:%S"). None if ts is falsy."""
     try:
         return ts.astimezone(_IST).strftime(_TIME_FMT)
     except Exception:
@@ -59,7 +68,16 @@ def _fmt_time(ts):
 
 
 async def _fetch_steps(handle) -> list:
-    """Parse Temporal workflow history into ordered activity step list."""
+    """
+    Parse Temporal workflow history into ordered activity step list.
+
+    Used by: controllers/routes.py's GET /v1/workflows (via `_add_steps`)
+    for LLM/Library/LXC workflow types — it is this function that makes
+    the per-activity progress show in the Temporal-workflow-monitoring UI.
+    Returns: [ {"activity_name", "display_name", "status": pending|running|
+    completed|failed|timed_out, "scheduled_at", "started_at", "completed_at",
+    "error"}, ... ] — insertion order = activity schedule order.
+    """
     history = await handle.fetch_history()
     step_map = {}
     step_order = []
@@ -117,6 +135,31 @@ _SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
 
 
 async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
+    """
+    Provision a new multi-node private-LLM pool — end-to-end:
+    1. Validate (nodes/ipPools/template non-empty, name unique).
+    2. Resolve the cluster/ip-pools from the DB.
+    3. Reserve one free IP per node (from any of the given pools).
+    4. From the first reserved IP and its pool's subnet mask, derive the full
+       cluster subnet CIDR (needed for the node-to-node NCCL/rendezvous firewall
+       rules — a wrong subnet silently leaves inter-node traffic unprotected,
+       it does not error).
+    5. Parse the `vllmExtraParams` textarea (raw YAML) into a dict once here —
+       future restarts read this parsed dict back from the DB, they do not
+       re-parse the raw text.
+    6. Generate a bearer API-key (once, at creation time — it is not rotated on
+       restarts, so OpenWebUI/clients' saved key never becomes invalid).
+    7. Create the DB record in "provisioning" status, then start
+       CreateMultiNodeLLMWorkflow (Temporal) which does the actual VM-clone +
+       Ray/vLLM install.
+
+    Used by: POST /v1/llm-inference/create-private-llm
+    Returns: success_response(201) with {"id", "workflow_id", "reserved_ips"} in `data`.
+    Errors: 400 for empty nodes/ipPools/template or invalid vllmExtraParams,
+    404 if cluster/ip-pool is not found, 409 if poolName already exists, 400 if
+    no free IP is left for some node (in which case the already-reserved IPs
+    are rolled back).
+    """
     try:
         if len(data.nodes) == 0:
             raise HTTPException(status_code=400, detail="At least one node is required")
@@ -284,6 +327,16 @@ def _resolve_names(db: Session, cluster_id: int, ip_pool_ids: list) -> tuple:
 
 
 def list_llm_inferences(db: Session, page: int = 1, page_size: int = 10):
+    """
+    List all LLM inference jobs (paginated), bulk-resolving the cluster/IP-pool
+    names.
+
+    Used by: GET /v1/llm-inference/list-private-llm
+    Returns: success_response with {"items": [ {id, name,
+    cluster_id, cluster_name, ip_pool_ids, ip_pool_names, template, nodes,
+    machines_name, storage, vmids, ip_addresses, head_ip, endpoint_url,
+    status, workflow_id, created_at}, ... ], "pagination": {...}}
+    """
     try:
         page      = max(1, page)
         page_size = max(1, min(page_size, 100))
@@ -353,6 +406,14 @@ def list_llm_inferences(db: Session, page: int = 1, page_size: int = 10):
 
 
 def list_deployed_llm_jobs(db: Session, page: int = 1, page_size: int = 10):
+    """
+    List only `status="running"` jobs, with minimal fields — for selection UIs
+    like App Deploy's "connect-llm".
+
+    Used by: GET /v1/llm-inference/deployed
+    Returns: success_response with {"items": [ {id, name,
+    machines_name, head_ip, endpoint_url, ip_addresses}, ... ], "pagination": {...}} in `data`
+    """
     try:
         page      = max(1, page)
         page_size = max(1, min(page_size, 100))
@@ -397,6 +458,24 @@ def list_deployed_llm_jobs(db: Session, page: int = 1, page_size: int = 10):
 
 
 def get_llm_inference_job(job_id: int, db: Session):
+    """
+    Get a job's full detail, with per-VM ("machines") enrichment — the name is
+    resolved first from the DB (`machines_name`, stored at creation time), then
+    from a live Proxmox lookup, then from the Machine table (in that priority
+    order); the live power state comes from Proxmox (these VMs are not created
+    through the regular Machine-creation flow, so Machine.status is never
+    populated for them).
+
+    Used by: GET /v1/llm-inference/list-private-llm/{job_id}
+    Returns: success_response with, in `data`, the full record like
+    `list_llm_inferences` + model_type/model_type_other/max_images_per_request/
+    vllm_extra_params + `api_key` (⚠ this is the app's own generated bearer
+    token; showing/copying it to the user is INTENTIONAL — not a bug, not a
+    third-party credential leak) + `machines`: [ {vm_id, name, ip_address,
+    hostname, protocol, port (the vLLM port only on the head node, null on
+    workers), username, status, node, gpu, role: "head"|"worker"}, ... ]
+    Errors: 404 if job_id is not found.
+    """
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
@@ -505,6 +584,14 @@ def get_llm_inference_job(job_id: int, db: Session):
 
 
 def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Session):
+    """
+    Update the job's `model` and/or `status` field (a light metadata update
+    — it touches no VM/deployment).
+
+    Used by: PUT /v1/llm-inference/update-private-llm/{job_id}
+    Returns: success_response with {"id": job_id} in `data`.
+    Errors: 404 if job_id is not found.
+    """
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
@@ -520,6 +607,15 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
 
 
 async def delete_llm_inference_job(job_id: int, db: Session):
+    """
+    Delete the pool — destroy VMs + release IPs + remove the DB record, all
+    via a Temporal workflow (DeleteLLMPoolWorkflow) (async).
+
+    Used by: DELETE /v1/llm-inference/delete-private-llm/{job_id}
+    (behind a router-level TOTP/OTP gate — see llm_inference_router.py)
+    Returns: success_response with {"job_id", "workflow_id", "status": "deleting"} in `data`.
+    Errors: 404 if job_id is not found.
+    """
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
@@ -566,6 +662,24 @@ _POOL_ACTION_PENDING_STATUS = {
 
 
 async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
+    """
+    Perform a power action on the whole pool (all VMs) — job.status immediately
+    becomes "<action>ing", then PoolVMActionWorkflow (Temporal) applies the
+    action to the VMs asynchronously; for start/restart it also relaunches vLLM
+    with the same config (model_type, vllm_extra_params, api_key — from the DB,
+    not re-entered by the user).
+
+    tensor_parallel_size (GPUs per node) and pipeline_parallel_size (node count)
+    are derived here — swapping them makes vLLM crash immediately (the
+    attention-heads / tensor-parallel-size divisibility error), so this
+    convention must exactly match the one used at creation time
+    (CreateMultiNodeLLMWorkflow).
+
+    Used by: POST /v1/llm-inference/pool-action/{job_id}
+    Args: data = PoolActionRequest {"action": "start"|"stop"|"shutdown"|"restart"}.
+    Returns: success_response with {"job_id", "action", "workflow_id", "status"} in `data`.
+    Errors: 404 if job_id is not found, 400 if the pool has no VMs.
+    """
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:

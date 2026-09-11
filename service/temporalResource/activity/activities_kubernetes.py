@@ -12,11 +12,11 @@ logger = activity.logger
 @activity.defn(name="k8s-test-connection")
 def test_k8s_connection_activity(payload: dict) -> dict:
     """
-    Kubernetes cluster ka connection test karo:
+    Test the connection to a Kubernetes cluster:
     Priority: kubeconfig > auth_token > username/password
-    /healthz aur /version hit karo.
-    cluster_id optional hai — agar diya toh DB status update hoga,
-    agar None toh sirf test karke result return karo (pre-save test).
+    Hits /healthz and /version.
+    cluster_id is optional — if given, the DB status is updated;
+    if None, just run the test and return the result (pre-save test).
     """
     cluster_id = payload.get("cluster_id")   # None = pre-save test
     control_ip = payload["control_ip"]
@@ -30,7 +30,7 @@ def test_k8s_connection_activity(payload: dict) -> dict:
     headers  = {}
     auth     = None
 
-    # kubeconfig se server URL aur token extract karo
+    # Extract the server URL and token from the kubeconfig
     if kubeconfig:
         try:
             import yaml
@@ -57,7 +57,7 @@ def test_k8s_connection_activity(payload: dict) -> dict:
     activity.heartbeat(f"Testing connection to {base_url} ...")
 
     def _update_db(status: str):
-        """Agar cluster DB me saved hai toh status update karo."""
+        """If the cluster is saved in the DB, update its status."""
         if cluster_id is None:
             return
         db: Session = SessionLocal()

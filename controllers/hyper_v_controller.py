@@ -1,8 +1,8 @@
 """
-Hyper-V controller — router/hyper_v_router.py ("/v1/hyper_v") is par
-delegate karta hai. Actual logic (remote Hyper-V HTTP agent se baat karna)
-service/hyper_v_service.py mein hai. Har function ka `result` seedha agent
-ke JSON response se aata hai — is layer mein transform nahi hota.
+Hyper-V controller — router/hyper_v_router.py ("/v1/hyper_v") delegates to
+this. The actual logic (talking to the remote Hyper-V HTTP agent) is in
+service/hyper_v_service.py. Every function's `result` comes straight from
+the agent's JSON response — no transformation happens at this layer.
 """
 import service.hyper_v_service as service
 from utils.response_format import success_response
@@ -12,7 +12,7 @@ from typing import Optional, Union
 
 async def get_vms(cluster_id: int, db: Session):
     """
-    Cluster ke saare Hyper-V VMs list karo.
+    List all Hyper-V VMs in a cluster.
 
     Used by: GET /v1/hyper_v/get_vms
     """
@@ -21,10 +21,10 @@ async def get_vms(cluster_id: int, db: Session):
 
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
     """
-    Hyper-V agent reachable hai ya nahi check karo.
+    Check whether the Hyper-V agent is reachable.
 
     Used by: GET /v1/hyper_v/ping_agent
-    Args: `cluster_id` (DB se IP/port resolve) YA `ip`+`port` seedha.
+    Args: `cluster_id` (resolves IP/port from the DB) OR `ip`+`port` directly.
     """
     result = await service.ping_agent(cluster_id, db, ip, port)
     return success_response(200, "Successfully pinged Hyper-V agent", result)
@@ -32,14 +32,14 @@ async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Unio
 
 async def clone_vm_hyper_v_controller(request, db):
     """
-    Single-node VM clone karo (currently router mein commented-out — unused).
+    Clone a single-node VM (currently commented out in the router — unused).
     """
     result = await service.clone_vm_hyper_v_service(request)
     return success_response(200, "Successfully cloned Hyper-V VM for single node", result)
 
 async def full_clone_vm_hyper_v_controller(request, db):
     """
-    VM ka full (independent-disk) clone banao.
+    Create a full (independent-disk) clone of a VM.
 
     Used by: POST /v1/hyper_v/full_clone_vm_hyper_v
     Args: request = FullCloneVMRequest (naming, network, domain-join fields).
@@ -49,7 +49,7 @@ async def full_clone_vm_hyper_v_controller(request, db):
 
 async def get_vm_info(vm_id, db):
     """
-    Ek VM ki detailed info lo.
+    Get a VM's detailed info.
 
     Used by: GET /v1/hyper_v/get_vm_info/{vm_id}
     """
@@ -58,7 +58,7 @@ async def get_vm_info(vm_id, db):
 
 async def get_switches(cluster_id: int, db: Session):
     """
-    Cluster ke virtual switches list karo.
+    List a cluster's virtual switches.
 
     Used by: GET /v1/hyper_v/get_switches
     """
@@ -67,7 +67,7 @@ async def get_switches(cluster_id: int, db: Session):
 
 async def delete_vm(request, db):
     """
-    VM delete karo (cluster-role + AD computer-account cleanup samet).
+    Delete a VM (including cluster-role + AD computer-account cleanup).
 
     Used by: POST /v1/hyper_v/delete_vm
     Args: request = DeleteVMRequest.
@@ -77,7 +77,7 @@ async def delete_vm(request, db):
 
 async def get_status(vm_id, db):
     """
-    VM ka current power-state lo.
+    Get a VM's current power state.
 
     Used by: GET /v1/hyper_v/get_status/{vm_id}
     """
@@ -86,21 +86,21 @@ async def get_status(vm_id, db):
 
 async def handle_action(request, db):
     """
-    Generic VM power-action handler (currently router mein commented-out — unused).
+    Generic VM power-action handler (currently commented out in the router — unused).
     """
     result = await service.handle_action(request, db)
     return success_response(200, "Successfully performed action on Hyper-V VM", result)
 
 async def delete_disk(request, db):
     """
-    VM se ek disk delete karo (currently router mein commented-out — unused).
+    Delete a disk from a VM (currently commented out in the router — unused).
     """
     result = await service.delete_disk(request, db)
     return success_response(200, "Successfully deleted disk from Hyper-V VM", result)
 
 async def rebuild_vm_endpoint(request, db):
     """
-    Ek VM ko uske pool-template se rebuild karo (delete + fresh clone).
+    Rebuild a VM from its pool template (delete + fresh clone).
 
     Used by: POST /v1/hyper_v/vm_rebuild
     Args: request = HandleRebuildActionRequest (vm_id, pool_id).
@@ -110,7 +110,7 @@ async def rebuild_vm_endpoint(request, db):
 
 async def pool_rebuild(request, db):
     """
-    Poore pool ki saari VMs rebuild karo.
+    Rebuild every VM in a pool.
 
     Used by: POST /v1/hyper_v/pool_rebuild
     Args: request = HandlePoolRebuildActionRequest (pool_id, vhdPath).
@@ -120,8 +120,8 @@ async def pool_rebuild(request, db):
 
 async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
     """
-    Naya Hyper-V host/cluster add karne se pehle connectivity/credentials
-    verify karo (DB me kuch save nahi hota).
+    Verify connectivity/credentials before adding a new Hyper-V host/cluster
+    (nothing is saved to the DB).
 
     Used by: POST /v1/hyper_v/verify_hyper_v
     Args: request = VerifyHyperVRequest.
@@ -132,7 +132,7 @@ async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None)
 
 async def get_node_status_from_cluster(request:dict):
     """
-    Hyper-V failover-cluster ke saare nodes ka status lo.
+    Get the status of every node in a Hyper-V failover cluster.
 
     Used by: GET /v1/hyper_v/get_node_status_from_cluster
     Args: request = {"ip", "agent_port", "cluster_id"}

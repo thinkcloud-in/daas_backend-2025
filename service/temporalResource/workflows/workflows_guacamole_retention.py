@@ -6,21 +6,21 @@ from temporalio.common import RetryPolicy
 
 from service.temporalResource.activity import activities_guacamole_retention
 
-# NOTE: jaan-boojh kar koi try/except -> raise HTTPException/Exception nahi
-# hai yahan. Temporal workflow ke andar se HTTPException (ya koi bhi
-# re-wrapped Exception) raise karne se Temporal ise "Workflow Task Failure"
-# samajhta hai (business failure nahi) -- aur wo bina kisi limit ke hamesha
-# retry hota rehta hai, workflow kabhi terminate nahi hota (isi bug ne
-# pehle Temporal-retention feature ko infinite loop me daala tha).
-# execute_activity() ka ActivityError ko as-is propagate hone dena hi safe
-# tarika hai -- Temporal khud isse clean WorkflowExecutionFailed bana deta hai.
+# NOTE: there is deliberately no try/except -> raise HTTPException/Exception
+# here. Raising an HTTPException (or any re-wrapped Exception) from inside a
+# Temporal workflow makes Temporal treat it as a "Workflow Task Failure"
+# (not a business failure) -- and it then retries forever with no limit, the
+# workflow never terminates (this very bug once put the Temporal-retention
+# feature into an infinite loop). Letting execute_activity()'s ActivityError
+# propagate as-is is the safe approach -- Temporal itself turns it into a
+# clean WorkflowExecutionFailed.
 
 
 @workflow.defn(sandboxed=False)
 class GuacamoleRetentionWorkflow:
-    """Daily schedule se chalti hai (guacamole_retention_controller.py me
-    schedule setup hoti hai) — Guacamole connection-history + recordings,
-    dono retention_days se purana data delete karti hai."""
+    """Runs from a daily schedule (the schedule is set up in
+    guacamole_retention_controller.py) — deletes both Guacamole
+    connection-history and recordings data older than retention_days."""
 
     @workflow.run
     async def run(self, retention_days: int) -> Dict[str, Any]:

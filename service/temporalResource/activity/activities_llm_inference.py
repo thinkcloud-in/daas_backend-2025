@@ -955,7 +955,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         api_key                = payload.get("api_key")
 
         # ── Step 0: Reboot VM ─────────────────────────────────────────────────
-        # Fresh clone ke baad GPU drivers properly initialize nahi hote.
+        # After a fresh clone the GPU drivers do not initialize properly.
         # Reboot ensures clean GPU state before vLLM load.
         # skip_reboot lets a test jump straight to the launch+health step (the
         # part we're debugging) without the ~3 min reboot.
@@ -984,7 +984,7 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
         logger.info(f"[{ip}] GPU/NVML ready")
 
         # ── Step 0.6: Wait for Ray head service (always, but only vLLM uses it if multi-node) ──
-        # Reboot ke baad Ray head service auto-start hoti hai — wait karo ready hone ka
+        # After reboot the Ray head service auto-starts — wait for it to become ready
         _wait_ray_head = (
             "source /etc/profile || true; "
             "source ~/.bash_profile || true; "

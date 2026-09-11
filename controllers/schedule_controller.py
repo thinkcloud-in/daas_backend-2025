@@ -1,7 +1,6 @@
 """
-Report-schedule controller — router/schedule_router.py ("/v1/schedule") is
-par delegate karta hai. Actual DB/Temporal logic service/schedule_service.py
-mein hai.
+Report-schedule controller — router/schedule_router.py ("/v1/schedule")
+delegates to this. The actual DB/Temporal logic is in service/schedule_service.py.
 """
 from fastapi import Depends, APIRouter
 from sqlalchemy.orm import Session
@@ -15,7 +14,7 @@ router = APIRouter( prefix="/v1/schedule", tags=["schedule"])
 
 
 def sqlalchemy_to_dict(obj):
-    """SQLAlchemy model instance ko dict mein convert karo (date/time columns → str)."""
+    """Convert a SQLAlchemy model instance into a dict (date/time columns → str)."""
     if not obj:
         return {}
 
@@ -23,7 +22,7 @@ def sqlalchemy_to_dict(obj):
     for column in obj.__table__.columns:
         value = getattr(obj, column.name)
 
-        # Date/Time ko string me convert karo
+        # Convert date/time to string
         if isinstance(value, (datetime, date, time)):
             value = str(value)
 
@@ -33,10 +32,10 @@ def sqlalchemy_to_dict(obj):
 
 def create_item(item, db):
     """
-    Naya recurring report-schedule create karo.
+    Create a new recurring report schedule.
 
     Used by: POST /v1/schedule/add_schedule
-    Returns: success_response ke `data` mein saved record (id included).
+    Returns: success_response's `data` has the saved record (id included).
     """
     try:
         db_item = service.post_data(item, db)
@@ -48,29 +47,29 @@ def create_item(item, db):
 # Read all items
 async def get_items(db: Session = Depends(get_db)):
     """
-    Saare schedules list karo.
+    List all schedules.
 
     Used by: GET /v1/schedule/get_schedules
-    Returns: service.get_data() ka result (already APIResponse-wrapped).
+    Returns: the result of service.get_data() (already APIResponse-wrapped).
     """
     return await service.get_data(db)
 
 
 async def get_item_id(item_id: int ,db: Session = Depends(get_db)):
     """
-    Ek schedule ki detail lo, id se.
+    Get one schedule's detail, by id.
 
     Used by: GET /v1/schedule/get_schedule/{item_id}
-    Returns: service.get_data_id() ka result (already APIResponse-wrapped).
+    Returns: the result of service.get_data_id() (already APIResponse-wrapped).
     """
     return await service.get_data_id(item_id  ,db)
 
 async def get_item_report(limit: int, offset: int, db: Session = Depends(get_db)):
     """
-    Schedule-runs ki history/report nikalo.
+    Get the history/report of schedule runs.
 
     Used by: GET /v1/schedule/get_schedules_report
-    Returns: success_response ke `data` mein [ {..run summary..}, ... ].
+    Returns: success_response's `data` has [ {..run summary..}, ... ].
     """
     data = await service.get_data_report(limit, offset, db)
     return response_format.success_response(200, "Successfully retrieved schedule report", data)
@@ -78,10 +77,10 @@ async def get_item_report(limit: int, offset: int, db: Session = Depends(get_db)
 # Update an item
 async def update_item(item_id: int, item: Schedule_report, db: Session = Depends(get_db)):
     """
-    Existing schedule update karo.
+    Update an existing schedule.
 
     Used by: PUT /v1/schedule/update_schedule/{item_id}
-    Returns: success_response ke `data` mein updated <Schedule_report>.
+    Returns: success_response's `data` has the updated <Schedule_report>.
     """
     data = await service.update_data_id(item_id, item, db)
     return response_format.success_response(200, "Successfully updated schedule", data)
@@ -89,20 +88,20 @@ async def update_item(item_id: int, item: Schedule_report, db: Session = Depends
 # Delete an item
 async def delete_item(item_id, db):
     """
-    Schedule delete karo.
+    Delete a schedule.
 
     Used by: DELETE /v1/schedule/delete_schedule/{item_id}
-    Returns: success_response ke `data` mein deleted item summary/id.
+    Returns: success_response's `data` has the deleted item's summary/id.
     """
     data = await service.delete_data_id(item_id, db)
     return response_format.success_response(200, "Successfully deleted schedule", data)
 
 async def get_status(schedule_id: str):
     """
-    Ek schedule ke Temporal-schedule ki current status lo.
+    Get a schedule's Temporal-schedule current status.
 
     Used by: GET /v1/schedule/get_schedule_status/{schedule_id}
-    Returns: success_response ke `data` mein {"schedule_id", "status", ...}.
+    Returns: success_response's `data` has {"schedule_id", "status", ...}.
     """
     data = await service.get_temporal_status(schedule_id)
     return response_format.success_response(200, "Successfully retrieved schedule status", data)

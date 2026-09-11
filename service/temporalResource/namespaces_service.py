@@ -22,8 +22,8 @@ class UpdateRetentionRequest(BaseModel):
     retention_days: int
     email: str
 
-# Namespace hamesha static "default" hai -- Temporal aur OpenSearch dono ke liye.
-# Frontend se namespace kabhi nahi bheja jaata.
+# The namespace is always the static "default" -- for both Temporal and OpenSearch.
+# The frontend never sends a namespace.
 DEFAULT_NAMESPACE = "default"
 
 from sqlalchemy.orm import Session
@@ -108,13 +108,13 @@ async def list_namespaces():
 
 async def update_namespace_retention(request: UpdateRetentionRequest, db: Session):
     """
-    Ek hi call se DONO retention set hoti hain:
-      1. Temporal namespace ki apni workflowExecutionRetentionTtl (existing)
-      2. OpenSearch (backend-logs-*) ke liye ISM retention policy -- OpenSearch
-         khud is policy ko periodically check karke purani indices delete
-         karta hai, koi Temporal schedule/worker nahi chahiye. DB me bhi
-         record hota hai (retention_settings), kyunki OpenSearch ke paas
-         "abhi kya set hai" query karne ka koi seedha tareeka nahi hai.
+    A single call sets BOTH retentions:
+      1. The Temporal namespace's own workflowExecutionRetentionTtl (existing)
+      2. The ISM retention policy for OpenSearch (backend-logs-*) -- OpenSearch
+         itself checks this policy periodically and deletes old indices, no
+         Temporal schedule/worker is needed. It is also recorded in the DB
+         (retention_settings), because OpenSearch has no direct way to query
+         "what is currently set".
     """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
@@ -140,7 +140,7 @@ async def update_namespace_retention(request: UpdateRetentionRequest, db: Sessio
     )
     namespaces = await handle.result()
 
-    # OpenSearch side — ISM policy create/update karo, aur DB me record karo
+    # OpenSearch side — create/update the ISM policy, and record it in the DB
     retention_service.ensure_ism_retention_policy(request.retention_days)
     retention_service.upsert_retention_setting(
         db, request.retention_days, DEFAULT_NAMESPACE, updated_by=request.email,
@@ -150,7 +150,7 @@ async def update_namespace_retention(request: UpdateRetentionRequest, db: Sessio
 
 
 async def get_retention_settings(db: Session) -> dict:
-    """Current retention config — DB se (agar kabhi set na hua ho to default 30 din)."""
+    """Current retention config — from the DB (defaults to 30 days if it was never set)."""
     row = retention_service.get_current_retention(db)
     if not row:
         return {

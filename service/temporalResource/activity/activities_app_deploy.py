@@ -1,11 +1,11 @@
 """
 App Deploy Activity — SSH-Free
-OpenWebUI ya VectorDB ko K8s cluster pe deploy karo.
+Deploy OpenWebUI or VectorDB onto a K8s cluster.
 
 Flow:
-  1. DB se kubeconfig + cluster info load karo
+  1. Load the kubeconfig + cluster info from the DB
   2. K8s clients init (CoreV1, AppsV1, Dynamic)
-  3. All nodes pe containerd configure karo (DaemonSet via K8s API — no SSH)
+  3. Configure containerd on all nodes (DaemonSet via the K8s API — no SSH)
   4. Namespace create
   5. Old deployment cleanup
   6. Harbor imagePullSecret create
@@ -123,9 +123,9 @@ def _configure_containerd_per_node(
     namespace: str = "kube-system",
 ):
     """
-    Har node pe ek individual Pod banao (restartPolicy: Never, nodeName set).
-    Pod Succeeded phase tak pohonchta hai — DaemonSet se alag (jo kabhi Succeeded nahi hota).
-    K8s API se — SSH ki zarurat nahi.
+    Create an individual Pod on each node (restartPolicy: Never, nodeName set).
+    The Pod reaches the Succeeded phase — unlike a DaemonSet (which never Succeeds).
+    Via the K8s API — no SSH needed.
     """
     from kubernetes.client.exceptions import ApiException
 
@@ -167,14 +167,14 @@ def _configure_containerd_per_node(
     script_b64 = base64.b64encode(patch_script.encode("utf-8")).decode("ascii")
     cmd        = f'echo {script_b64} | base64 -d | sh'
 
-    # Pehle sab nodes ki list lo
+    # first get the list of all nodes
     nodes      = v1.list_node()
     node_names = [n.metadata.name for n in nodes.items]
     if not node_names:
-        raise RuntimeError("kubectl get nodes empty — cluster reachable hai?")
+        raise RuntimeError("kubectl get nodes empty — is the cluster reachable?")
     logger.info(f"[AppDeploy] Configuring containerd on {len(node_names)} nodes: {node_names}")
 
-    # Purane patch pods clean karo
+    # clean up the old patch pods
     try:
         v1.delete_collection_namespaced_pod(
             namespace=namespace,
@@ -185,7 +185,7 @@ def _configure_containerd_per_node(
     except ApiException:
         pass
 
-    # Har node ke liye ek Pod (restartPolicy: Never) — ye Succeeded phase mein jayega
+    # One Pod per node (restartPolicy: Never) — it will reach the Succeeded phase
     created_pods = []
     for node_name in node_names:
         safe     = re.sub(r"[^a-z0-9-]", "-", node_name.lower())[:40]
@@ -584,7 +584,7 @@ def app_deploy_activity(payload: dict) -> dict:
     svc_name = f"{rname}-{deployment_type}"
 
     try:
-        # ── Step 1: DB se kubeconfig load karo ──────────────────────────────
+        # ── Step 1: load the kubeconfig from the DB ─────────────────────────
         _db_update(deploy_id, status="connecting")
         _log_step(deploy_id, "Loading cluster configuration from DB ...")
         db = SessionLocal()
@@ -594,7 +594,7 @@ def app_deploy_activity(payload: dict) -> dict:
             ).first()
             if not cluster or not cluster.kubeconfig:
                 raise RuntimeError(
-                    f"K8s cluster id={k8s_cluster_id} nahi mila ya kubeconfig missing"
+                    f"K8s cluster id={k8s_cluster_id} not found or kubeconfig missing"
                 )
             kubeconfig_yaml = cluster.kubeconfig
             node_ip         = cluster.control_ip
@@ -665,7 +665,7 @@ def app_deploy_activity(payload: dict) -> dict:
 
         if deployment_type == "openwebui":
             postgresql_deploy_id = payload.get("postgresql_deploy_id")
-            # Har OpenWebUI ka apna alag database — deploy_id se guaranteed unique
+            # Each OpenWebUI gets its own separate database — guaranteed unique by deploy_id
             _ow_dbname = f"openwebui_{deploy_id}"
             if postgresql_deploy_id:
                 db = SessionLocal()
@@ -687,7 +687,7 @@ def app_deploy_activity(payload: dict) -> dict:
                 finally:
                     db.close()
 
-                # OpenWebUI ka dedicated database PostgreSQL pod mein create karo
+                # create OpenWebUI's dedicated database in the PostgreSQL pod
                 if _pg_svc_name and _pg_namespace:
                     try:
                         _pg_pods = v1.list_namespaced_pod(
@@ -786,7 +786,7 @@ def app_deploy_activity(payload: dict) -> dict:
         # ── Step 10: NodePort + LoadBalancer IP fetch ────────────────────────
         _log_step(deploy_id, "Fetching service endpoint ...")
 
-        # NodePort pehle fetch karo (hamesha available hota hai)
+        # fetch the NodePort first (it is always available)
         node_port = None
         try:
             _svc_obj  = v1.read_namespaced_service(name=svc_name, namespace=namespace)
@@ -851,7 +851,7 @@ def app_deploy_activity(payload: dict) -> dict:
 
             _log_step(deploy_id, "Creating admin user via pod exec ...")
 
-            # Running OW pod dhundo
+            # find the running OW pod
             _ow_exec_pod = None
             try:
                 _epods = v1.list_namespaced_pod(
@@ -867,7 +867,7 @@ def app_deploy_activity(payload: dict) -> dict:
                 logger.warning(f"[AppDeploy] Pod list error: {_pe}")
 
             if _ow_exec_pod:
-                # Pod ke andar se localhost:8080:
+                # From inside the pod, via localhost:8080:
                 #   1. Signup (admin user create)
                 #   2. Signin (JWT lao)
                 #   3. Admin config API: ENABLE_SIGNUP=false, DEFAULT_USER_ROLE=user
@@ -932,7 +932,7 @@ def app_deploy_activity(payload: dict) -> dict:
                 except Exception as _ee:
                     _log_step(deploy_id, f"Admin setup exec error: {str(_ee)[:80]}")
 
-                # 4. PostgreSQL me role=admin + active=true set karo
+                # 4. set role=admin + active=true in PostgreSQL
                 if _pg_svc_name and _pg_namespace:
                     try:
                         _pg_pods2 = v1.list_namespaced_pod(

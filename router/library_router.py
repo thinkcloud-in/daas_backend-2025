@@ -12,17 +12,17 @@ library_router = APIRouter(prefix="/v1/library", tags=["library"])
 
 
 class LibraryUploadInit(BaseModel):
-    name:      Optional[str] = None   # container type: Harbor image name; baaki ke liye required
+    name:      Optional[str] = None   # container type: Harbor image name; required for the rest
     file_name: str
     file_size: Optional[int] = None
     type:      Optional[str] = None   # container | llm_model | llm_template | base_os | ...
-    version:   Optional[str] = None   # container ke liye: Harbor image tag
-    # Harbor push — container / llm_model / llm_template ke liye
+    version:   Optional[str] = None   # for container: Harbor image tag
+    # Harbor push — for container / llm_model / llm_template
     harbor_registry_id: Optional[int] = None  # kubernetes_deployments.id (Harbor instance)
     harbor_owner:       Optional[str] = None  # fallback owner segment (optional)
-    owner_name:         Optional[str] = None  # container ke liye: Harbor owner/org segment
-    # Optional metadata JSON — yahan pass karo to ZIP ke andar rakhne ki zaroorat nahi
-    # Saare fields Harbor Overview mein annotations ke roop mein jayenge
+    owner_name:         Optional[str] = None  # for container: Harbor owner/org segment
+    # Optional metadata JSON — pass it here so you don't need to embed it inside the ZIP
+    # All fields end up as annotations in the Harbor Overview
     metadata: Optional[dict] = None
 
 
@@ -33,23 +33,23 @@ async def create_library_item(
     db:      Session = Depends(get_db),
 ):
     """
-    Step 1 — metadata JSON bhejo, milliseconds mein item_id milta hai.
-    Phir file stream karo: PUT /v1/library/{item_id}/file
+    Step 1 — send the metadata JSON, get back an item_id within milliseconds.
+    Then stream the file: PUT /v1/library/{item_id}/file
 
-    container / llm_model / llm_template ke liye:
+    For container / llm_model / llm_template:
       harbor_registry_id = kubernetes_deployments.id (Harbor instance)
-      Backend automatically K8s cluster derive karega Harbor record se.
-      name optional hai — Docker image metadata se auto-set hoga.
+      The backend automatically derives the K8s cluster from the Harbor record.
+      name is optional — it'll be auto-set from the Docker image metadata.
 
-    Request body: LibraryUploadInit (upar dekho).
+    Request body: LibraryUploadInit (see above).
 
     Response 200 — `data`:
         {
-          "id": int,            # naya library-item ID, agle step (file upload) mein use karo
+          "id": int,            # new library-item ID, use it in the next step (file upload)
           "status": "uploading"
         }
 
-    Errors: 400 agar `type` invalid ho ya required field missing ho.
+    Errors: 400 if `type` is invalid or a required field is missing.
     """
     return await library_controller.create_library_item(
         body.name, body.type, body.version, body.file_name, body.file_size,
@@ -72,16 +72,16 @@ async def upload_library_file(
     DB progress_pct updates 0→99% in real-time as bytes arrive.
     Temporal workflow starts automatically once file is fully received (sets 100% + status=ready).
 
-    Path param: item_id — Step 1 (`POST /upload`) se mila ID.
-    Request body: raw binary stream (file bytes), koi JSON nahi.
+    Path param: item_id — the ID from Step 1 (`POST /upload`).
+    Request body: raw binary stream (file bytes), not JSON.
 
-    Response 200 — `data`: poora updated library-item dict (dekho `_item_to_dict`
+    Response 200 — `data`: the full updated library-item dict (see `_item_to_dict`
     — id, name, type, version, file_name, file_size, progress_pct, status,
     workflow_id, harbor_* fields, created_at, updated_at).
-    container/llm_model/llm_template ke liye response mile-milne se pehle hi
-    background mein Harbor-push workflow bhi trigger ho jaata hai.
+    For container/llm_model/llm_template, the Harbor-push workflow is already
+    triggered in the background before this response even comes back.
 
-    Errors: 404 agar item_id na mile, 409 agar item already "ready"/"failed" ho.
+    Errors: 404 if item_id is not found, 409 if the item is already "ready"/"failed".
     """
     return await library_controller.upload_library_file(item_id, request, db)
 
@@ -97,8 +97,7 @@ def list_library_items(
     db:                 Session       = Depends(get_db),
 ):
     """
-    Library items list karo, type/owner/registry se filter karke, directory ke
-    hisaab se grouped.
+    List library items, filtered by type/owner/registry, grouped by directory.
 
     Response 200 — `data`:
         {
@@ -107,14 +106,14 @@ def list_library_items(
             "<dir_name>": [ <item>, ... ],   # e.g. "container", "llm_model", "harbor", "os", "general"
             ...
           },
-          "total": int,          # saare filtered items ka count (page se independent)
+          "total": int,          # count of all filtered items (independent of page)
           "pagination": {
             "page": int, "page_size": int, "total": int, "total_pages": int,
             "has_next": bool, "has_prev": bool
           }
         }
 
-    Har `<item>` mein (LibraryItem + attached deployments):
+    Each `<item>` contains (LibraryItem + attached deployments):
         id, name, display_name, type, directory, version, description,
         category, tags, file_name, file_path, file_size, progress_pct,
         status, workflow_id, k8s_cluster_id, harbor_url, harbor_project,
@@ -139,7 +138,7 @@ def list_deployments(
     db:        Session = Depends(get_db),
 ):
     """
-    Library items se deploy kiye gaye LXC/Kubernetes jobs list karo (paginated).
+    List LXC/Kubernetes jobs deployed from library items (paginated).
 
     Response 200 — `data`:
         {
@@ -153,16 +152,16 @@ def list_deployments(
 @library_router.get("/deployments/{job_id}", response_model=APIResponse[Any])
 def get_deployment(
     job_id: int,
-    type:   Optional[str] = Query(None, description="lxc | kubernetes — dono tables mein same ID ho to disambiguate karo"),
+    type:   Optional[str] = Query(None, description="lxc | kubernetes — disambiguate when both tables share an ID"),
     db:     Session = Depends(get_db),
 ):
     """
-    Ek deployment job ki poori detail lo (LXC restore ya K8s Harbor deploy).
+    Get the full detail of one deployment job (LXC restore or K8s Harbor deploy).
 
-    Response 200 — `data`: deployment-job record (status, target cluster,
-    IP/namespace, timestamps, error agar koi ho).
+    Response 200 — `data`: the deployment-job record (status, target cluster,
+    IP/namespace, timestamps, error if any).
 
-    Errors: 404 agar job_id (given type ke saath) na mile.
+    Errors: 404 if job_id (with the given type) is not found.
     """
     return lxc_restore_controller.get_lxc_restore_job(job_id, db, deployment_type=type)
 
@@ -170,11 +169,11 @@ def get_deployment(
 @library_router.delete("/deployments/{job_id}", response_model=APIResponse[Any])
 def delete_deployment(job_id: int, db: Session = Depends(get_db)):
     """
-    Deployment job record delete karo (sirf tracking record — deployed
-    LXC/K8s resource ko khud se destroy nahi karta).
+    Delete a deployment job record (tracking record only — doesn't destroy
+    the deployed LXC/K8s resource itself).
 
     Response 200 — `data`: {"id": job_id}
-    Errors: 404 agar job_id na mile.
+    Errors: 404 if job_id is not found.
     """
     return lxc_restore_controller.delete_deployment(job_id, db)
 
@@ -184,12 +183,12 @@ def delete_deployment(job_id: int, db: Session = Depends(get_db)):
 @library_router.get("/download/{item_id}")
 def download_library_item(item_id: int, db: Session = Depends(get_db)):
     """
-    Library item ki file download karo — seedha WebDAV storage URL pe
-    302-redirect karta hai (JSON response nahi deta).
+    Download a library item's file — issues a 302 redirect straight to the
+    WebDAV storage URL (does not return a JSON response).
 
-    Response: 302 Redirect → Location header mein actual file URL.
-    Errors: 404 agar item_id na mile, 409 agar item ka status "ready" na ho
-    (upload abhi complete nahi hua).
+    Response: 302 Redirect → Location header has the actual file URL.
+    Errors: 404 if item_id is not found, 409 if the item's status isn't
+    "ready" yet (upload not complete).
     """
     from fastapi.responses import RedirectResponse
     file_url, _ = library_controller.get_library_item_path(item_id, db)
@@ -201,9 +200,9 @@ def download_library_item(item_id: int, db: Session = Depends(get_db)):
 @library_router.get("/harbor/{registry_id}/artifacts", response_model=APIResponse[Any])
 def get_harbor_artifacts(
     registry_id:   int,
-    project:       Optional[str] = Query(None, description="Harbor project name — specify karo to repositories list mile"),
-    repository:    Optional[str] = Query(None, description="Repository name — project ke saath specify karo to artifacts (tags) list mile"),
-    owner:         Optional[str] = Query(None, description="Owner prefix filter — sirf is owner ki repositories dikhao (e.g. raqsoft)"),
+    project:       Optional[str] = Query(None, description="Harbor project name — specify to get the repositories list"),
+    repository:    Optional[str] = Query(None, description="Repository name — specify with project to get the artifacts (tags) list"),
+    owner:         Optional[str] = Query(None, description="Owner prefix filter — only show repositories for this owner (e.g. raqsoft)"),
     type_filter:   Optional[str] = Query(None, alias="type", description="Filter by ai.artifact.type (e.g. template, backup)"),
     hypervisor:    Optional[str] = Query(None, description="Filter by ai.artifact.hypervisor (e.g. proxmox, vmware, hyper-v)"),
     os_type:       Optional[str] = Query(None, description="Filter by os_type field in vm_template_details (e.g. linux, windows)"),
@@ -213,17 +212,17 @@ def get_harbor_artifacts(
     db:            Session       = Depends(get_db),
 ):
     """
-    Harbor pe deploy hue artifacts fetch karo. Yeh ek "drill-down" endpoint
-    hai — jitne query params doge, utna deep response milega:
+    Fetch artifacts deployed on Harbor. This is a "drill-down" endpoint —
+    the more query params you give, the deeper the response:
 
-    - `registry_id` alone                                         → sab projects list
-    - `registry_id` + `project`                                   → us project ke repositories list
-    - `registry_id` + `project` + `owner`                        → sirf us owner ki repositories
-    - `registry_id` + `project` + `repository`                   → us repo ke artifacts (tags) list
-    - `registry_id` + `project` + filter params                  → cross-repo filtered artifacts
+    - `registry_id` alone                                         → list of all projects
+    - `registry_id` + `project`                                   → list of repositories in that project
+    - `registry_id` + `project` + `owner`                         → only that owner's repositories
+    - `registry_id` + `project` + `repository`                    → list of artifacts (tags) in that repo
+    - `registry_id` + `project` + filter params                   → cross-repo filtered artifacts
       Filters: artifact_type, hypervisor, os_type, os_name (partial match, case-insensitive)
 
-    Response 200 — `data` (mode ke hisaab se shape badalta hai):
+    Response 200 — `data` (shape depends on the mode above):
         Projects mode:     {"projects": [{"name": str}, ...]}
         Repositories mode: {"repositories": [{"name": str, "artifact_count": int}, ...]}
         Artifacts mode:    {
@@ -231,7 +230,7 @@ def get_harbor_artifacts(
                               "pagination": {page, page_size, total, total_pages, has_next, has_prev}
                             }
 
-    Errors: 404 agar registry_id na mile ya Harbor unreachable ho.
+    Errors: 404 if registry_id is not found or Harbor is unreachable.
     """
     return library_controller.list_harbor_artifacts(
         registry_id=registry_id,
@@ -253,12 +252,12 @@ def get_harbor_artifacts(
 @library_router.get("/{item_id}", response_model=APIResponse[Any])
 def get_library_item(item_id: int, db: Session = Depends(get_db)):
     """
-    Ek library item ki poori detail lo.
+    Get the full detail of one library item.
 
-    Response 200 — `data`: ek `<item>` dict (dekho `list_library_items` ke
-    docstring mein exact shape), plus attached `deployments` list.
+    Response 200 — `data`: an `<item>` dict (see `list_library_items`
+    docstring for the exact shape), plus the attached `deployments` list.
 
-    Errors: 404 agar item_id na mile.
+    Errors: 404 if item_id is not found.
     """
     return library_controller.get_library_item(item_id, db)
 
@@ -272,14 +271,14 @@ async def update_library_item(
     db:      Session       = Depends(get_db),
 ):
     """
-    Library item ka naam/version update karo (multipart form fields, JSON nahi).
-    File/Harbor-image ko touch nahi karta — sirf metadata rename hoti hai
-    (Temporal workflow ke through, async).
+    Update a library item's name/version (multipart form fields, not JSON).
+    Doesn't touch the file/Harbor image — this only renames metadata
+    (via a Temporal workflow, async).
 
-    Response 200 — `data`: updated `<item>` dict (turant, workflow-start ke
-    saath — asli DB-write background mein thodi der baad hoti hai).
+    Response 200 — `data`: the updated `<item>` dict (returned immediately,
+    at workflow-start time — the actual DB write happens a bit later in the background).
 
-    Errors: 404 agar item_id na mile, 409 agar item abhi "uploading" state mein ho.
+    Errors: 404 if item_id is not found, 409 if the item is still in "uploading" state.
     """
     return await library_controller.update_library_item(item_id, name, version, db, request)
 
@@ -287,19 +286,19 @@ async def update_library_item(
 @library_router.delete("/{item_id}", response_model=APIResponse[Any])
 async def delete_library_item(item_id: int, request: Request, db: Session = Depends(get_db)):
     """
-    Library item delete karo.
+    Delete a library item.
 
-    - status "uploading"/"failed" ho    → turant DB + temp-file se delete (sync).
-    - status "ready" ho                 → Temporal workflow se delete: agar
-      Harbor pe push hua tha to pehle Harbor se image/artifact hataya jaata
-      hai (fail ho to DB record delete nahi hota, retry hoga), phir pod file,
-      phir DB record.
+    - status "uploading"/"failed"  → deleted immediately from DB + temp file (sync).
+    - status "ready"               → deleted via a Temporal workflow: if it
+      was pushed to Harbor, the image/artifact is removed from Harbor first
+      (if that fails, the DB record is NOT deleted, it'll retry), then the
+      pod file, then the DB record.
 
     Response 200 — `data`:
         {"id": item_id}                                   # sync path
         {"id": item_id, "workflow_id": str}                # async (Temporal) path
 
-    Errors: 404 agar item_id na mile.
+    Errors: 404 if item_id is not found.
     """
     return await library_controller.delete_library_item(item_id, db, request)
 
@@ -307,15 +306,15 @@ async def delete_library_item(item_id: int, request: Request, db: Session = Depe
 # ── Deploy ────────────────────────────────────────────────────────────────────
 
 class LibraryDeployBody(BaseModel):
-    deployment_type: str               # "lxc" ya "kubernetes"
-    name:            str               # Deployment ka naam
+    deployment_type: str               # "lxc" or "kubernetes"
+    name:            str               # Deployment name
     cluster_id:      int               # LXC: Proxmox cluster ID | K8s: kubernetes_clusters ID
 
-    # LXC ke liye (deployment_type="lxc" me required)
+    # For LXC (required when deployment_type="lxc")
     ip_pools:        Optional[List[str]] = None
     storage:         Optional[str]       = "local-lvm"
 
-    # K8s ke liye (optional, defaults hain)
+    # For K8s (optional, has defaults)
     namespace:       Optional[str] = "harbor"
     http_port:       Optional[int] = 80
 
@@ -328,19 +327,19 @@ async def deploy_library_item(
     db:      Session = Depends(get_db),
 ):
     """
-    Library item deploy karo:
-    - deployment_type="lxc"        → Proxmox LXC machine deploy (existing)
-    - deployment_type="kubernetes" → K8s cluster pe Harbor deploy (new)
+    Deploy a library item:
+    - deployment_type="lxc"        → deploy a Proxmox LXC machine (existing)
+    - deployment_type="kubernetes" → deploy Harbor onto a K8s cluster (new)
 
-    Request body: LibraryDeployBody (upar dekho) — `ip_pools`/`storage` sirf
-    lxc ke liye zaroori, `namespace`/`http_port` sirf kubernetes ke liye.
+    Request body: LibraryDeployBody (see above) — `ip_pools`/`storage` only
+    needed for lxc, `namespace`/`http_port` only for kubernetes.
 
     Response 200 — `data`:
         lxc:        {"job_id": int, "workflow_id": str, "status": "started", ...}
         kubernetes: {"deployment_id": int, "workflow_id": str, "namespace": str, ...}
 
-    Errors: 404 agar item_id/cluster_id na mile, 409 agar item ka status
-    "ready" na ho, 400 agar lxc ke liye ip_pools mein koi free IP na ho.
+    Errors: 404 if item_id/cluster_id is not found, 409 if the item's status
+    isn't "ready", 400 if none of the given ip_pools has a free IP (for lxc).
     """
     return await library_controller.deploy_library_item(
         item_id  = item_id,

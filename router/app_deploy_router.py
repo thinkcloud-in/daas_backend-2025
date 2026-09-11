@@ -19,38 +19,38 @@ class AppDeployBody(BaseModel):
     namespace:            Optional[str] = "default"
     storage_class:        Optional[str] = None   # e.g. "ceph-rbd", "cephfs" — None = cluster default
     postgresql_deploy_id: Optional[int] = None   # mandatory for openwebui — app_deployments.id of postgresql
-    # OpenWebUI admin credentials (optional — agar nahi diya to auto-generate hoga)
+    # OpenWebUI admin credentials (optional — auto-generated if not provided)
     admin_email:          Optional[str] = None   # default: admin@admin.com
-    admin_password:       Optional[str] = None   # default: auto-generated (GET /{id} se milega)
+    admin_password:       Optional[str] = None   # default: auto-generated (returned by GET /{id})
 
 
 @app_deploy_router.post("", response_model=APIResponse[Any])
 async def create_app_deployment(body: AppDeployBody, db: Session = Depends(get_db)):
     """
-    OpenWebUI / VectorDB / PostgreSQL ko K8s cluster pe deploy karo.
+    Deploy OpenWebUI / VectorDB / PostgreSQL onto a K8s cluster.
 
     Fields:
-    - name                : deployment ka display naam
+    - name                : display name of the deployment
     - deployment_type     : "openwebui" | "vectordb" | "postgresql"
     - k8s_cluster_id      : kubernetes_clusters.id (deploy target cluster)
-    - harbor_registry_id  : kubernetes_deployments.id jisme harbor deploy hai (image source)
-    - version_id          : library.id — harbor_image wala version
+    - harbor_registry_id  : kubernetes_deployments.id where Harbor is deployed (image source)
+    - version_id          : library.id — the version that carries the harbor_image
     - namespace           : K8s namespace (default: "default")
     - storage_class       : PVC storage class (default: cluster default)
     - storage_size        : PVC size (default: "1Gi" for openwebui/vectordb, "5Gi" for postgresql)
     - postgresql_deploy_id: [MANDATORY for openwebui] app_deployments.id of a deployed postgresql
 
-    Response mein milega:
+    You get back in the response:
     - service_url   : http://... (openwebui) | postgresql://...cluster.local/... (postgresql) | postgresql://external/vectordb
     - external_ip   : LB IP / node IP
     - node_port     : K8s NodePort (openwebui)
-    - steps_log     : har step ka timestamp
+    - steps_log     : timestamp for each step
 
-    OpenWebUI deploy hone ke baad automatically:
-    - DATABASE_URL set hoti hai linked PostgreSQL se
-    - admin@admin.com user create hota hai (role=admin, active=true)
-    - Registration (signup) disable hoti hai — koi naya user khud se register nahi kar sakta
-    - WEBUI_API_KEY pre-set: daas-openwebui-api-key
+    Once OpenWebUI is deployed, automatically:
+    - DATABASE_URL is set from the linked PostgreSQL
+    - an admin@admin.com user is created (role=admin, active=true)
+    - registration (signup) is disabled — no new user can self-register
+    - WEBUI_API_KEY is pre-set: daas-openwebui-api-key
     """
     return await app_deploy_controller.create_app_deployment(body.model_dump(), db)
 
@@ -63,15 +63,14 @@ def list_app_deployments(
     db: Session = Depends(get_db),
 ):
     """
-    App deployments list karo (openwebui/vectordb/postgresql), optionally
-    type se filter karke.
+    List app deployments (openwebui/vectordb/postgresql), optionally filtered by type.
 
     Response 200 — `data`:
         {
           "items": [ <deployment record>, ... ],
           "pagination": {"page": int, "page_size": int, "total": int, "total_pages": int, "has_next": bool, "has_prev": bool}
         }
-    Har `<deployment record>` mein: id, name, deployment_type, k8s_cluster_id,
+    Each `<deployment record>` contains: id, name, deployment_type, k8s_cluster_id,
     namespace, status, service_url, external_ip, node_port, admin_email,
     linked postgresql/vectordb ids, `linked_llms` (connected private-LLM
     summaries), steps_log, timestamps.
@@ -82,10 +81,10 @@ def list_app_deployments(
 @app_deploy_router.get("/{deploy_id}", response_model=APIResponse[Any])
 def get_app_deployment(deploy_id: int, db: Session = Depends(get_db)):
     """
-    Ek app deployment ki poori detail lo.
+    Get the full detail of one app deployment.
 
-    Response 200 — `data`: ek `<deployment record>` (dekho `list_app_deployments` docstring).
-    Errors: 404 agar deploy_id na mile.
+    Response 200 — `data`: a single `<deployment record>` (see `list_app_deployments` docstring).
+    Errors: 404 if deploy_id is not found.
     """
     return app_deploy_controller.get_app_deployment(deploy_id, db)
 
@@ -93,13 +92,13 @@ def get_app_deployment(deploy_id: int, db: Session = Depends(get_db)):
 @app_deploy_router.delete("/{deploy_id}", response_model=APIResponse[Any])
 def delete_app_deployment(deploy_id: int, db: Session = Depends(get_db)):
     """
-    App deployment delete karo — K8s resources (Deployment/Service/PVC) bhi
-    SSH ke through cluster se cleanup karne ki koshish karta hai, phir DB
-    record delete karta hai (K8s cleanup best-effort — fail ho to bhi DB
-    record delete hota hai, warning ke saath).
+    Delete an app deployment — also attempts to clean up K8s resources
+    (Deployment/Service/PVC) over SSH from the cluster, then deletes the DB
+    record (K8s cleanup is best-effort — the DB record is still deleted even
+    if it fails, with a warning).
 
     Response 200 — `data`: {"id": deploy_id, "k8s_cleaned": bool, "k8s_warning": str|None}
-    Errors: 404 agar deploy_id na mile.
+    Errors: 404 if deploy_id is not found.
     """
     return app_deploy_controller.delete_app_deployment(deploy_id, db)
 
@@ -112,9 +111,9 @@ class AdminCredentialsBody(BaseModel):
 @app_deploy_router.patch("/{openwebui_id}/admin-credentials", response_model=APIResponse[Any])
 def update_admin_credentials(openwebui_id: int, body: AdminCredentialsBody, db: Session = Depends(get_db)):
     """
-    OpenWebUI deployment ke admin email/password update karo.
-    Pehle deploy hua tha aur admin_password DB mein NULL hai — ye fix karo.
-    Iske baad connect-llm / sync-connections admin JWT use karega.
+    Update the admin email/password of an OpenWebUI deployment.
+    Fixes the case where it was deployed earlier and admin_password is NULL in the DB.
+    connect-llm / sync-connections will use the admin JWT from this afterwards.
     """
     return app_deploy_controller.update_admin_credentials(openwebui_id, body.admin_email, body.admin_password, db)
 
@@ -126,9 +125,9 @@ class ConnectVectorDBBody(BaseModel):
 @app_deploy_router.post("/{openwebui_id}/repair-db", response_model=APIResponse[Any])
 def repair_database_url(openwebui_id: int, db: Session = Depends(get_db)):
     """
-    OpenWebUI pod mein DATABASE_URL restore karo.
-    Use karo jab login fail ho aur pgvector bug se DATABASE_URL remove ho gaya ho.
-    Linked postgresql_deploy_id se URL rebuild karke K8s deployment patch karta hai (~60s pod restart).
+    Restore DATABASE_URL in the OpenWebUI pod.
+    Use this when login fails because a pgvector bug removed DATABASE_URL.
+    Rebuilds the URL from the linked postgresql_deploy_id and patches the K8s deployment (~60s pod restart).
     """
     return app_deploy_controller.repair_database_url(openwebui_id, db)
 
@@ -140,8 +139,8 @@ def connect_vectordb(
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI deployment ke saath VectorDB link karo.
-    K8s pe VECTOR_DB + PGVECTOR_DB_URL env vars inject karta hai aur rollout wait karta hai.
+    Link a VectorDB to an OpenWebUI deployment.
+    Injects VECTOR_DB + PGVECTOR_DB_URL env vars on K8s and waits for the rollout.
     """
     return app_deploy_controller.connect_vectordb(openwebui_id, body.vectordb_deploy_id, db)
 
@@ -149,7 +148,7 @@ def connect_vectordb(
 @app_deploy_router.delete("/{openwebui_id}/connect-vectordb", response_model=APIResponse[Any])
 def disconnect_vectordb(openwebui_id: int, db: Session = Depends(get_db)):
     """
-    OpenWebUI se VectorDB ka link hatao — K8s env vars remove + rollout.
+    Remove the VectorDB link from OpenWebUI — removes the K8s env vars + rollout.
     """
     return app_deploy_controller.disconnect_vectordb(openwebui_id, db)
 
@@ -165,9 +164,9 @@ async def connect_private_llm(
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI ke saath Private LLM(s) connect karo.
+    Connect Private LLM(s) to OpenWebUI.
     Primary: OpenWebUI REST API (instant, no restart).
-    Fallback: Temporal workflow — K8s env vars inject + rollout wait (one-time only).
+    Fallback: Temporal workflow — inject K8s env vars + wait for rollout (one-time only).
     """
     return await app_deploy_controller.connect_private_llm(openwebui_id, body.llm_ids, db)
 
@@ -175,8 +174,8 @@ async def connect_private_llm(
 @app_deploy_router.post("/{openwebui_id}/sync-connections", response_model=APIResponse[Any])
 async def sync_llm_connections(openwebui_id: int, db: Session = Depends(get_db)):
     """
-    OpenWebUI DB me linked LLM URLs sync karo via REST API — bina pod restart ke.
-    Use karo jab connect-llm ke baad model na dikhe (DB me purani URLs ho).
+    Sync linked LLM URLs into the OpenWebUI DB via REST API — without a pod restart.
+    Use this when models don't show up after connect-llm (DB still has stale URLs).
     """
     return await app_deploy_controller.sync_llm_connections(openwebui_id, db)
 
@@ -188,9 +187,9 @@ async def disconnect_private_llm(
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI se Private LLM ka link hatao.
+    Remove a Private LLM link from OpenWebUI.
     Primary: OpenWebUI REST API (instant, no restart).
-    Fallback: Temporal workflow — K8s env vars update + rollout (one-time only).
+    Fallback: Temporal workflow — update K8s env vars + rollout (one-time only).
     """
     return await app_deploy_controller.disconnect_private_llm(openwebui_id, llm_id, db)
 
@@ -208,9 +207,9 @@ def connect_keycloak(
     db: Session = Depends(get_db),
 ):
     """
-    OpenWebUI ke saath Keycloak SSO connect karo.
-    Steps: Keycloak client create → OW HTTP API disable form → PG direct disable form → K8s pod restart.
-    Response mein pg_error/api_error se exact failure reason pata chalega.
+    Connect Keycloak SSO to OpenWebUI.
+    Steps: create Keycloak client → disable OW login form via HTTP API → disable it directly via PG → K8s pod restart.
+    The response's pg_error/api_error fields tell you the exact failure reason.
     """
     return app_deploy_controller.connect_keycloak(openwebui_id, body.model_dump(), db)
 
@@ -218,8 +217,8 @@ def connect_keycloak(
 @app_deploy_router.delete("/{openwebui_id}/connect-keycloak", response_model=APIResponse[Any])
 def disconnect_keycloak(openwebui_id: int, db: Session = Depends(get_db)):
     """
-    OpenWebUI se Keycloak SSO hatao.
-    Steps: OW HTTP API restore form → PG direct restore → K8s pod restart → background user delete.
+    Remove Keycloak SSO from OpenWebUI.
+    Steps: restore OW login form via HTTP API → restore it directly via PG → K8s pod restart → background user delete.
     """
     return app_deploy_controller.disconnect_keycloak(openwebui_id, db)
 
@@ -233,7 +232,7 @@ def get_keycloak_users(
     db:           Session       = Depends(get_db),
 ):
     """
-    Keycloak realm ke users ki paginated list. search param se name/email/username filter karo.
+    Paginated list of users in the Keycloak realm. Use `search` to filter by name/email/username.
     """
     return app_deploy_controller.get_keycloak_users(openwebui_id, page, page_size, db, search)
 
@@ -247,7 +246,7 @@ def get_ow_admin_users(
     db:           Session       = Depends(get_db),
 ):
     """
-    Keycloak se Admin role waale users — paginated + search.
+    Users with the Admin role from Keycloak — paginated + search.
     """
     return app_deploy_controller.get_ow_admin_users(openwebui_id, page, page_size, search, db)
 
@@ -261,7 +260,7 @@ def get_ow_member_users(
     db:           Session       = Depends(get_db),
 ):
     """
-    Keycloak se User role waale users — paginated + search.
+    Users with the User role from Keycloak — paginated + search.
     """
     return app_deploy_controller.get_ow_member_users(openwebui_id, page, page_size, search, db)
 
@@ -278,8 +277,8 @@ def update_ow_user_role(
     db:           Session = Depends(get_db),
 ):
     """
-    OpenWebUI user ka role update karo — 'admin' ya 'user'.
-    ow_user_id: GET /ow-users response mein milta hai (OpenWebUI ka internal user ID).
+    Update an OpenWebUI user's role — 'admin' or 'user'.
+    ow_user_id: obtained from the GET /ow-users response (OpenWebUI's internal user ID).
     """
     return app_deploy_controller.update_ow_user_role(openwebui_id, ow_user_id, body.role, db)
 
@@ -300,8 +299,8 @@ def assign_roles(
     db:           Session = Depends(get_db),
 ):
     """
-    Keycloak users ko bulk role assign karo (admin/user).
-    Ek hi call mein multiple users ko alag alag ya same role assign ho sakta hai.
-    Pehle purana role remove hota hai, phir naya assign hota hai.
+    Bulk-assign roles (admin/user) to Keycloak users.
+    A single call can assign different or the same role to multiple users.
+    The old role is removed first, then the new one is assigned.
     """
     return app_deploy_controller.assign_roles(openwebui_id, body.assignments, db)

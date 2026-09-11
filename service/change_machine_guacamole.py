@@ -1,3 +1,15 @@
+"""
+change_machine_guacamole — a Postgres LISTEN/NOTIFY based background listener that syncs
+changes in the `machine` table with Guacamole connections.
+
+`listen_for_machine_changes()` runs as a background task (from main.py startup) and listens
+on the Postgres channel "machine_change"; whenever a DB trigger changes a machine row and
+sends a NOTIFY, that machine's corresponding Guacamole connection is updated via
+`modify_connection()`. `return_payload()` builds the Guacamole connection-parameter payload
+per protocol (rdp/vnc/telnet/ssh/kubernetes) — for protocols like RDP/VNC/SSH the "password"
+field intentionally goes into the payload, because Guacamole needs that credential to
+establish the session (this is not a leak, it is the Guacamole API contract).
+"""
 import asyncio
 from fastapi import HTTPException
 import os
@@ -22,6 +34,10 @@ DATABASE_HOST = os.getenv('HOST_NAME')
 DATABASE_PORT = os.getenv('PORT')
 
 async def login_with_guacamole():
+    """
+    Log in as the Guacamole admin (hardcoded "guacadmin"/"guacadmin") and get an auth token.
+    Returns: authToken string, or None on failure.
+    """
     url =  f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens"
     username  = 'guacadmin'
     password = 'guacadmin' 
@@ -37,6 +53,15 @@ async def login_with_guacamole():
     
 
 def return_payload(machine_data_: MachineDto):
+    """
+    Convert a MachineDto into the JSON payload expected by the Guacamole "update connection"
+    REST API (a string, via `json.dumps`).
+
+    A different parameter set is built per `machine_data.protocol` (rdp/vnc/telnet/kubernetes/ssh)
+    — each protocol follows Guacamole's own connection-parameter schema.
+    Returns: a JSON string (the Guacamole connection-update body).
+    Raises: ValueError if the protocol is not in the supported list.
+    """
     machine_data = machine_data_.dict()
     protocol = machine_data.get('protocol', '').lower()
     match protocol:
@@ -334,6 +359,12 @@ def return_payload(machine_data_: MachineDto):
     return payload
   
 async def modify_connection(machine_data: MachineDto):
+    """
+    PUT-update the connection identified by machine_data.identifier in Guacamole with the new parameters.
+    Login → build payload → PUT `/api/session/data/{datasource}/connections/{identifier}` → logout.
+    Side effect only (no return value) — success/failure is only recorded in the logger; no
+    exception propagates to the caller (`listen_for_machine_changes`).
+    """
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     token = await login_with_guacamole()
     if not token:
@@ -357,7 +388,13 @@ async def modify_connection(machine_data: MachineDto):
         await logout_from_guacamole(token)
 
 async def listen_for_machine_changes():
-    conn = psycopg2.connect(user=DATABASE_USER, password=DATABASE_PASSWORD, 
+    """
+    Infinite background loop: LISTEN on the Postgres channel "machine_change"; when a NOTIFY
+    arrives, parse the payload into a MachineDto and call `modify_connection()` (Guacamole sync).
+    5-second poll interval; if no notification arrives it just logs and continues the loop.
+    Never returns (runs for the lifetime of the app, started as an asyncio background task).
+    """
+    conn = psycopg2.connect(user=DATABASE_USER, password=DATABASE_PASSWORD,
                             database=DATABASE_NAME, host=DATABASE_HOST, port=DATABASE_PORT)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
