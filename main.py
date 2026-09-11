@@ -31,6 +31,7 @@ from service.temporalResource.workers import workers_guacmole
 from service.temporalResource.workers import workers_ipmi
 from service.temporalResource.workers import workers_schedule
 from service.temporalResource.workers import workers_retentionPeriod
+from service.temporalResource.workers import workers_guacamole_retention
 from service.temporalResource.workers import workers_RBAC
 from service.temporalResource.workers import workers_ldap
 from service.temporalResource.workers import workers_llm_inference
@@ -52,6 +53,7 @@ from router.pod_storage_router import pod_storage_router
 from router.kubernetes_router import kubernetes_router
 from router.app_deploy_router import app_deploy_router
 from router.help_support_router import help_support_router
+from router.guacamole_retention_router import guacamole_retention_router
 from middleware.request_logger import RequestLoggerMiddleware
 from dotenv import load_dotenv
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -107,6 +109,7 @@ app.include_router(kubernetes_router)
 app.include_router(app_deploy_router)
 app.include_router(pod_storage_router)
 app.include_router(help_support_router)
+app.include_router(guacamole_retention_router)
 
 
 def start_async_worker(target):
@@ -167,10 +170,11 @@ def start_workers():
     )
     
     # 4. Reporting & Schedule (Guacamole, Retention)
-    start_thread_manager("Reporting", 
+    start_thread_manager("Reporting",
         workers_guacmole.run_all_guacamole_workers,
         workers_schedule.run_all_schedule_workers,
-        workers_retentionPeriod.run_all_retention_workers
+        workers_retentionPeriod.run_all_retention_workers,
+        workers_guacamole_retention.run_all_guacamole_retention_workers
     )
     
     # 5. Monitoring & System

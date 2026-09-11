@@ -62,16 +62,45 @@ def list_app_deployments(
     deployment_type: Optional[str] = Query(None, description="Filter: openwebui | vectordb"),
     db: Session = Depends(get_db),
 ):
+    """
+    App deployments list karo (openwebui/vectordb/postgresql), optionally
+    type se filter karke.
+
+    Response 200 — `data`:
+        {
+          "items": [ <deployment record>, ... ],
+          "pagination": {"page": int, "page_size": int, "total": int, "total_pages": int, "has_next": bool, "has_prev": bool}
+        }
+    Har `<deployment record>` mein: id, name, deployment_type, k8s_cluster_id,
+    namespace, status, service_url, external_ip, node_port, admin_email,
+    linked postgresql/vectordb ids, `linked_llms` (connected private-LLM
+    summaries), steps_log, timestamps.
+    """
     return app_deploy_controller.list_app_deployments(db, page, page_size, deployment_type)
 
 
 @app_deploy_router.get("/{deploy_id}", response_model=APIResponse[Any])
 def get_app_deployment(deploy_id: int, db: Session = Depends(get_db)):
+    """
+    Ek app deployment ki poori detail lo.
+
+    Response 200 — `data`: ek `<deployment record>` (dekho `list_app_deployments` docstring).
+    Errors: 404 agar deploy_id na mile.
+    """
     return app_deploy_controller.get_app_deployment(deploy_id, db)
 
 
 @app_deploy_router.delete("/{deploy_id}", response_model=APIResponse[Any])
 def delete_app_deployment(deploy_id: int, db: Session = Depends(get_db)):
+    """
+    App deployment delete karo — K8s resources (Deployment/Service/PVC) bhi
+    SSH ke through cluster se cleanup karne ki koshish karta hai, phir DB
+    record delete karta hai (K8s cleanup best-effort — fail ho to bhi DB
+    record delete hota hai, warning ke saath).
+
+    Response 200 — `data`: {"id": deploy_id, "k8s_cleaned": bool, "k8s_warning": str|None}
+    Errors: 404 agar deploy_id na mile.
+    """
     return app_deploy_controller.delete_app_deployment(deploy_id, db)
 
 

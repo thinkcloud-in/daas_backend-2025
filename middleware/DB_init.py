@@ -11,6 +11,7 @@ from models import task_models
 from models.llm_inference_model import Base as LLMInference_Base
 from models.app_deploy_model import Base as AppDeploy_Base
 from models.retention_model import Base as Retention_Base
+from models.guacamole_retention_model import Base as GuacamoleRetention_Base
 
 logger = logging.getLogger(__name__)
 
@@ -38,3 +39,4 @@ def create_tables():
     _safe_create(LLMInference_Base, "llm_inference")
     _safe_create(AppDeploy_Base,    "app_deploy")
     _safe_create(Retention_Base,    "retention")
+    _safe_create(GuacamoleRetention_Base, "guacamole_retention")

@@ -1,3 +1,9 @@
+"""
+Guacamole (remote-desktop gateway) admin/reporting/RBAC controller —
+router/guacamole_router.py ("/v1/guacamole") is par delegate karta hai.
+Actual Guacamole REST API / Keycloak Admin API calls
+service/gucamoleService.py mein hain.
+"""
 import base64
 import logging
 from dto.machineDto import MachineDto
@@ -12,29 +18,38 @@ from models.Rbac_models import RBAC
 
 logger = logging.getLogger(__name__)
 async def get_login():
+    """Guacamole service-account login karke auth token lo (internal use — cache/refresh)."""
     data = await service.login_with_guacamole()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)
 #testing..
 
 async def  list_of_users():
+    """Guacamole DB mein directly bane users list karo (Keycloak-sync se pehle ke legacy users). Used by: GET /v1/guacamole/list_guaca_users"""
     data = await service.list_of_users()
     return response_format.success_response(200, "All listed  Guacamole Users", data)
 
 
 
 async def list_of_kecloak_users(
-    first: int = Query(0, ge=0), 
-    limit: int = Query(10, ge=1), 
+    first: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1),
     search: str = Query("", max_length=100)
 ):
+    """
+    Keycloak users list karo (paginated, naam se search).
+
+    Used by: GET /v1/guacamole/list_users
+    Returns: success_response ke `data` mein [ {..Keycloak user..}, ... ]
+    (Keycloak Admin API shape as-is).
+    """
     db = SessionLocal()
     try:
         keycloak_users = await service.get_userList_from_keycloak(first, limit, search=search)
         if not isinstance(keycloak_users, list):
             keycloak_users = []
-        
+
         return response_format.success_response(200, "All listed Users", keycloak_users)
-        
+
     except Exception as e:
         return response_format.error_response(500, "Failed to list users", str(e))
     finally:
@@ -42,13 +57,15 @@ async def list_of_kecloak_users(
 
 
 async def list_machines():
+    """Guacamole mein configured saari RDP/SSH/VNC connections list karo. Used by: GET /v1/guacamole/list_connections"""
     data = await service.list_machines()
     return response_format.success_response(200, "Successfully authenticated with Guacamole", data)
 
 
-    
+
 #------------------------------------------------- pending not usiing these two methods-------------------------------
 async def updataeConnection(machine_data:MachineDto ):
+    """Guacamole connection settings update karo. Used by: POST /v1/guacamole/update_connection (⚠ currently unused/pending per original comment)."""
     try:
         data = await service.modify_connection(machine_data)
         return response_format.success_response(200, "Machine updated successfully", data)
@@ -57,6 +74,7 @@ async def updataeConnection(machine_data:MachineDto ):
 
 
 async def assign_connection_to_user(usernames:list[str], connection:str):
+    """Connection ko users se assign karo. Used by: PATCH /v1/guacamole/assign_connection_to_user (⚠ currently unused/pending per original comment)."""
     try:
         data = service.assign_connection_to_user(usernames,connection)
         return response_format.success_response(200, "Machine created successfully", data)
@@ -67,6 +85,7 @@ async def assign_connection_to_user(usernames:list[str], connection:str):
 #------------------------------------------------- pending not usiing these two methods -------------------------------
 
 def parse_datetime(date_str: str) -> datetime:
+    """Kai possible date-formats try karke string ko datetime mein parse karo. Raises ValueError agar koi format match na kare."""
     formats = ['%Y-%m-%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S', '%Y-%m-%d', '%d-%m-%Y %H:%M:%S',"%Y-%m-%d %H:%M:%S.%f"]
     for fmt in formats:
         try:
@@ -76,6 +95,12 @@ def parse_datetime(date_str: str) -> datetime:
     raise ValueError("Invalid date format")
 
 async def get_reports(start_date: str, end_date: str):
+    """
+    Diye gaye date-range ke saare session-reports lo (login/logout, duration).
+
+    Used by: GET /v1/guacamole/generate_reports/vamanit_session_reports/{start_date}/{end_date}
+    Errors: 400 (error_response) agar date format invalid ho.
+    """
     try:
         start_date_dt = parse_datetime(start_date)
         end_date_dt = parse_datetime(end_date)
@@ -89,6 +114,11 @@ async def get_reports(start_date: str, end_date: str):
 
 
 async def get_usernames_endpoint(start_date: str, end_date: str):
+    """
+    Date-range mein activity karne wale saare usernames ki list lo.
+
+    Used by: GET /v1/guacamole/generate_reports/vamanit_allusers/{start_date}/{end_date}
+    """
     try:
         start_date_dt = parse_datetime(start_date)
         end_date_dt = parse_datetime(end_date)
@@ -103,6 +133,11 @@ async def get_usernames_endpoint(start_date: str, end_date: str):
 
 
 async def get_perticular_user_sessionreports_endpoint(start_date: str, end_date: str, username: str):
+    """
+    Ek specific user ke session-reports lo, date-range ke liye.
+
+    Used by: GET /v1/guacamole/generate_reports/vamanit_session_reports/{start_date}/{end_date}/{username}
+    """
     try:
         start_date_dt = parse_datetime(start_date)
         end_date_dt = parse_datetime(end_date)
@@ -117,6 +152,11 @@ async def get_perticular_user_sessionreports_endpoint(start_date: str, end_date:
 
 
 async def get_day_reports(start_date: str, end_date: str):
+    """
+    Date-range ke andar day-wise summary report lo.
+
+    Used by: GET /v1/guacamole/generate_reports/day_reports/{start_date}/{end_date}
+    """
     try:
         start_date_dt = parse_datetime(start_date)
         end_date_dt = parse_datetime(end_date)
@@ -132,6 +172,11 @@ async def get_day_reports(start_date: str, end_date: str):
 
 
 async def get_daily_reports_of_each_user(start_date: str, end_date: str, username: str):
+    """
+    Ek user ka day-wise session report lo, date-range ke liye.
+
+    Used by: GET /v1/guacamole/generate_reports/day_reports/{start_date}/{end_date}/{username}
+    """
     try:
         start_date_dt = parse_datetime(start_date)
         end_date_dt = parse_datetime(end_date)
@@ -146,6 +191,7 @@ async def get_daily_reports_of_each_user(start_date: str, end_date: str, usernam
         return response_format.error_response(400, "Failed to retrieve user daily reports", str(e))
 
 async def fetch_companies():
+    """Reports pe branding ke liye saved companies (naam+logo) list karo. Used by: GET /v1/guacamole/reports"""
     try:
         data = await service.get_companies()
         return  response_format.success_response(200, "Companies retrieved successfully", data)
@@ -154,6 +200,7 @@ async def fetch_companies():
 
 
 async def read_companies_by_report_type(report_type: str ):
+    """Ek company ki saved report-config lo, report_type se. Used by: GET /v1/guacamole/generate_reports/{report_type}"""
     try:
         data = await service.get_companies_by_report_type(report_type)
         return response_format.success_response(200, "Companies retrieved successfully", data)
@@ -166,6 +213,15 @@ async def update_company(
     company_logo,
     report_type,
 ):
+    """
+    Company branding (naam+logo) create/update karo, report_type ke liye
+    (existing report_type ho to update, nahi to naya insert).
+
+    Used by: POST /v1/guacamole/reports/update_report
+    Args: company_logo — UploadFile (jpeg/jpg/png/svg, max 2MB) ya already-base64 string.
+    Returns: success_response(200, ..., None) — data hamesha null.
+    Errors: 400 invalid file type/too large, 500 unexpected error.
+    """
     MAX_LOGO_SIZE = 2 * 1024 * 1024  # 10MB
     ALLOWED_CONTENT_TYPES = ["image/jpeg", "image/jpg", "image/png", "image/svg+xml"]
     try:
@@ -206,6 +262,7 @@ async def update_company(
 
 
 async def delete_company_data(report_name: str ):
+    """Company branding record delete karo. Used by: DELETE /v1/guacamole/delete_company/{report_name}. Errors: 404 agar na mile."""
     try:
         await service.delete_report(report_name)
         return response_format.success_response(200, "Company deleted successfully", None)
@@ -216,19 +273,21 @@ async def delete_company_data(report_name: str ):
 
 
 async def get_users_total_duration_within_timerange_endpoint(start_date: str, end_date: str):
+    """Date-range mein saare users ki total connected-duration (sum) lo. Used by: GET /v1/guacamole/generate_reports/total_durations_within_range/{start_date}/{end_date}"""
     start_date_dt = parse_datetime(start_date)
     end_date_dt = parse_datetime(end_date)
     try:
         session_reports = await service.get_session_reports(start_date_dt, end_date_dt)
         daily_reports = await service.get_daily_reports(session_reports)
         data = await service.get_users_total_duration_within_timerange(daily_reports)
-      
+
         return response_format.success_response(200, "User total durations retrieved successfully", data)
     except Exception as error:
         return response_format.error_response(500, "Internal server error", str(error))
 
 
 async def get_perticular_users_total_duration_within_timerange_endpoint(start_date: str, end_date: str,user: str):
+    """Ek user ki total connected-duration lo, date-range ke liye. Used by: GET /v1/guacamole/generate_reports/total_durations_within_range/{start_date}/{end_date}/{user}"""
     start_date_dt = parse_datetime(start_date)
     end_date_dt = parse_datetime(end_date)
     try:
@@ -236,13 +295,19 @@ async def get_perticular_users_total_duration_within_timerange_endpoint(start_da
         daily_reports = await service.get_daily_reports(session_reports)
         user_total_duration =await service.get_users_total_duration_within_timerange(daily_reports)
         consolidat_user= await service.consolidate_report_perticular_user(user_total_duration,user)
-       
+
         return response_format.success_response(200, "User total durations retrieved successfully", consolidat_user)
     except Exception as error:
         return response_format.error_response(500, "Internal server error", str(error))
 
 
 async def generate_pdf_report(start_date: str, end_date: str, report_type: str):
+    """
+    Saare users ka PDF report generate karo (base64-encoded).
+
+    Used by: POST /v1/guacamole/generate_report/{start_date}/{end_date}/{report_type}
+    Returns: success_response ke `data` mein {"pdf_data": str}  (base64 PDF bytes).
+    """
 
     start_date_dt = parse_datetime(start_date)
     end_date_dt = parse_datetime(end_date)
@@ -263,9 +328,15 @@ async def generate_pdf_report(start_date: str, end_date: str, report_type: str):
 
 async def generate_pdf_report_by_username(start_date: str, end_date: str, report_type: str,username: str):
     """
-    API Endpoint to generate a PDF session report.
+    Ek user ka PDF report generate karo (base64-encoded).
+
+    Used by: POST /v1/guacamole/generate_report/{start_date}/{end_date}/{report_type}/{username}
+    Returns: success_response ke `data` mein {"pdf_data": str}.
+    NOTE: `username` abhi is function ke andar kahin use nahi ho raha —
+    `service.generate_report()` ko pass hi nahi hota (poore-users wala report
+    hi generate hota hai) — router-level ek known limitation hai.
     """
-   
+
     start_date_dt = parse_datetime(start_date)
     end_date_dt = parse_datetime(end_date)
     try:
@@ -280,20 +351,29 @@ async def generate_pdf_report_by_username(start_date: str, end_date: str, report
             {"pdf_data": encoded_pdf}
         )
     except Exception as e:
-        return response_format.error_response(500, "Failed to generate PDF report", str(e)) 
+        return response_format.error_response(500, "Failed to generate PDF report", str(e))
 
-    
+
 
 async def  get_client_id():
+    """Keycloak me is app ke OAuth client ka internal ID lo. Used by: GET /v1/guacamole/get_client_id"""
     try:
-        data = await service.get_client() 
-         
+        data = await service.get_client()
+
         return response_format.success_response(200, "Client ID retrieved successfully", data)
     except Exception as e:
         raise response_format.error_response(500, "Failed to retrieve client ID", str(e))
 
 
 async def get_client_roles(request):
+    """
+    Keycloak client roles + local `rbac_table` roles ka union list karo
+    (system default roles jaise "uma_authorization"/"offline_access"/
+    "default-roles-*" exclude hoti hain).
+
+    Used by: GET /v1/guacamole/get_client_roles
+    Returns: success_response ke `data` mein [str, ...] (role names).
+    """
     db = SessionLocal()
     try:
         keycloak_roles = []
@@ -302,9 +382,9 @@ async def get_client_roles(request):
             keycloak_data = await service.get_keycloak_roles()
             if keycloak_data:
                 ignored_roles = {"uma_authorization", "offline_access"}
-                
+
                 keycloak_roles = [
-                    role.get("name") for role in keycloak_data 
+                    role.get("name") for role in keycloak_data
                     if isinstance(role, dict) and role.get("name")
                     and role.get("name") not in ignored_roles
                     and not role.get("name").startswith("default-roles-")
@@ -314,14 +394,14 @@ async def get_client_roles(request):
 
         db_roles = db.query(RBAC.role).all()
         role_list = [role[0] for role in db_roles]
-        
+
         try:
             keycloak_data = await service.get_client_roles()
             keycloak_roles = [role["name"] for role in keycloak_data]
             role_list = list(set(role_list + keycloak_roles))
         except Exception as e:
             logger.warning(f"Failed to fetch roles from Keycloak: {e}")
-        
+
         return response_format.success_response(200, "Role names retrieved successfully", role_list)
     except Exception as e:
         return response_format.error_response(500, "Failed to retrieve roles", str(e))
@@ -330,14 +410,16 @@ async def get_client_roles(request):
 
 
 async def post_role(role_name: str, authorization: str):
+    """Naya role banao — Keycloak client-role + local rbac_table dono mein sync. Used by: POST /v1/guacamole/post_role/{role_name}"""
     try:
         data = await service.posting_role(role_name, authorization)
         return response_format.success_response(201, "Role created successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to create role", str(e))
-    
+
 
 async def delete_role(role_name: str, authorization: str):
+    """Role delete karo — Keycloak + local DB dono se. Used by: DELETE /v1/guacamole/delete_role/{role_name}"""
     try:
         data = await service.deleting_role(role_name, authorization)
         return response_format.success_response(200, "Role deleted successfully", data)
@@ -347,6 +429,7 @@ async def delete_role(role_name: str, authorization: str):
 
 
 async def submit_role_components(request, authorization):
+    """Role ko sidebar/UI components (permissions) assign karo. Used by: POST /v1/guacamole/submit_role_components"""
     try:
         data = await service.updating_role_component(request, authorization)
         return response_format.success_response(200, "Role components submitted successfully", data)
@@ -356,6 +439,7 @@ async def submit_role_components(request, authorization):
 
 
 async def get_role_components(role: str):
+    """Role ko assigned components list karo. Used by: GET /v1/guacamole/get_role_components/{role}"""
     try:
         data = await service.getting_role_component(role)
         return response_format.success_response(200, "Role components retrieved successfully", data)
@@ -365,6 +449,7 @@ async def get_role_components(role: str):
 
 
 async def assign_user_role(request):
+    """User(s) ko role assign karo — Keycloak + local DB. Used by: POST /v1/guacamole/assign_user_role. Response `data` hamesha None (sirf msg matter karta hai)."""
     try:
         result = await service.assignning_user_role(request)
         if result.get("status") == "Error" or result.get("status_code"):
@@ -378,6 +463,13 @@ async def assign_user_role(request):
 
 
 async def get_user_permissions(request, username: str):
+    """
+    User ke roles + combined components (permissions) lo — sidebar/menu
+    render karne ke liye frontend yehi call karta hai.
+
+    Used by: GET /v1/guacamole/get_user_permissions/{username}
+    Returns: success_response ke `data` mein {"components": [str, ...], "roles": [str, ...]}
+    """
     try:
         data = await service.get_user_permissions(request, username)
         filtered_data = {
@@ -391,12 +483,14 @@ async def get_user_permissions(request, username: str):
 
 
 async def remove_role_from_user(request):
+    """User se role remove karo. Used by: DELETE /v1/guacamole/remove_role_from_user. Response `data` hamesha None."""
     data = await service.delete_role_from_user(request)
     return response_format.success_response(200, data['msg'])
 
 
 
 async def get_guacamole_history():
+    """Saare Guacamole connection-history records list karo. Used by: GET /v1/guacamole/guacamole_history"""
     try:
         data = await service.get_guacamole_history()
         return response_format.success_response(200, "Guacamole history retrieved successfully", data)
@@ -405,6 +499,7 @@ async def get_guacamole_history():
 
 
 async def get_guacamole_active_sessions():
+    """Abhi-active Guacamole sessions list karo. Used by: GET /v1/guacamole/guacamole_ActiveSessions"""
     try:
         data = await service.get_guacamole_ActiveSessions()
         return response_format.success_response(200, "Guacamole active sessions retrieved successfully", data)
@@ -416,6 +511,17 @@ async def guacamole_join_session(
     session_id: str = Query(...),
     datasource: str = Query(None)
 ):
+    """
+    Admin ke liye ek active session mein "shadow/join" karne ka access-info lo.
+
+    Used by: GET /v1/guacamole/guacamole_join_session
+    ⚠ Router (`guacamole_router.py`) is function ko koi params pass kiye
+    bina call karta hai (`return await guacamole_controller.guacamole_join_session()`)
+    — is module-level function ke apne `Query(...)` defaults tabhi kaam
+    karte jab yeh khud FastAPI route hota. Jaisa abhi wired hai, `session_id`
+    ek `Query` object hi rahega, actual query-string value nahi — yeh endpoint
+    abhi TOOTA hua lag raha hai. Documentation-only pass hai, fix nahi kiya.
+    """
     try:
         data = await service.generate_guacamole_session_url(session_id, datasource)
         return response_format.success_response(200, "Guacamole session URL generated successfully", data)
@@ -424,10 +530,9 @@ async def guacamole_join_session(
 
 
 async def get_recording_log(identifier: str, logUuid: str):
+    """Ek session-recording ka playback log fetch karo. Used by: GET /v1/guacamole/api/recording/{identifier}/{logUuid}"""
     try:
         data = await service.get_recording_log(identifier, logUuid)
         return response_format.success_response(200, "Recording log retrieved successfully", data)
     except Exception as e:
         return response_format.error_response(500, "Failed to retrieve recording log", str(e))
-
-           

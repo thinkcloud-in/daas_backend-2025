@@ -1,3 +1,15 @@
+"""
+LXC-restore + unified "deployments" controller.
+
+Do cheezein karta hai:
+1. LXC restore jobs: library_router.py ("/v1/library") ke `/deploy` endpoint
+   (deployment_type="lxc") se yahan aata hai — Library backup ko Proxmox LXC
+   container ke roop mein restore karta hai (Temporal workflow).
+2. Unified deployment list/detail/delete: LXC restore jobs AUR Kubernetes
+   Harbor deployments (controllers/kubernetes_controller.py) dono ko ek hi
+   "deployments" view mein merge karta hai — library_router.py ke
+   `/deployments*` static routes isko call karte hain.
+"""
 import logging
 import os
 import uuid
@@ -27,6 +39,7 @@ _USERNAME_KEY = SearchAttributeKey.for_keyword("UserName")
 
 
 def _make_search_attrs(entity: str, action: str, username: str = "system") -> TypedSearchAttributes:
+    """Temporal workflow ke liye Entity/Action/UserName search-attributes banao (Temporal UI mein filter/search ke liye)."""
     return TypedSearchAttributes([
         SearchAttributePair(_ENTITY_KEY,   entity),
         SearchAttributePair(_ACTION_KEY,   action),
@@ -35,6 +48,7 @@ def _make_search_attrs(entity: str, action: str, username: str = "system") -> Ty
 
 
 def _job_to_dict(r: LXCRestoreJob) -> dict:
+    """LXCRestoreJob ORM row ko plain dict mein convert karo (API response ke liye)."""
     return {
         "id":               r.id,
         "name":             r.name,
@@ -53,6 +67,20 @@ def _job_to_dict(r: LXCRestoreJob) -> dict:
 
 
 async def create_lxc_restore_job(data: LXCRestoreCreate, db: Session):
+    """
+    Library backup (LXC template) ko Proxmox pe naye LXC container ke roop
+    mein restore karo — cluster + template + ek free IP validate/reserve
+    karke, DB record turant "provisioning" status pe bana ke, phir Temporal
+    workflow (LXCRestoreWorkflow) start karta hai (bridge/SSH-creds env se,
+    user input se nahi — security).
+
+    Used by: POST /v1/library/{item_id}/deploy (deployment_type="lxc", via
+    library_controller.deploy_library_item → _deploy_library_lxc)
+    Args: data = LXCRestoreCreate (name, cluster, template_id, ip_pool, storage).
+    Returns: success_response(201) ke `data` mein job record + `template_name`.
+    Errors: 404 cluster/template/ip_pool na mile, 409 template ready na ho,
+    400 pool mein free IP na ho.
+    """
     try:
         # Validate cluster
         cluster = db.query(Cluster).filter(Cluster.name == data.cluster).first()
@@ -140,6 +168,16 @@ async def create_lxc_restore_job(data: LXCRestoreCreate, db: Session):
 
 
 def list_lxc_restore_jobs(db: Session, page: int = 1, page_size: int = 10):
+    """
+    Saare deployments (LXC restore jobs + Kubernetes Harbor deployments)
+    ek hi merged, paginated list mein lo — dono types ko `created_at` se
+    sort karke saath dikhaya jaata hai.
+
+    Used by: GET /v1/library/deployments
+    Returns: success_response ke `data` mein
+        {"items": [ {...job/deploy fields..., "deployment_type": "lxc"|"kubernetes", "template_name": str|None}, ... ],
+         "pagination": {page, page_size, total, total_pages, has_next, has_prev}}
+    """
     try:
         from models.kubernetes_deploy_model import KubernetesDeployment
         from controllers.kubernetes_controller import _deploy_to_dict
@@ -204,6 +242,12 @@ def get_lxc_restore_job(job_id: int, db: Session, deployment_type: str | None = 
     """
     LXC ya Kubernetes deployment detail fetch karo.
     deployment_type='lxc' ya 'kubernetes' — dono nahi diya to LXC pehle check hoga.
+
+    Used by: GET /v1/library/deployments/{job_id}
+    Returns: success_response ke `data` mein deployment record +
+    "deployment_type", "template_name/version/type", "cluster_name" (aur
+    kubernetes ke liye "cluster_ip" bhi).
+    Errors: 404 agar job_id (given type ke saath) kahin na mile.
     """
     try:
         # ── LXC ──────────────────────────────────────────────────────────────
@@ -251,8 +295,13 @@ def get_lxc_restore_job(job_id: int, db: Session, deployment_type: str | None = 
 
 def delete_deployment(job_id: int, db: Session):
     """
-    LXC ya Kubernetes deployment DB se delete karo.
+    LXC ya Kubernetes deployment DB se delete karo (sirf tracking record —
+    actual deployed resource ko touch nahi karta).
     Pehle lxc_restore_jobs check karo, nahi mila to kubernetes_deployments.
+
+    Used by: DELETE /v1/library/deployments/{job_id}
+    Returns: success_response ke `data` mein {"id": job_id, "type": "lxc"|"kubernetes"}
+    Errors: 404 agar job_id kahin na mile.
     """
     try:
         from models.kubernetes_deploy_model import KubernetesDeployment
