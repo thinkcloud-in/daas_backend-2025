@@ -168,20 +168,12 @@ spec:
               value: /library/harbor/push_artifacts
             - name: PUSH_IMAGE_BASE_URL
               value: https://$(DAAS_HOST)/push-image
-            - name: GUACAMOLE_RETENTION_API_BASE_URL
-              value: https://$(DAAS_HOST)/push-image
-            - name: LLM_VM_SSH_USER
-              valueFrom:
-                secretKeyRef:
-                  name: devraq-backend-secret
-                  key: llm-vm-ssh-user
-            - name: LLM_VM_SSH_PASS
-              valueFrom:
-                secretKeyRef:
-                  name: devraq-backend-secret
-                  key: llm-vm-ssh-pass
             - name: TELEGRAF_CONF_FILE # for linux metrics
               value: /etc/telegraf/telegraf.conf
+            - name: ARTIFACTS_CONTROLLER_URL
+              value: https://$(DAAS_HOST)/push-image
+            - name: LIBRARY_BASE_PATH
+              value: /library
           volumeMounts:
             - name: library-storage
               mountPath: /library

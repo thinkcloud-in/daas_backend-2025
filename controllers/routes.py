@@ -141,6 +141,11 @@ async def get_proxmox_storages(payload: models.NodeRequest, db: Session = Depend
     res = await controller.get_proxmox_storages(payload, db)
     return response_format.success_response(200, "Proxmox Storages retrieved successfully.", res)
 
+@router.post('/get_proxmox_networks', response_model=APIResponse)
+async def get_proxmox_networks(payload: models.NodeRequest, db: Session = Depends(get_db)):
+    res = await controller.get_proxmox_networks(payload, db)
+    return response_format.success_response(200, "Proxmox Networks retrieved successfully.", res)
+
 @router.post('/create_pool', response_model=APIResponse)
 async def create_pool_endpoint(pool_data: models.CreatePoolBase, db: Session = Depends(get_db)):
     """

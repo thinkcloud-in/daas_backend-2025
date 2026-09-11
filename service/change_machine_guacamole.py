@@ -357,39 +357,45 @@ async def modify_connection(machine_data: MachineDto):
         await logout_from_guacamole(token)
 
 async def listen_for_machine_changes():
-    conn = psycopg2.connect(user=DATABASE_USER, password=DATABASE_PASSWORD, 
+    conn = psycopg2.connect(user=DATABASE_USER, password=DATABASE_PASSWORD,
                             database=DATABASE_NAME, host=DATABASE_HOST, port=DATABASE_PORT)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
-    
-    cur.execute("LISTEN machine_change;")
 
+    try:
+        cur.execute("LISTEN machine_change;")
 
-    while True:
-        # Wait for notifications
-        if select.select([conn], [], [], 5) == ([], [], []):
-            logger.info("No notification received.")
-        else:
-            conn.poll()
-            while conn.notifies:
-                notify = conn.notifies.pop(0)
-                logger.info("Notification received:")
+        while True:
+            # Wait for notifications
+            if select.select([conn], [], [], 5) == ([], [], []):
+                logger.info("No notification received.")
+            else:
+                conn.poll()
+                while conn.notifies:
+                    notify = conn.notifies.pop(0)
+                    logger.info("Notification received:")
 
-                if not notify.payload:
-                    logger.warning("Received empty payload, skipping...")
-                    continue
-                
-                try:
-                    machine_data = json.loads(notify.payload)
-                    logger.info("Machine data: %s", machine_data)
-                    # Convert dict to MachineDto if needed by return_payload
-                    from dto.machineDto import MachineDto
-                    dto = MachineDto(**machine_data)
-                    await modify_connection(dto)
-                except Exception as e:
-                    logger.error("Failed to process notification: %s, payload: %s", str(e), notify.payload)
+                    if not notify.payload:
+                        logger.warning("Received empty payload, skipping...")
+                        continue
 
-        await asyncio.sleep(1)
+                    try:
+                        machine_data = json.loads(notify.payload)
+                        logger.info("Machine data: %s", machine_data)
+                        # Convert dict to MachineDto if needed by return_payload
+                        from dto.machineDto import MachineDto
+                        dto = MachineDto(**machine_data)
+                        await modify_connection(dto)
+                    except Exception as e:
+                        logger.error("Failed to process notification: %s, payload: %s", str(e), notify.payload)
+
+            await asyncio.sleep(1)
+    except asyncio.CancelledError:
+        logger.info("Machine change listener cancelled, shutting down.")
+        raise
+    finally:
+        cur.close()
+        conn.close()
 
 
 
