@@ -184,6 +184,8 @@ spec:
               value: https://$(DAAS_HOST)/push-image
             - name: LIBRARY_BASE_PATH
               value: /library
+            - name: GRAFANA_URL
+              value: https://$(DAAS_HOST)/grafana
           volumeMounts:
             - name: library-storage
               mountPath: /library
