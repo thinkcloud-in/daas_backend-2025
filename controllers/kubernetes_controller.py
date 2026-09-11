@@ -1,3 +1,17 @@
+"""
+Kubernetes cluster controller — router/kubernetes_router.py
+("/v1/kubernetes/clusters") delegates to this. There are two things in
+this file:
+
+1. Cluster CRUD + live dashboard data — this codebase uses no Python K8s
+   client library; all calls go straight to the raw K8s REST API
+   (`requests`), authenticating with whichever of kubeconfig/token/cert/
+   basic-auth is available (`_build_request_kwargs`). `_fetch_all_cluster_data`
+   + helpers parse the raw API responses into a dashboard-friendly shape
+   (CPU/memory human-readable, uptime strings, system-component health, etc.).
+2. Harbor-on-K8s deployment — deploying a Library item (a Harbor offline-install
+   zip) to a K8s cluster, via a Temporal workflow (K8sHarborDeployWorkflow).
+"""
 import asyncio
 import base64
 import datetime
@@ -57,6 +71,7 @@ def _parse_memory(mem_str: str) -> str:
 
 
 def _bytes_to_human(b: int) -> str:
+    """Convert a bytes int into a human-readable string ("0 MB"/"7.7 GB"/"512 MB"/"3 KB")."""
     if b == 0:
         return "0 MB"
     if b >= 1024**3:
@@ -137,6 +152,7 @@ def _build_request_kwargs(control_ip: str, port: int,
 
 
 def _cleanup(cert_files: list):
+    """Delete the temp cert/key files created by `_build_request_kwargs()` (best-effort)."""
     for p in cert_files:
         try:
             os.unlink(p)
@@ -149,6 +165,13 @@ def _cleanup(cert_files: list):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _to_dict(c: KubernetesCluster) -> dict:
+    """
+    Convert a KubernetesCluster ORM row into an API-safe dict.
+    The `password` field is never included here; `auth_token`/`kubeconfig` are
+    masked with "***" (or None) — raw secrets never go into the response (this
+    controller is already safe from the credential-leak issues seen in
+    Cluster/Pool/IPMI).
+    """
     return {
         "id":             c.id,
         "name":           c.name,
@@ -170,6 +193,12 @@ def _to_dict(c: KubernetesCluster) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_kubeconfig_info(kubeconfig: str) -> dict:
+    """
+    Auto-derive control_ip + port from a kubeconfig YAML (from the server URL) —
+    to auto-fill the add/update cluster form when the user pastes a kubeconfig
+    directly. control_ip is only set when the server host is a literal IP (if it
+    is a hostname it stays None — the user has to give the IP manually).
+    """
     result = {"control_ip": None, "port": 6443}
     try:
         import yaml, ipaddress
@@ -225,7 +254,7 @@ _COMP_TYPE_MAP = {
     "ingress-nginx":           "DaemonSet",
 }
 
-# Label keys se canonical component name match karo
+# Match label keys to a canonical component name
 _LABEL_TO_COMP = {
     "calico-node":             "calico-node",
     "calico-kube-controllers": "calico-kube-controllers",
@@ -248,6 +277,7 @@ _LABEL_TO_COMP = {
 
 
 def _component_health_detail(name: str, ready: int, total: int) -> str:
+    """Build a component-specific human-readable health message (different wording for apiserver/etcd/coredns/calico/etc.)."""
     ok = ready == total and total > 0
     if "apiserver" in name:
         return ("API Server responds normally. Authentication and authorization active."
@@ -288,7 +318,7 @@ def _component_health_detail(name: str, ready: int, total: int) -> str:
 
 def _match_component(pod_name: str, labels: dict, namespace: str) -> str | None:
     """
-    Pod ko 3 strategies se component name match karo:
+    Match a pod to a component name using 3 strategies:
     1. Pod name prefix
     2. Common label values (k8s-app, app, component, app.kubernetes.io/name)
     3. Namespace-based heuristic (calico-system, tigera-operator, etc.)
@@ -334,8 +364,8 @@ def _match_component(pod_name: str, labels: dict, namespace: str) -> str | None:
 
 def _build_pods_list(pods_raw: list) -> list:
     """
-    kubectl get pods --all-namespaces jaisa output — har namespace ke saare pods.
-    Status: container-level status (CrashLoopBackOff etc.) dikhata hai, pod phase nahi.
+    Output like `kubectl get pods --all-namespaces` — all pods in every namespace.
+    Status: shows the container-level status (CrashLoopBackOff etc.), not the pod phase.
     """
     result = []
     for pod in pods_raw:
@@ -392,6 +422,13 @@ def _build_pods_list(pods_raw: list) -> list:
 
 
 def _extract_system_components(all_pods: list) -> list:
+    """
+    Group all pods into core K8s components (apiserver/etcd/coredns/CNI/etc.)
+    via `_match_component()`, aggregating each one's ready/total count into a
+    Healthy/Degraded/Unhealthy status. Returns: [ {name, namespace, type,
+    status, ready_replicas, total_replicas, health_details}, ... ] — in
+    `_COMP_ORDER` sequence.
+    """
     comp_data: dict = {}
 
     for pod in all_pods:
@@ -488,7 +525,7 @@ def _fetch_all_cluster_data(cluster: KubernetesCluster) -> dict:
 
         # ── Pod aggregation ─────────────────────────────────────────────────
         # Total = all pods (Running + Pending + Succeeded + Failed)
-        # Running = sirf phase=Running wale (per-node count ke liye bhi)
+        # Running = only those with phase=Running (also for the per-node count)
         total_pods_cluster = len(pods_raw)
         running_pods_total = 0
         pending_pods_total = 0
@@ -657,6 +694,16 @@ def _fetch_all_cluster_data(cluster: KubernetesCluster) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _run_k8s_test(payload: dict) -> dict:
+    """
+    Blocking connectivity test — hit K8s `/healthz`, and also (best-effort)
+    pull `/version` and the node count.
+
+    Used by: test_k8s_connection_direct, add_k8s_cluster, update_k8s_cluster,
+    test_k8s_cluster (called via `asyncio.to_thread`, so it does not block the
+    event loop despite being blocking).
+    Returns: {"status": "connected", "message", "server", "version", "node_count"}
+    or {"status": "failed", "error": str}.
+    """
     control_ip = payload["control_ip"]
     port       = payload.get("port", 6443)
 
@@ -713,6 +760,15 @@ def _run_k8s_test(payload: dict) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def test_k8s_connection_direct(body: dict) -> dict:
+    """
+    Test the cluster connection without saving to the DB (if control_ip is not
+    given, it is derived from the kubeconfig).
+
+    Used by: POST /v1/kubernetes/clusters/test
+    Returns: success_response(200) `data`={..test-result..} if connected,
+    otherwise error_response(400) `data`={..test-result..}.
+    Errors: 400 if control_ip is not given and cannot be derived from the kubeconfig either.
+    """
     control_ip = body.get("control_ip")
     port       = body.get("port") or 6443
 
@@ -740,6 +796,15 @@ async def test_k8s_connection_direct(body: dict) -> dict:
 
 
 async def add_k8s_cluster(body: dict, db: Session) -> dict:
+    """
+    Add a new K8s cluster — run a connection test first, and only then save to
+    the DB (name-uniqueness is also checked).
+
+    Used by: POST /v1/kubernetes/clusters
+    Returns: success_response(201) `data`={..`_to_dict()` cluster.., "test_result": {...}}
+    or error_response(400) if the test fails (no record is saved).
+    Errors: 400 for a missing control_ip, 409 if the name already exists.
+    """
     control_ip = body.get("control_ip")
     port       = body.get("port") or 6443
 
@@ -795,6 +860,17 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
 
 
 async def update_k8s_cluster(cluster_id: int, body: dict, db: Session) -> dict:
+    """
+    Update the cluster credentials/settings + re-test. Masked sentinel values
+    ("***" or "") for `kubeconfig`/`auth_token` are ignored (so copy-pasting
+    from the GET response leaves the existing value untouched).
+
+    Used by: PUT /v1/kubernetes/clusters/{cluster_id}
+    Returns: success_response(200) if the re-test is connected, otherwise
+    error_response(400) — in both cases `data`={..updated cluster.., "test_result": {...}}
+    (the update is already saved to the DB even if the test fails).
+    Errors: 404 if cluster_id is not found.
+    """
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
@@ -839,6 +915,13 @@ async def update_k8s_cluster(cluster_id: int, body: dict, db: Session) -> dict:
 
 
 async def test_k8s_cluster(cluster_id: int, db: Session) -> dict:
+    """
+    Re-test the connection of an already-saved cluster (updates DB status/last_tested).
+
+    Used by: POST /v1/kubernetes/clusters/{cluster_id}/test
+    Returns: success_response(200)/error_response(400) `data`={..test-result.., "cluster_id"}.
+    Errors: 404 if cluster_id is not found.
+    """
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
@@ -863,6 +946,13 @@ async def test_k8s_cluster(cluster_id: int, db: Session) -> dict:
 
 
 def list_k8s_clusters(db: Session, page: int = 1, page_size: int = 10) -> dict:
+    """
+    List all saved K8s clusters (paginated).
+
+    Used by: GET /v1/kubernetes/clusters
+    Returns: success_response with, in `data`, {"total", "page", "page_size",
+    "total_pages", "has_next", "has_prev", "clusters": [ {..`_to_dict()`..}, ... ]}
+    """
     total    = db.query(KubernetesCluster).count()
     offset   = (page - 1) * page_size
     clusters = (
@@ -885,6 +975,17 @@ def list_k8s_clusters(db: Session, page: int = 1, page_size: int = 10) -> dict:
 
 
 async def get_k8s_cluster(cluster_id: int, db: Session) -> dict:
+    """
+    Get the cluster detail + live dashboard data (nodes, system-components,
+    cluster-summary) — via `_fetch_all_cluster_data()`.
+
+    Used by: GET /v1/kubernetes/clusters/{cluster_id}
+    Returns: success_response(200) `data`={..`_to_dict()` cluster..,
+    "cluster_summary", "nodes", "system_components", "all_pods"}. Even if the
+    live fetch fails it still returns 200 — those 3 keys carry {"error": str}
+    and the cluster record stays intact.
+    Errors: 404 if cluster_id is not found.
+    """
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
@@ -903,6 +1004,12 @@ async def get_k8s_cluster(cluster_id: int, db: Session) -> dict:
 
 
 def delete_k8s_cluster(cluster_id: int, db: Session) -> dict:
+    """
+    Delete the cluster record from the DB (does not touch the actual K8s cluster).
+
+    Used by: DELETE /v1/kubernetes/clusters/{cluster_id}
+    Errors: 404 if cluster_id is not found.
+    """
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
@@ -916,6 +1023,22 @@ def delete_k8s_cluster(cluster_id: int, db: Session) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict:
+    """
+    Deploy a Library item (a Harbor offline-install zip) onto a K8s cluster
+    — create the DB record in "pending" status immediately, then start
+    K8sHarborDeployWorkflow (Temporal) which does the actual SSH-transfer +
+    extract + Harbor-install + readiness-wait (async).
+
+    Used by: POST /v1/kubernetes/clusters/{cluster_id}/deployments
+    Args: body = {"library_item_id", "name", "namespace"="harbor", "http_port"=80}.
+    Returns: success_response(201) with, in `data`, {"deploy_id", "cluster_id",
+    "name", "node_ip", "namespace", "status": "deploying", "workflow_id",
+    "harbor_url": null, "message"}. Poll GET .../deployments/{deploy_id}
+    for status/harbor_url.
+    Errors: 404 if cluster_id/library_item_id is not found, 400 if the cluster
+    has no kubeconfig set or the library item is not in "ready" status, 500 if
+    the workflow fails to start (the deployment record is marked "failed").
+    """
     from models.kubernetes_deploy_model import KubernetesDeployment
     from models.library_model import LibraryItem
     from service.temporalResource.workers.workers_kubernetes_deploy import TASK_QUEUE
@@ -923,12 +1046,12 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
     from utils.temporal_client import TemporalClientManager
     from temporalio.common import SearchAttributeKey, SearchAttributePair, TypedSearchAttributes
 
-    # ── Cluster DB se fetch karo ─────────────────────────────────────────────
+    # ── Fetch the cluster from the DB ────────────────────────────────────────
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
 
-    # kubeconfig hona chahiye — SSH nahi, K8s API use hota hai
+    # a kubeconfig is required — this uses the K8s API, not SSH
     if not cluster.kubeconfig:
         raise HTTPException(
             status_code=400,
@@ -1019,6 +1142,13 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
 
 
 def get_k8s_deployment(cluster_id: int, deploy_id: int, db: Session) -> dict:
+    """
+    Get a Harbor-on-K8s deployment's status + harbor_url (for polling).
+
+    Used by: GET /v1/kubernetes/clusters/{cluster_id}/deployments/{deploy_id}
+    Returns: success_response with a `_deploy_to_dict()` record in `data`.
+    Errors: 404 if deploy_id (with this cluster_id) is not found.
+    """
     from models.kubernetes_deploy_model import KubernetesDeployment
     d = db.query(KubernetesDeployment).filter(
         KubernetesDeployment.id         == deploy_id,
@@ -1030,6 +1160,14 @@ def get_k8s_deployment(cluster_id: int, deploy_id: int, db: Session) -> dict:
 
 
 def list_k8s_deployments(cluster_id: int, db: Session) -> dict:
+    """
+    List all of a cluster's Harbor-on-K8s deployments.
+
+    Used by: GET /v1/kubernetes/clusters/{cluster_id}/deployments
+    Returns: success_response with [ {..`_deploy_to_dict()`..}, ... ] in `data`
+    (note: this is a plain list, not a {"items":[...],"pagination":{...}}
+    wrapper like `list_k8s_clusters` — there is no pagination).
+    """
     from models.kubernetes_deploy_model import KubernetesDeployment
     deployments = (
         db.query(KubernetesDeployment)
@@ -1055,6 +1193,13 @@ _DEPLOY_PROGRESS = {
 
 
 def _deploy_to_dict(d) -> dict:
+    """
+    Convert a KubernetesDeployment ORM row into an API dict — also maps
+    `status` via `_DEPLOY_PROGRESS` into a step/label/pct progress object (for
+    the Deploy-progress UI), and parses `steps_log` (a JSON string).
+    `controllers/routes.py`'s `_enrich_k8s_deploy()` conceptually mirrors this
+    function (for Temporal workflow-monitoring).
+    """
     import json as _json
 
     progress = _DEPLOY_PROGRESS.get(

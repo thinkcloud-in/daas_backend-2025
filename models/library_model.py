@@ -25,7 +25,7 @@ TYPE_SUBDIR = {
     "podman":          "podman",
     "devraq_agent":    "general",
     "general":         "general",
-    "postgresql":      "container",   # container subdir use karo
+    "postgresql":      "container",   # use the container subdir
 }
 
 # All directories present in the pod
@@ -45,7 +45,7 @@ class LibraryItem(Base):
     progress_pct = Column(Integer, nullable=False, default=0)          # 0-100
     status       = Column(String, nullable=False, default="uploading") # uploading | ready | failed
     workflow_id  = Column(String, nullable=True)
-    # Harbor push fields (optional — sirf openwebui/vectordb/llm_model ke liye)
+    # Harbor push fields (optional — only for openwebui/vectordb/llm_model)
     harbor_registry_id = Column(Integer, nullable=True)  # kubernetes_deployments.id (harbor instance)
     k8s_cluster_id     = Column(Integer, nullable=True)  # derived from harbor_registry — legacy
     harbor_url         = Column(String, nullable=True)   # http://172.16.4.41:80
@@ -57,7 +57,7 @@ class LibraryItem(Base):
     push_status    = Column(String, nullable=True)   # pending|pushing|pushed|failed
     push_error     = Column(Text, nullable=True)
     push_workflow_id = Column(String, nullable=True)
-    # Rich metadata (version_metadata.json se)
+    # Rich metadata (from version_metadata.json)
     display_name   = Column(String, nullable=True)  # human-readable name
     description    = Column(Text,   nullable=True)  # full description
     category       = Column(String, nullable=True)  # e.g. container-registry

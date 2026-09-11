@@ -29,17 +29,17 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         try:
             try:
                 response = await call_next(request)
-                # NOTE: Starlette ka call_next() HAR response ko apne internal
-                # _StreamingResponse wrapper me deta hai (chahe endpoint ne
-                # normal Response diya ho ya asli StreamingResponse) — isliye
-                # type(response) se "ye genuinely streaming hai" pata nahi
-                # chal sakta, hasattr(response, "body_iterator") bhi hamesha
-                # True milega. File-download responses (jaise log-download)
-                # Content-Disposition header set karte hain — isi se pehchano
-                # aur unka body kabhi capture/consume mat karo, warna poora
-                # stream yahi turant buffer ho jaata (client ko tab tak kuch
-                # nahi milta jab tak SAARA data fetch na ho jaaye) — streaming
-                # ka poora purpose khatam ho jaata hai.
+                # NOTE: Starlette's call_next() hands back EVERY response
+                # wrapped in its internal _StreamingResponse wrapper (whether
+                # the endpoint returned a normal Response or a real
+                # StreamingResponse) — so type(response) cannot tell you "this
+                # is genuinely streaming", and hasattr(response,
+                # "body_iterator") is always True as well. File-download
+                # responses (such as log-download) set the Content-Disposition
+                # header — identify them by that and never capture/consume
+                # their body, otherwise the whole stream buffers here at once
+                # (the client gets nothing until ALL the data is fetched) —
+                # defeating the entire purpose of streaming.
                 is_file_download = "content-disposition" in response.headers
                 if hasattr(response, "body_iterator") and not is_file_download:
                     body = [chunk async for chunk in response.body_iterator]

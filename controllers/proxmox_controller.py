@@ -1,8 +1,8 @@
 """
 Proxmox VM/node/InfluxDB-metrics controller — router/proxmox_router.py
-("/v1/proxmox") is par delegate karta hai. Actual Proxmox API calls
-service/proxmoxService.py mein hain, InfluxDB metric-server management
-service/clusterService.py mein.
+("/v1/proxmox") delegates to this. The actual Proxmox API calls are in
+service/proxmoxService.py, and InfluxDB metric-server management is in
+service/clusterService.py.
 """
 from typing import List
 from fastapi import  Depends, APIRouter, HTTPException, Request, Query
@@ -60,10 +60,10 @@ class CloneRequest(BaseModel):
 
 async def get_templates_for_nodes(cluster_id: str = None, db: Session = Depends(get_db)):
     """
-    Cluster ke nodes pe available VM templates list karo.
+    List the VM templates available on a cluster's nodes.
 
     Used by: GET /v1/proxmox/get_templates
-    Returns: success_response ke `data` mein [ {"node", "templates": [...]}, ... ]
+    Returns: success_response's `data` has [ {"node", "templates": [...]}, ... ]
     """
     try:
         cluster_data = await get_cluster_details(db, cluster_id)
@@ -74,13 +74,13 @@ async def get_templates_for_nodes(cluster_id: str = None, db: Session = Depends(
 
 async def clone_vms_endpoint(payload: CloneRequest, db: Session = Depends(get_db)):
     """
-    Ek template se bulk VMs clone karo (ek/zyada nodes pe).
+    Bulk-clone VMs from a template (across one or more nodes).
 
     Used by: POST /v1/proxmox/clone-vms
     Args: payload = CloneRequest (node[], template_vm_id, name_template, count, cluster_id).
-    Returns: service.clone_vm() ka result as-is (NOTE: is function ka
-    return value pehle se APIResponse-wrapped hota hai — router isse dobara
-    wrap NAHI karta, seedha return karta hai).
+    Returns: the result of service.clone_vm() as-is (NOTE: this function's
+    return value is already APIResponse-wrapped — the router does NOT wrap
+    it again, it's returned directly).
     """
     try:
         cluster_id = payload.cluster_id
@@ -101,13 +101,12 @@ async def clone_vms_endpoint(payload: CloneRequest, db: Session = Depends(get_db
 
 def generate_name(request: NameRequest):
     """
-    Naya unique VM/pool naam auto-generate karo, template naam se.
+    Auto-generate a new unique VM/pool name, from a template name.
 
     Used by: POST /v1/proxmox/generate-name
-    Returns: {"name": str} ya {"error": str} — koi APIResponse envelope
-    nahi (router seedha yeh dict wrap karta hai success_response mein,
-    isliye error case bhi `data.error` ke through hi surface hota hai, 4xx
-    status code nahi).
+    Returns: {"name": str} or {"error": str} — no APIResponse envelope (the
+    router wraps this dict directly in success_response, so the error case
+    also surfaces through `data.error`, not a 4xx status code).
     """
     try:
         name = service.generate_machine_name(request.template)
@@ -118,11 +117,12 @@ def generate_name(request: NameRequest):
 
 async def update_nodes_route(db: Session = Depends(get_db)):
     """
-    Saare clusters ke nodes DB mein refresh karo (Proxmox API se live sync).
+    Refresh the node list for all clusters in the DB (live sync from the
+    Proxmox API).
 
     Used by: PUT /v1/proxmox/update-nodes
-    Returns: service.update_cluster_nodes() ka result (updated cluster/node summary).
-    Raises: HTTPException(500) agar refresh fail ho.
+    Returns: the result of service.update_cluster_nodes() (updated cluster/node summary).
+    Raises: HTTPException(500) if the refresh fails.
     """
     try:
         updated_clusters = service.update_cluster_nodes(db)
@@ -132,10 +132,10 @@ async def update_nodes_route(db: Session = Depends(get_db)):
 
 async def get_cluster_nodes_endpoint(cluster_id: str, db):
     """
-    Ek cluster ke saare nodes list karo (naam, status).
+    List all nodes of a cluster (name, status).
 
     Used by: GET /v1/proxmox/get-cluster-nodes
-    Errors: 404 agar cluster_id na mile, 500 fetch fail hone par.
+    Errors: 404 if cluster_id is not found, 500 if the fetch fails.
     """
     try:
         cluster_data = await get_cluster_details(db, cluster_id)
@@ -148,11 +148,11 @@ async def get_cluster_nodes_endpoint(cluster_id: str, db):
 
 async def get_node_gpus_endpoint(payload: NodeGpusRequest, db: Session):
     """
-    Diye gaye nodes pe available GPU devices list karo.
+    List available GPU devices on the given nodes.
 
     Used by: POST /v1/proxmox/get_node_gpus
     Args: payload = NodeGpusRequest (cluster_id, nodes[]).
-    Errors: 404 agar cluster_id na mile, 500 fetch fail hone par.
+    Errors: 404 if cluster_id is not found, 500 if the fetch fails.
     """
     try:
         cluster_data = await get_cluster_details(db, payload.cluster_id)
@@ -169,15 +169,15 @@ async def get_influxdb_metric_server_endpoint(
     db: Session = Depends(get_db)
 ):
     """
-    Cluster ka InfluxDB metric-server config lo — `monitoring=True` diya ho
-    to Proxmox se fresh fetch karke DB mein bhi save/refresh karta hai
-    (existing `is_custom_integration` flag preserve karke).
+    Get a cluster's InfluxDB metric-server config — if `monitoring=True`,
+    this does a fresh fetch from Proxmox and also saves/refreshes it in the
+    DB (preserving the existing `is_custom_integration` flag).
 
     Used by: GET /v1/proxmox/get_influxdb_metric_server
-    Returns (raw dict, koi APIResponse envelope nahi): {"influxdb_metric_server": {...} | {"error": str}}
-    Raises: 404 agar cluster_id na mile; kisi bhi exception pe plain
-    `Exception` raise hoti hai (HTTPException nahi — FastAPI ise generic
-    500 treat karega).
+    Returns (raw dict, no APIResponse envelope): {"influxdb_metric_server": {...} | {"error": str}}
+    Raises: 404 if cluster_id is not found; any other exception raises a
+    plain `Exception` (not HTTPException — FastAPI will treat this as a
+    generic 500).
     """
     try:
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -205,15 +205,15 @@ async def get_influxdb_metric_server_endpoints(
     db: Session = Depends(get_db)
 ):
     """
-    Metric-server ki poori detail DB se lo (edit-form pre-fill ke liye —
-    token bhi raw, `get_influxdb_metric_server` se alag yeh Proxmox ko call
-    nahi karta, seedha DB read hai).
+    Get the metric-server's full detail from the DB (for pre-filling the
+    edit form — the token is raw too; unlike `get_influxdb_metric_server`,
+    this doesn't call Proxmox, it's a plain DB read).
 
     Used by: GET /v1/proxmox/edit/get_influxdb_metric_server
     Returns: {"influxdb_metric_server": {type, server, port, proto,
     organization, bucket, token, disabled, monitoring, is_custom_integration}
     | {"error": str}}
-    Errors: 404 agar cluster_id na mile.
+    Errors: 404 if cluster_id is not found.
     """
     try:
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -242,8 +242,8 @@ async def get_influxdb_metric_server_endpoints(
 
 def get_influxdb_env_defaults_endpoint():
     """
-    Env-configured InfluxDB defaults lo (naya metric-server form pre-fill
-    karne ke liye).
+    Get the env-configured InfluxDB defaults (to pre-fill the "new metric
+    server" form).
 
     Used by: GET /v1/proxmox/get_influxdb_env_defaults
     """
@@ -251,12 +251,12 @@ def get_influxdb_env_defaults_endpoint():
 
 async def add_influxdb_metric_server_endpoint(cluster_id: str, request: Request, db: Session = Depends(get_db)):
     """
-    Cluster ke liye InfluxDB metric-server integration create karo (Proxmox
-    pe metric-server config karke, DB mein bhi save).
+    Create an InfluxDB metric-server integration for a cluster (configures
+    the metric server on Proxmox, and also saves it to the DB).
 
     Used by: POST /v1/proxmox/add_influxdb_metric_server
     Request body (raw JSON): {"monitoring": bool=True, "is_custom_integration": bool=True}
-    Errors: 404 cluster_id na mile, 500 Proxmox-side setup fail ho.
+    Errors: 404 cluster_id not found, 500 if the Proxmox-side setup fails.
     """
     cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster_data:
@@ -282,15 +282,15 @@ async def add_influxdb_metric_server_endpoint(cluster_id: str, request: Request,
 
 async def delete_influxdb_metric_server_endpoint(cluster_id: str, db: Session):
     """
-    Cluster ka InfluxDB metric-server integration remove karo — custom
-    integration ho to Proxmox se bhi delete karta hai; non-custom ho aur
-    koi migration workflow chal raha ho to usse cancel karta hai — dono
-    case mein DB record delete hota hai.
+    Remove a cluster's InfluxDB metric-server integration — if it's a
+    custom integration, it's also deleted from Proxmox; if it isn't custom
+    and a migration workflow is running, that gets cancelled — either way
+    the DB record is deleted.
 
     Used by: DELETE /v1/proxmox/delete_influxdb_metric_server
     Returns (raw dict): {"success": true, "msg": str}
-    Errors: 404 cluster_id/metric-server na mile, 500 Proxmox delete ya
-    workflow-cancel fail ho.
+    Errors: 404 cluster_id/metric-server not found, 500 if the Proxmox
+    delete or workflow-cancel fails.
     """
     try:
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -340,14 +340,14 @@ async def migrate_bucket_all_data_route(
     db: Session = Depends(get_db)
 ):
     """
-    Purane InfluxDB bucket se is app ke env-configured destination bucket
-    mein saara historical metrics data migrate karo (Temporal workflow).
+    Migrate all historical metrics data from an old InfluxDB bucket into
+    this app's env-configured destination bucket (via a Temporal workflow).
 
     Used by: POST /v1/proxmox/migrate_bucket_all_data
     Args: req = MigrateRequest (src_url, src_token, src_org, src_bucket, cluster_id, email).
-    Returns: JSONResponse(workflow_info) — {"workflow_id": str, ...} (koi
-    APIResponse envelope nahi, raw JSONResponse).
-    Raises: HTTPException(500) agar destination InfluxDB env vars set na hon.
+    Returns: JSONResponse(workflow_info) — {"workflow_id": str, ...} (no
+    APIResponse envelope, a raw JSONResponse).
+    Raises: HTTPException(500) if the destination InfluxDB env vars aren't set.
     """
     # Validate env is present
     if not all([INFLUXDB_URL, INFLUXDB_ORG, INFLUXDB_TOKEN, INFLUXDB_BUCKET]):
@@ -379,9 +379,9 @@ async def get_metric_server_endpoint(
 
 ):
     """
-    Cluster ka metric-server config DB se lo (simpler variant of
-    `get_influxdb_metric_server_endpoints` — same data, path-param ki jagah
-    body/query se `cluster_id` leta hai).
+    Get a cluster's metric-server config from the DB (a simpler variant of
+    `get_influxdb_metric_server_endpoints` — same data, takes `cluster_id`
+    from body/query instead of a path param).
 
     Used by: POST /v1/proxmox/get_metric_server
     Returns: {"metric_server": {...} | None}
@@ -400,11 +400,11 @@ async def start_vm_endpoint(
     db: Session = None
 ):
     """
-    VM start karo — `vmid` se cluster resolve karke uska type (proxmox/
-    hyper-v) detect karta hai, phir wahi service call karta hai.
+    Start a VM — resolves the cluster from `vmid`, detects its type
+    (proxmox/hyper-v), then calls the matching service.
 
     Used by: POST /v1/proxmox/start_vm
-    Returns: service.start_vm_proxmox() ka result (Proxmox task-result).
+    Returns: the result of service.start_vm_proxmox() (Proxmox task result).
     """
     try:
         cluster_data = get_cluster_by_id(db, vmid)
@@ -421,7 +421,7 @@ async def stop_vm_endpoint(
     db: Session = None
 ):
     """
-    VM stop karo (force power-off).
+    Stop a VM (force power-off).
 
     Used by: POST /v1/proxmox/stop_vm
     """
@@ -440,7 +440,7 @@ async def reboot_vm_endpoint(
     db: Session = None
 ):
     """
-    VM reboot karo.
+    Reboot a VM.
 
     Used by: POST /v1/proxmox/reboot_vm
     """
@@ -459,7 +459,7 @@ async def shutdown_vm_endpoint(
     db: Session = None
 ):
     """
-    VM graceful shutdown karo.
+    Gracefully shut down a VM.
 
     Used by: POST /v1/proxmox/shutdown_vm
     """
@@ -478,11 +478,11 @@ async def rebuild_vm_endpoint(
     db: Session = None,
 ):
     """
-    VM ko uske template se rebuild karo — cluster type ke hisaab se Proxmox
-    ya Hyper-V path branch hoti hai.
+    Rebuild a VM from its template — branches to the Proxmox or Hyper-V path
+    depending on the cluster type.
 
     Used by: POST /v1/proxmox/vm_rebuild
-    Errors: 404 agar cluster na mile.
+    Errors: 404 if the cluster is not found.
     """
     close_db = False
     try:
@@ -528,12 +528,12 @@ async def rebuild_vm_endpoint(
 
 def get_cluster_by_id(db: Session, vm_id: str) -> Cluster:
     """
-    Helper: `vm_id` (Machine.vm_id ya .identifier) se, us machine ke pool ke
-    through, uska parent Cluster resolve karo. Pool.cluster_id "<something>_<id>"
-    format mein store hota hai — yahan se numeric id nikalta hai.
+    Helper: from `vm_id` (Machine.vm_id or .identifier), resolve its parent
+    Cluster through that machine's pool. Pool.cluster_id is stored in
+    "<something>_<id>" format — this pulls out the numeric id from it.
 
-    Raises: HTTPException(404) agar machine/pool/cluster chain mein kahin
-    bhi na mile, HTTPException(500) agar pool.cluster_id ka format invalid ho.
+    Raises: HTTPException(404) if the machine/pool/cluster chain is broken
+    anywhere, HTTPException(500) if pool.cluster_id's format is invalid.
     """
     try:
         vm_id_str = str(vm_id)
@@ -576,10 +576,10 @@ def proxmox_all_vm_details(
     db: Session = Depends(get_db)
 ):
     """
-    `vm_id` ke cluster ke saare VMs ki detail lo (currently kisi router se
-    wired nahi dikhta — helper/legacy).
+    Get the detail of every VM in `vm_id`'s cluster (currently doesn't
+    appear to be wired to any router — a helper/legacy function).
 
-    Errors: 404 agar cluster na mile.
+    Errors: 404 if the cluster is not found.
     """
     cluster_data = get_cluster_by_id(db, vm_id)
     if not cluster_data:
@@ -589,14 +589,14 @@ def proxmox_all_vm_details(
 
 async def proxmox_vm_details(vm_id: str, db):
     """
-    Ek VM ki live detail lo — cluster type ke hisaab se Proxmox ya Hyper-V
-    path branch hoti hai.
+    Get a VM's live detail — branches to the Proxmox or Hyper-V path
+    depending on the cluster type.
 
     Used by: GET /v1/proxmox/proxmox_vm_info/{vm_id}
     Returns: {"vmid": str, "status": str, "config": {...}, ...} (Proxmox)
-    ya hyper_v_service.get_vm_info() ka result.
-    Errors: 404 agar cluster na mile, ya (Proxmox path) VM cluster ki
-    parallel-fetched list mein na mile.
+    or the result of hyper_v_service.get_vm_info().
+    Errors: 404 if the cluster is not found, or (Proxmox path) the VM isn't
+    in the cluster's parallel-fetched list.
     """
     cluster_data = get_cluster_by_id(db, vm_id)
     if not cluster_data:

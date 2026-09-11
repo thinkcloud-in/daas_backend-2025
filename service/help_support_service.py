@@ -1,3 +1,11 @@
+"""
+help_support_service — service layer for backend-logs search/export, based on OpenSearch.
+
+Two modes: (1) offset pagination (`search_backend_logs`) for the UI list-view, (2) the scroll API
+(`start_log_scroll`/`continue_log_scroll`/`close_log_scroll`/`stream_log_batches`) for large date-range
+exports where the total results can go beyond OpenSearch's 10,000 from+size limit.
+Used by: controllers/help_support_controller.py.
+"""
 import os
 from typing import Generator, List, Optional
 
@@ -15,18 +23,19 @@ _OPENSEARCH_INDEX    = os.getenv("OPENSEARCH_INDEX", "backend-logs-*")
 _TIMEOUT = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0)
 
 
-# OpenSearch ka default index.max_result_window — isse zyada (from + size)
-# deep pagination ke liye ek dedicated cursor mechanism (search_after) chahiye
-# hota, offset pagination is limit ke aage error deta hai.
+# OpenSearch's default index.max_result_window — going beyond this (from + size)
+# would need a dedicated cursor mechanism (search_after) for deep pagination;
+# offset pagination errors out past this limit.
 _MAX_RESULT_WINDOW = 10000
 
-# Scroll context kitni der zinda rahega har request ke baad — jitna bhi ho,
-# har /scroll/next call isko renew kar deta hai, jab tak client polling
-# continue rakhe scroll expire nahi hota.
+# How long the scroll context stays alive after each request — whatever it is,
+# every /scroll/next call renews it, so the scroll does not expire as long as
+# the client keeps polling.
 _SCROLL_TTL = "2m"
 
 
 def _build_bool_must(start_date, end_date, start_time, end_time, services):
+    """Build the "must" clause list of an OpenSearch bool query: timestamp range + optional service filter."""
     must = [
         {"range": {"@timestamp": {"gte": f"{start_date}T{start_time}Z", "lte": f"{end_date}T{end_time}Z"}}}
     ]
@@ -36,6 +45,7 @@ def _build_bool_must(start_date, end_date, start_time, end_time, services):
 
 
 def _post(url: str, payload: dict) -> dict:
+    """POST to OpenSearch (basic auth). Returns the parsed JSON body. Raises HTTPException 502 on unreachable/401/error status."""
     try:
         r = httpx.post(url, json=payload, auth=(_OPENSEARCH_USER, _OPENSEARCH_PASSWORD), timeout=_TIMEOUT, verify=False)
     except Exception as e:
@@ -48,6 +58,7 @@ def _post(url: str, payload: dict) -> dict:
 
 
 def _extract_batch(body: dict) -> dict:
+    """Extract one batch from an OpenSearch scroll response. Returns {"scroll_id","total","count","has_more","logs"}."""
     hits = body.get("hits", {})
     total_raw = hits.get("total", 0)
     total = total_raw.get("value", 0) if isinstance(total_raw, dict) else total_raw
@@ -69,16 +80,16 @@ def search_backend_logs(
     services: Optional[List[str]] = None,
 ) -> dict:
     """
-    OpenSearch me backend-logs-* index se @timestamp range ke hisaab se logs
-    search karo. start_date/end_date "YYYY-MM-DD" aur start_time/end_time
-    "HH:MM:SS" format me aate hain — dono milke exact datetime range banate
-    hain (default poora din: 00:00:00 se 23:59:59 tak).
-    services diya jaye to sirf unhi service.keyword values ke logs milenge
-    (jaise ["backend-code", "keycloak", "guacamole"]) — na diya jaye to sabhi
-    services ke logs aayenge.
-    page/page_size se OpenSearch ka `from`+`size` offset pagination use hota
-    hai — 10-din pehle ke range me hazaro logs ho to bhi page-by-page saare
-    mil jaate hain, sirf pehle 100 tak simit nahi rehta.
+    Search logs in the backend-logs-* index in OpenSearch by @timestamp range.
+    start_date/end_date come in "YYYY-MM-DD" and start_time/end_time in
+    "HH:MM:SS" format — together they form the exact datetime range (default is
+    the whole day: 00:00:00 to 23:59:59).
+    If services is given, only logs with those service.keyword values are
+    returned (e.g. ["backend-code", "keycloak", "guacamole"]) — if not given,
+    logs from all services are returned.
+    page/page_size use OpenSearch's `from`+`size` offset pagination — even if a
+    10-days-ago range has thousands of logs, they can all be retrieved
+    page-by-page, not limited to just the first 100.
     Returns: {"total", "page", "page_size", "total_pages", "has_next",
               "has_prev", "logs"}
     """
@@ -127,12 +138,12 @@ def start_log_scroll(
     batch_size: int = 1000,
 ) -> dict:
     """
-    Scroll context kholta hai bade date-range exports ke liye (jaha total
-    results OpenSearch ki from+size limit — 10,000 — se aage ja sakte hain).
-    Sirf pehla batch deta hai; agla batch continue_log_scroll() se lo,
-    scroll khatam hone par close_log_scroll() call karna zaroori hai.
-    No `sort` yahan jaanbujhke — scroll API me sort lagana performance ko
-    kharab karta hai, OpenSearch khud hi internal (_doc) order use karta hai.
+    Opens a scroll context for large date-range exports (where the total
+    results can go beyond OpenSearch's from+size limit — 10,000).
+    Returns only the first batch; get the next batch via continue_log_scroll(),
+    and call close_log_scroll() once the scroll is done.
+    No `sort` here, deliberately — sorting in the scroll API hurts performance;
+    OpenSearch uses its own internal (_doc) order.
     Returns: {"scroll_id", "total", "count", "has_more", "logs"}
     """
     url = f"{_OPENSEARCH_URL}/{_OPENSEARCH_INDEX}/_search?scroll={_SCROLL_TTL}"
@@ -146,9 +157,9 @@ def start_log_scroll(
 
 def continue_log_scroll(scroll_id: str) -> dict:
     """
-    Pichhle batch (start_log_scroll ya isi function ke) response se mile
-    scroll_id se agla batch fetch karo. Scroll_id har baar naya mil sakta
-    hai — hamesha LATEST wala hi aage use karo, purana nahi.
+    Fetch the next batch using the scroll_id from the previous batch's
+    response (from start_log_scroll or this function). The scroll_id can be
+    new each time — always use the LATEST one going forward, not the old one.
     Returns: {"scroll_id", "total", "count", "has_more", "logs"}
     """
     if not scroll_id:
@@ -160,10 +171,10 @@ def continue_log_scroll(scroll_id: str) -> dict:
 
 def close_log_scroll(scroll_id: str) -> None:
     """
-    Scroll context ko explicitly release karo (server-side resources free
-    karne ke liye) jab scrolling khatam ho jaye (ya UI band ho jaye). Best-
-    effort hai — scroll TTL khatam hone par OpenSearch khud bhi cleanup kar
-    deta hai, isliye ye call fail ho to bhi request ko fail nahi karte.
+    Explicitly release the scroll context (to free server-side resources)
+    once scrolling is done (or the UI closes). Best-effort — OpenSearch also
+    cleans up on its own when the scroll TTL expires, so even if this call
+    fails we do not fail the request.
     """
     if not scroll_id:
         raise HTTPException(status_code=400, detail="scroll_id is required")
@@ -185,11 +196,11 @@ _LOG_LINE_HEADLINE_KEYS = {"timestamp", "@timestamp", "level", "service", "logge
 
 def _format_log_line(entry: dict) -> str:
     """
-    Ek OpenSearch log document ko ek readable .log line me convert karo.
-    Headline (timestamp/level/service/logger/event) upar dikhta hai, baaki
-    SAARE fields (response_body, status_code, duration_ms, request_id,
-    kubernetes metadata, temporal_activity, waghera) key=value ke roop me
-    aage jate hain — kuch bhi drop nahi hota.
+    Convert an OpenSearch log document into a readable .log line.
+    The headline (timestamp/level/service/logger/event) shows first, and ALL
+    the remaining fields (response_body, status_code, duration_ms, request_id,
+    kubernetes metadata, temporal_activity, etc.) follow as key=value pairs —
+    nothing is dropped.
     """
     import json as _json
 
@@ -213,14 +224,14 @@ def _format_log_line(entry: dict) -> str:
 
 def stream_log_batches(first_batch: dict) -> Generator[str, None, None]:
     """
-    Generator jo ek already-fetched pehle batch (start_log_scroll se, jo
-    controller me alag se call hota hai taaki connection/auth errors turant
-    proper HTTP error ban ke jayein, streaming shuru hone se PEHLE) se aage
-    scroll continue karta hai aur har log entry ko ek formatted line ke roop
-    me yield karta hai. Poora result kabhi memory me ikattha nahi hota — ek
-    batch process hote hi agla fetch hota hai.
-    StreamingResponse ke saath use hota hai (download endpoint) — koi bhi
-    server-side file/storage nahi banti.
+    A generator that continues the scroll from an already-fetched first batch
+    (from start_log_scroll, which the controller calls separately so that
+    connection/auth errors become proper HTTP errors immediately, BEFORE
+    streaming starts) and yields each log entry as a formatted line. The full
+    result is never accumulated in memory — the next fetch happens as soon as
+    one batch is processed.
+    Used with a StreamingResponse (the download endpoint) — no server-side
+    file/storage is created.
     """
     batch = first_batch
     scroll_id = batch.get("scroll_id")
@@ -233,9 +244,9 @@ def stream_log_batches(first_batch: dict) -> Generator[str, None, None]:
             try:
                 batch = continue_log_scroll(scroll_id)
             except HTTPException as e:
-                # Streaming already shuru ho chuki hai — ab HTTP status badal
-                # nahi sakte, isliye error ko file ke andar hi likh ke stream
-                # rok dete hain, taaki client ko pata chale kuch adhoora reh gaya.
+                # Streaming has already started — we can no longer change the
+                # HTTP status, so we write the error into the file itself and
+                # stop the stream, so the client knows something was left incomplete.
                 logger.error("log_download_stream_failed", detail=str(e.detail))
                 yield f"\n--- ERROR: log export incomplete: {e.detail} ---\n"
                 break

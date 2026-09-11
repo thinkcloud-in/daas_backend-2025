@@ -23,9 +23,9 @@ _RETRY_TRANSFER = RetryPolicy(
 @workflow.defn(sandboxed=False)
 class LibraryUploadWorkflow:
     """
-    HTTP handler seedha pod mein stream karta hai (no temp file).
-    Ye workflow sirf Temporal UI mein progress dikhata hai — DB poll karke heartbeat bhejta hai.
-    Jab DB status=ready ho jaaye, workflow complete.
+    The HTTP handler streams straight into the pod (no temp file).
+    This workflow only surfaces the progress in the Temporal UI — it polls the DB and sends heartbeats.
+    The workflow completes when the DB status becomes ready.
     """
 
     @workflow.run

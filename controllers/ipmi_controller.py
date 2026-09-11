@@ -1,6 +1,6 @@
 """
-IPMI/BMC server controller — router/ipmi_router.py ("/v1/ipmi") is par
-delegate karta hai. Actual DB logic service/IPMIService.py mein hai.
+IPMI/BMC server controller — router/ipmi_router.py ("/v1/ipmi") delegates
+to this. The actual DB logic is in service/IPMIService.py.
 """
 import json
 from service.IPMIService import create_ipmi_server,get_all_ipmi_servers, get_ipmi_server_id, update_ipmi_server, delete_ipmi_server
@@ -9,11 +9,11 @@ from utils import response_format
 
 async def create_ipmi_server_route(ipmi_data, db):
     """
-    Naya IPMI/BMC server record add karo.
+    Add a new IPMI/BMC server record.
 
     Used by: POST /v1/ipmi/add_ipmi_server
     Args: ipmi_data = IPMIDeviceRequest.
-    Returns: 500 (error_response) agar save fail ho.
+    Returns: 500 (error_response) if the save fails.
     """
     try:
         ipmi_data_dict = ipmi_data.dict()
@@ -24,23 +24,22 @@ async def create_ipmi_server_route(ipmi_data, db):
 
 def model_to_dict(obj):
     """
-    SQLAlchemy model instance ko plain dict mein convert karo (saare
-    columns).
+    Convert a SQLAlchemy model instance into a plain dict (all columns).
 
-    ⚠ Security note: `IPMIDevice.password` column plaintext String hai (na
-    encrypt hoti hai, na yahan redact) — is function se banaya har response
-    isko raw expose karta hai. Cluster.password jaisa hi issue, abhi fix
-    nahi kiya (documentation-only pass).
+    ⚠ Security note: the `IPMIDevice.password` column is a plaintext String
+    (neither encrypted nor redacted here) — every response built with this
+    function exposes it raw. Same issue as Cluster.password, not fixed here
+    (documentation-only pass).
     """
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 async def get_all_ipmi_servers_route(db, page: int = 1, page_size: int = 10):
     """
-    Saare IPMI servers list karo (paginated).
+    List all IPMI servers (paginated).
 
     Used by: GET /v1/ipmi/get_all_ipmi_servers
-    Returns: success_response ke `data` mein {"items": [...], "pagination": {...}}
-    (⚠ `password` field included — dekho `model_to_dict` note).
+    Returns: success_response's `data` has {"items": [...], "pagination": {...}}
+    (⚠ `password` field included — see the `model_to_dict` note).
     """
     try:
         page = max(1, page)
@@ -64,7 +63,7 @@ async def get_all_ipmi_servers_route(db, page: int = 1, page_size: int = 10):
 
 async def get_ipmi_server_route(ipmi_id, db):
     """
-    Ek IPMI server ki detail lo.
+    Get one IPMI server's detail.
 
     Used by: GET /v1/ipmi/get_ipmi_server/{ipmi_id}
     """
@@ -73,12 +72,12 @@ async def get_ipmi_server_route(ipmi_id, db):
 
 async def update_ipmi_server_route(ipmi_id, ipmi_data):
     """
-    IPMI server connection details update karo.
+    Update an IPMI server's connection details.
 
     Used by: PUT /v1/ipmi/update_ipmi_server/{ipmi_id}
     Args: ipmi_data = IPMIDeviceRequest.
-    Returns: status/msg/data seedha service ke result se aate hain (dynamic,
-    fixed nahi).
+    Returns: status/msg/data come straight from the service's result
+    (dynamic, not fixed).
     """
     ipmi_data_dict = ipmi_data.dict()
     data = await update_ipmi_server( ipmi_id, ipmi_data_dict)
@@ -86,10 +85,10 @@ async def update_ipmi_server_route(ipmi_id, ipmi_data):
 
 async def delete_ipmi_server_route(ipmi_id, request, db):
     """
-    IPMI server record delete karo.
+    Delete an IPMI server record.
 
     Used by: DELETE /v1/ipmi/delete_ipmi_server/{ipmi_id}
-    Request body: {"email": str} — empty body pe 400.
+    Request body: {"email": str} — 400 if the body is empty.
     """
     try:
         raw_body = await request.body()

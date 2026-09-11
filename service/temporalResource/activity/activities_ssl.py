@@ -139,7 +139,7 @@ async def renew_certificate_activity(payload: dict) -> dict:
     try:
         domain_name = payload.get("payload_cn")
 
-        # 1. Active Secret se Domain auto-detect karo
+        # 1. Auto-detect the domain from the active Secret
         if not domain_name:
             try:
                 secret = v1.read_namespaced_secret(name=SECRET_NAME, namespace=NAMESPACE)
@@ -153,7 +153,7 @@ async def renew_certificate_activity(payload: dict) -> dict:
                 if e.status != 404:
                     activity.logger.warning(f"Warning while reading existing secret: {e.reason}")
 
-        # 2. Secret nahi mila toh Incoming Request Host name use karo
+        # 2. If no Secret was found, use the incoming request's host name
         if not domain_name:
             domain_name = payload.get("request_host")
 

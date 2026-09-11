@@ -1,6 +1,6 @@
 """
-SMTP configuration controller — router/smtp_router.py ("/v1/smtp") is par
-delegate karta hai. Actual DB/email logic service/smtp_service.py mein hai.
+SMTP configuration controller — router/smtp_router.py ("/v1/smtp")
+delegates to this. The actual DB/email logic is in service/smtp_service.py.
 """
 from fastapi import Depends,APIRouter
 import service.smtp_service as smtp_service
@@ -13,12 +13,12 @@ smtpRouter = APIRouter(prefix="/v1/smtp", tags=["smtp"])
 
 def smtp_create(item:SMTP_Config, dp:Session = Depends(get_db)):
     """
-    Nayi SMTP configuration create karo.
+    Create a new SMTP configuration.
 
     Used by: POST /v1/smtp/smtp-post
-    Returns: saved record (smtp_service.smtp_post() ka result) ya
-    `{"error": str}` agar exception aaye (⚠ yeh path koi APIResponse
-    envelope use nahi karta — is endpoint ki ek known quirk hai).
+    Returns: the saved record (the result of smtp_service.smtp_post()) or
+    `{"error": str}` if an exception occurs (⚠ this path doesn't use an
+    APIResponse envelope — a known quirk of this endpoint).
     """
     try:
         return smtp_service.smtp_post(item, dp)
@@ -26,18 +26,18 @@ def smtp_create(item:SMTP_Config, dp:Session = Depends(get_db)):
         return {"error": str(e)}
 
 def sqlalchemy_obj_to_dict(obj):
-    """SQLAlchemy model instance ko plain dict mein convert karo (saare columns)."""
+    """Convert a SQLAlchemy model instance into a plain dict (all columns)."""
     return {c.key: getattr(obj, c.key) for c in obj.__table__.columns}
 
 def smtp_get(db):
     """
-    Saari SMTP configurations list karo.
+    List all SMTP configurations.
 
     Used by: GET /v1/smtp/smtp-get
-    Returns: success_response ke `data` mein [ {..SMTP_Config columns...}, ... ]
-    — `password` field explicitly response se pop kiya jaata hai (kabhi
-    leak nahi hota, dusre password-leak issues (Cluster/Pool) se alag yeh
-    endpoint already safe hai).
+    Returns: success_response's `data` has [ {..SMTP_Config columns...}, ... ]
+    — the `password` field is explicitly popped from the response (never
+    leaked; unlike the other password-leak issues found elsewhere
+    (Cluster/Pool), this endpoint is already safe).
     """
     try:
         data_objs = smtp_service.smtp_get(db)
@@ -52,12 +52,11 @@ def smtp_get(db):
 
 def smtp_update(item : SMTP_Config, db:Session = Depends(get_db)):
     """
-    Existing SMTP configuration update karo (item.id se match).
+    Update an existing SMTP configuration (matched by item.id).
 
     Used by: PUT /v1/smtp/smtp-update
-    Returns: success_response ke `data` mein updated record (saare columns,
-    yahan `password` pop nahi hota — is endpoint mein us fix ki zaroorat
-    pad sakti hai).
+    Returns: success_response's `data` has the updated record (all columns —
+    `password` is NOT popped here, this endpoint may need the same fix).
     """
     try:
         data = smtp_service.smtp_update_data(item,db)
@@ -67,12 +66,12 @@ def smtp_update(item : SMTP_Config, db:Session = Depends(get_db)):
 
 def smtp_update_status(data:dict,db:Session = Depends(get_db)):
     """
-    SMTP config enable/disable karo (ek hi ek time pe "active" hoti hai).
+    Enable/disable an SMTP config (only one is "active" at a time).
 
     Used by: PATCH /v1/smtp/smtp-update-status
     Args: data = {"id": int, "smtpStatus": bool}
-    Returns: {"smtpStatus": bool} ya {"error": str} — koi APIResponse
-    envelope nahi (router isko khud wrap karta hai).
+    Returns: {"smtpStatus": bool} or {"error": str} — no APIResponse
+    envelope here (the router wraps it itself).
     """
     try:
         smtp_status = data.get("smtpStatus")
@@ -83,11 +82,11 @@ def smtp_update_status(data:dict,db:Session = Depends(get_db)):
 
 def smtp_test_mail(data, db):
     """
-    Diye gaye SMTP settings se test email bhejo (DB mein save kiye bina).
+    Send a test email using the given SMTP settings (without saving to the DB).
 
     Used by: POST /v1/smtp/smtp-test-mail
-    Returns: smtp_service.smtp_test_mail() ka result (input echo).
-    Raises: Exception agar SMTP server se connect/send fail ho jaaye.
+    Returns: the result of smtp_service.smtp_test_mail() (echoes the input).
+    Raises: Exception if connecting to/sending via the SMTP server fails.
     """
     try:
         data = smtp_service.smtp_test_mail(data, db)

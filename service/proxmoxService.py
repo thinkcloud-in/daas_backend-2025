@@ -1,3 +1,13 @@
+"""
+proxmoxService — service layer for the Proxmox VM lifecycle + power-state + inventory.
+
+clusterService.py handles *cluster/user provisioning* on Proxmox; this module works with
+the actual VMs inside that cluster — clone/delete/rebuild (via Temporal workflows) and
+power operations (start/stop/reboot/shutdown, either directly via the Proxmox REST API or
+through Temporal — both paths exist) + VM inventory/details (nodes, GPUs, IPs, datastores)
+by querying Proxmox directly.
+Used by: the VM/Proxmox endpoints in controllers/routes.py.
+"""
 import asyncio
 from collections import OrderedDict
 from datetime import datetime
@@ -28,13 +38,20 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 VERIFY_SSL = False 
  
 def get_all_proxmox_users(db):
+    """Return all Proxmox (dedicated-user-per-cluster) DB records. (clusterService.py has a same-name function too.)"""
     data=db.query(Proxmox).all()
     return data
- 
+
 def is_valid_ip(ip):
+    """Basic sanity check — reject placeholder/empty IP values ('0', '.', '')."""
     return ip and ip.strip() not in {'0', '.', ''}
 
 def get_cluster_nodes(cluster_data, db: Optional[Session] = None):
+    """
+    List the cluster's online nodes (a DB-session-managing wrapper around `_get_cluster_nodes_impl`
+    — if no db is given, it opens a new session and closes it too).
+    Returns: list of {"name","ip","status":"online"}.
+    """
     close_db = False
     if db is None:
         db = SessionLocal()
@@ -46,6 +63,7 @@ def get_cluster_nodes(cluster_data, db: Optional[Session] = None):
             db.close()
 
 def _get_cluster_nodes_impl(cluster_data, db: Session):
+    """Fetch the cluster's online nodes (Proxmox `/cluster/status`), trying all IPs. Returns list of {"name","ip","status"}. Raises RuntimeError if all IPs fail."""
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",
@@ -85,6 +103,7 @@ def _get_cluster_nodes_impl(cluster_data, db: Session):
     raise RuntimeError(f"All cluster IPs failed. Last error: {last_exception}")
 
 def _resolve_gpu_name(device: Dict) -> str:
+    """Extract the best-available GPU display name from a PCI device dict (device_name → subsystem_device_name → vendor+device-id fallback)."""
     if device.get("device_name"):
         return device["device_name"]
     if device.get("subsystem_device_name"):
@@ -94,6 +113,12 @@ def _resolve_gpu_name(device: Dict) -> str:
     return f"{vendor} (Device ID: {device_id})"
 
 def get_node_gpus(cluster_data, nodes: List[str], db: Session) -> Dict:
+    """
+    List the given nodes' PCI display-controller (class 0x03xx) devices as GPUs
+    (Proxmox `/nodes/{node}/hardware/pci`).
+    Returns: {node_name: list of GPU dicts (each with an added "gpu_name")}, or
+             {node_name: {"error": "..."}} if the query fails for that node.
+    """
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}",
@@ -119,6 +144,11 @@ def get_node_gpus(cluster_data, nodes: List[str], db: Session) -> Dict:
     return result
 
 def update_cluster_nodes(db: Session) -> Dict[str, List[str]]:
+    """
+    Refresh the `Cluster.ip` column of all Proxmox-type clusters with their actual current node IPs
+    (so the cluster IP-list does not go stale when nodes join/leave).
+    Returns: {cluster_name: list-of-ips-or-error-string}.
+    """
     clusters = db.query(Cluster).all()
     updated_clusters = {}
  
@@ -150,6 +180,12 @@ def update_cluster_nodes(db: Session) -> Dict[str, List[str]]:
     return updated_clusters
  
 def get_all_cluster_vms(db,cluster_data):
+    """
+    Fetch all of the cluster's resources (VMs, containers, storage, etc.) from Proxmox
+    (`/cluster/resources` — no type filter; the caller must filter by the `type` field themselves).
+    Returns: list of raw Proxmox resource dicts.
+    Raises: RuntimeError if the host is not reachable; requests.HTTPError on API failure.
+    """
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}"
@@ -164,6 +200,7 @@ def get_all_cluster_vms(db,cluster_data):
     return data
 
 def get_templates(db,cluster_data):
+    """List the cluster's VM templates (Proxmox VMs flagged `template==1`). Returns list of {"name","vmid","status"}."""
     all_vms = get_all_cluster_vms(db, cluster_data)
     templates = [
         {
@@ -177,7 +214,12 @@ def get_templates(db,cluster_data):
     return templates
 
 def generate_machine_name(template: str, existing_names: list[str], count: int) -> list[str]:
-    
+    """
+    Generate `count` unique new machine names from a template pattern (e.g. "amber-{n:fixed=3}"),
+    skipping numbers already used in existing_names.
+    Returns: list[str] of new names (length == count).
+    Raises: ValueError if the template pattern format is invalid.
+    """
     match = re.match(r"(.*)\{n:fixed=(\d+)\}(.*)", template)
     if not match:
         raise ValueError("Invalid template format. Expected pattern like 'amber-{n:fixed=3}'")
@@ -205,11 +247,17 @@ def generate_machine_name(template: str, existing_names: list[str], count: int) 
     return new_names
 
 def unique_id():
+    """Build an `HH:MM:SS` string from the current time, for use as a workflow-id suffix."""
     unique_id = datetime.now()
     logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
 async def clone_vm(clone_payload: dict):
+    """
+    Start `CloneVMWorkflow` and await its result (the Proxmox VM clone orchestration entry point).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure
+             (exceptions are not raised, they are wrapped in a dict).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"clonevms-{uniqueId}"
@@ -231,6 +279,13 @@ async def clone_vm(clone_payload: dict):
     
 
 async def delete_proxmox_vm(vmid, cluster_data):
+    """
+    Delete a Proxmox VM directly via the REST API (no Temporal involved) — tries all the
+    cluster's nodes until the VM is found; if it is running, stop it first (polling for ~60s
+    to confirm), then delete.
+    Returns: {"message": "..."} on success.
+    Raises: HTTPException 404 if the vmid is not found on any node.
+    """
     db: Session = SessionLocal()
     try:
         if not Cluster:
@@ -275,6 +330,11 @@ async def delete_proxmox_vm(vmid, cluster_data):
     raise HTTPException(status_code=404, detail=f"VMID {vmid} not found on any node. Consider deleting the pool.")
  
 async def update_metric_server_token(cluster_id: int, new_token: str):
+    """
+    Update a cluster's stored MetricServer.token with a new token (a silent no-op if the
+    record is not found — exceptions are only logged, not raised).
+    Returns: None (side effect only).
+    """
     db: Optional[Session] = None
     try:
         db = SessionLocal()
@@ -293,6 +353,12 @@ async def update_metric_server_token(cluster_id: int, new_token: str):
  
 
 async def migrate_bucket_all_data(migration_payload: dict):
+    """
+    Start `LiveMigrateWorkflow` — migrates data from src_bucket to dst_bucket
+    (fire-and-forget, does not wait for the result — workflow_id/run_id are returned immediately).
+    Returns: {"status","workflow_id","run_id"}.
+    Raises: HTTPException 500 if the workflow fails to start.
+    """
     uniqueId = unique_id()  # Or use any unique ID generator you have
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"Migration-{uniqueId}"
@@ -322,6 +388,13 @@ async def migrate_bucket_all_data(migration_payload: dict):
     
 
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
+    """
+    Fetch a cluster's MetricServer DB record (clusterService.py has a same-name function too,
+    but this one's error path returns `jsonable_encoder("error", e)` — which, being a two-arg
+    call, raises a TypeError — so instead of returning it may accidentally crash; this doc-pass
+    only flags the behavior, it does not fix it).
+    Returns: MetricServer ORM object, or None if not found.
+    """
     db: Optional[Session] = None
     try:
         db = SessionLocal()
@@ -339,6 +412,13 @@ def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
 #---------------------------proxmox power state operations---------------------------
 
 def collect_proxmox_details(vmid, pool_id, db):
+    """
+    Gather the context needed to run a VM's power operations (start/stop/reboot/shutdown):
+    resolves the Machine → Pool → Cluster chain to prepare the API token, PROXMOX_HOST,
+    the node (where the VM is running), and the headers.
+    Returns: {"status":"success","PROXMOX_HOST","node","vmid","headers"} on success,
+             {"status":"error","error":"..."} if any step fails to resolve.
+    """
     machine = db.query(Machine).filter(Machine.vm_id == str(vmid)).one_or_none()
     if not machine:
         return {"status": "error", "error": f"Machine with vm_id {vmid} not found in DB."}
@@ -385,19 +465,21 @@ def collect_proxmox_details(vmid, pool_id, db):
  
 
 def vm_start(PROXMOX_HOST, node, proxmox_vmid, headers):
+    """Start a VM via the Proxmox API. Returns bool (True on 200/202)."""
     start_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{proxmox_vmid}/status/start"
     resp = requests.post(start_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
     return True
 def vm_stop(PROXMOX_HOST, node, vmid, headers):
-    
+    """(Hard-)stop a VM via the Proxmox API. Returns bool (True on 200/202)."""
     stop_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/stop"
     resp = requests.post(stop_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
         return False
     return True
 def vm_reboot(PROXMOX_HOST, node, vmid, headers):
+    """Reboot a VM via the Proxmox API. Returns {"status":"success"} or {"error":"..."} (in-band, no exception)."""
     reboot_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/reboot"
     resp = requests.post(reboot_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
@@ -405,6 +487,7 @@ def vm_reboot(PROXMOX_HOST, node, vmid, headers):
     return {"status": "success"}
 
 def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
+    """Gracefully shut down a VM via the Proxmox API (an ACPI signal, giving the guest OS time to respond). Returns bool (True on 200/202)."""
     shutdown_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/shutdown"
     resp = requests.post(shutdown_url, headers=headers, verify=False)
     if resp.status_code not in (200, 202):
@@ -416,6 +499,10 @@ def vm_shutdown(PROXMOX_HOST, node, vmid, headers):
 
 
 async def start_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
+    """
+    Start `StartVMProxmoxWorkflow` and await its result (orchestrated VM power-on).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure (not raised).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"start_vm_{cluster_type}-{uniqueId}"
@@ -443,7 +530,10 @@ async def start_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: st
 
 
 async def stop_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
-
+    """
+    Start `StopVMProxmoxWorkflow` and await its result (orchestrated VM hard stop).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure (not raised).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"stop_vm_{cluster_type}-{uniqueId}"
@@ -469,7 +559,10 @@ async def stop_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str)
     
     
 async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: str):
-
+    """
+    Start `RebootVMProxmoxWorkflow` and await its result (orchestrated VM reboot).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure (not raised).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"reboot_vm_{cluster_type}-{uniqueId}"
@@ -495,7 +588,10 @@ async def reboot_vm_proxmox(vmid: str, pool_id: str,email: str, cluster_type: st
     
 
 async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type: str):
-
+    """
+    Start `ShutdownVMProxmoxWorkflow` and await its result (orchestrated VM graceful shutdown).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure (not raised).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     workflow_id = f"shutdown_vm_{cluster_type}-{uniqueId}"
@@ -521,6 +617,7 @@ async def shutdown_vm_proxmox(vmid: str, pool_id: str, email: str, cluster_type:
     
 
 def wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120):
+    """Poll (5s interval) until the VM status becomes "stopped" or the timeout is reached. Returns bool."""
     status_url = f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/status/current"
     waited = 0
     while waited < timeout:
@@ -533,6 +630,10 @@ def wait_for_vm_stopped(PROXMOX_HOST, node, vmid, headers, timeout=120):
         waited += 5
     return False
 def update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id):
+    """
+    Replace the 2nd/3rd slots of the Machine.workflowId list with the new rebuild/assign-ip workflow-ids
+    (padding the list with None as needed). Returns the updated list (length at least 3).
+    """
     updated_ids = current_ids.copy()
     while len(updated_ids) < 3:
         updated_ids.append(None)
@@ -542,7 +643,11 @@ def update_workflow_ids(current_ids, new_rebuild_id, new_assign_ip_id):
         updated_ids[2] = new_assign_ip_id
     return updated_ids
 def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign_ip_id, rebuild_status, rebuild_error, assign_ip_status, assign_ip_error):
-
+    """
+    Replace the 2nd/3rd (positional) entries of the Machine.workflow_status dict with the new
+    rebuild/assign-ip workflow-ids + statuses/errors, preserving order.
+    Returns: a new dict (workflow_id -> {"status","error"}).
+    """
     ordered_status = OrderedDict(workflow_status_dict)
     keys = list(ordered_status.keys())
 
@@ -573,6 +678,12 @@ def update_workflow_status_dict(workflow_status_dict, new_rebuild_id, new_assign
     return dict(new_status)
 
 async def vm_rebuild(vmid: int, pool_id: str):
+    """
+    Start `VmRebuildWorkflow` (re-provision the VM from a fresh disk — wait-ready/assign-ip/
+    power-on all run inline inside the workflow) and track the machine's `workflow_status`/`workflowId`
+    throughout (RUNNING → COMPLETED/FAILED).
+    Returns: workflow result dict on success, {"error": "..."} dict on failure (not raised).
+    """
     db: Session = SessionLocal()
     try:
         uniqueId = unique_id()
@@ -640,6 +751,7 @@ async def vm_rebuild(vmid: int, pool_id: str):
 
 
 def get_vm_config(db, cluster_data, node, vmid):
+    """Fetch a VM's full config (disks, agent flag, etc.) from Proxmox (`/qemu/{vmid}/config`). Returns config dict."""
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}"
@@ -651,6 +763,7 @@ def get_vm_config(db, cluster_data, node, vmid):
     return response.json()["data"]
 
 def get_vm_datastores_from_config(config):
+    """Extract the attached datastore names from a VM config dict (only checks keys with the "ide" prefix). Returns list[str] (deduped)."""
     datastores = []
     for key, value in config.items():
         # if key.startswith(("scsi", "ide", "sata", "virtio")) and isinstance(value, str):
@@ -660,6 +773,11 @@ def get_vm_datastores_from_config(config):
     return list(set(datastores))
 
 def get_vm_ip_addresses(db, cluster_data, node, vmid):
+    """
+    Fetch a VM's own IPv4 addresses from its guest-agent (Proxmox `/agent/network-get-interfaces`
+    — the QEMU guest agent must be installed/enabled). Loopback/link-local/multicast are filtered out.
+    Returns: list[str] of IPv4 addresses, [] on any error (agent not installed, timeout, etc. — silent).
+    """
     api_token = get_api_token(db, cluster_data.name)
     headers = {
         "Authorization": f"PVEAPIToken={api_token}"
@@ -705,6 +823,10 @@ def get_vm_ip_addresses(db, cluster_data, node, vmid):
         return []
 
 def get_all_vm_details(db, cluster_data):
+    """
+    Compile detailed info for all of the cluster's QEMU VMs sequentially (config+datastores+IPs).
+    Returns: list of {"vmid","node","name","datastores","agent_enabled","ip_addresses", ["error"]}.
+    """
     vms = get_all_cluster_vms(db, cluster_data)
     vm_info_list = []
     for vm in vms:
@@ -738,6 +860,11 @@ def get_all_vm_details(db, cluster_data):
     return vm_info_list
 
 async def get_vm_detail(db, cluster_data, vm):
+    """
+    Compile the detail of a single VM, running the blocking Proxmox calls (config/IPs) in a
+    thread pool (so the async caller is not blocked — a helper for `get_all_vm_details_parallel`).
+    Returns: {"vmid","node","name","datastores","agent_enabled","ip_addresses", ["error"]}.
+    """
     loop = asyncio.get_running_loop()
  
     node = vm['node']
@@ -776,6 +903,11 @@ async def get_vm_detail(db, cluster_data, vm):
  
  
 async def get_all_vm_details_parallel(db, cluster_data):
+    """
+    The parallel version of `get_all_vm_details` — fetches the detail of all QEMU VMs
+    concurrently (`asyncio.gather`) instead of in a sequential loop, faster for large clusters.
+    Returns: list of VM detail dicts (same shape as `get_all_vm_details`).
+    """
     loop = asyncio.get_running_loop()
  
     vms = await loop.run_in_executor(None, get_all_cluster_vms, db, cluster_data)

@@ -14,9 +14,9 @@ class UpdateGuacamoleRetentionRequest(BaseModel):
 
 async def update_guacamole_retention(request: UpdateGuacamoleRetentionRequest, db: Session) -> dict:
     """
-    Setting DB me persist karo, aur daily Temporal Schedule (re)banao —
-    wahi schedule fix time (02:30 UTC) pe dono external retention APIs
-    (history + recordings) ko hit karti hai naye retention_days ke saath.
+    Persist the setting to the DB, and (re)create the daily Temporal Schedule
+    — that schedule hits both external retention APIs (history + recordings)
+    at a fixed time (02:30 UTC) with the new retention_days.
     """
     row = guacamole_retention_service.upsert_retention_setting(
         db, request.retention_days, updated_by=request.email,

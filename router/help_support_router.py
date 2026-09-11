@@ -24,10 +24,10 @@ def get_backend_logs(
     services:   Optional[str] = Query(None, description="Comma-separated service names to filter by, e.g. backend-code,keycloak,guacamole"),
 ):
     """
-    Backend logs OpenSearch se search karo, diye gaye date+time range aur
-    (optional) service names ke liye — page/page_size se poore matching range
-    ke through paginate kiya ja sakta hai, chahe wahan hazaro logs kyu na hon
-    (Help & Support ke liye — troubleshooting/support ke waqt use hoga).
+    Search backend logs in OpenSearch for the given date+time range and
+    (optional) service names — page/page_size lets you paginate through the
+    whole matching range even if there are thousands of logs (used by
+    Help & Support for troubleshooting/support work).
 
     Response 200 — `data`:
         {
@@ -36,9 +36,9 @@ def get_backend_logs(
           "logs": [ {..structlog JSON fields: event, level, logger, timestamp, ...}, ... ]
         }
 
-    Errors: 400 agar date/time format invalid ho, ya requested page
-    OpenSearch ki 10,000-result window se aage chala jaaye (bade range ke
-    liye scroll endpoints — neeche — use karo).
+    Errors: 400 if the date/time format is invalid, or the requested page
+    goes beyond OpenSearch's 10,000-result window (use the scroll endpoints
+    below for larger ranges).
     """
     return help_support_controller.get_backend_logs(start_date, end_date, start_time, end_time, page, page_size, services)
 
@@ -53,10 +53,10 @@ def start_log_scroll(
     batch_size: int = Query(1000, ge=1, le=10000, description="Docs per scroll batch"),
 ):
     """
-    Bade date-range exports ke liye scroll context kholta hai (jaha total
-    results 10,000 se aage jaa sakte hain — jahan page/page_size wali normal
-    pagination kaam nahi karti). Pehla batch turant milta hai; agla batch
-    /logs/scroll/next se lo, aur khatam hone par /logs/scroll close karo.
+    Opens a scroll context for large date-range exports (where total results
+    can go beyond 10,000 — where normal page/page_size pagination doesn't
+    work). The first batch is returned immediately; fetch the next batch
+    from /logs/scroll/next, and close /logs/scroll when done.
 
     Response 200 — `data`:
         {"scroll_id": str, "total": int, "count": int, "has_more": bool, "logs": [...]}
@@ -67,15 +67,15 @@ def start_log_scroll(
 @help_support_router.post("/logs/scroll/next", response_model=APIResponse[Any])
 def continue_log_scroll(body: ScrollIdBody):
     """
-    Pichhle scroll response (start ya isi endpoint) se mile scroll_id se
-    agla batch lo. Response me `has_more: false` aaye to loop rok do aur
-    /logs/scroll se cleanup karo.
+    Fetch the next batch using the scroll_id from the previous scroll
+    response (start or this same endpoint). Stop looping once the response
+    has `has_more: false`, and clean up via /logs/scroll.
 
-    Request body: ScrollIdBody = {"scroll_id": str}  — hamesha LATEST
-    response ka scroll_id use karo (har batch pe naya mil sakta hai).
+    Request body: ScrollIdBody = {"scroll_id": str}  — always use the LATEST
+    response's scroll_id (a new one can be returned on every batch).
 
     Response 200 — `data`: {"scroll_id": str, "total": int, "count": int, "has_more": bool, "logs": [...]}
-    Errors: 400 agar scroll_id missing/expired ho.
+    Errors: 400 if scroll_id is missing/expired.
     """
     return help_support_controller.continue_log_scroll(body.scroll_id)
 
@@ -83,9 +83,9 @@ def continue_log_scroll(body: ScrollIdBody):
 @help_support_router.delete("/logs/scroll", response_model=APIResponse[Any])
 def close_log_scroll(body: ScrollIdBody):
     """
-    Scroll context ko explicitly release karo jab scrolling khatam ho jaye.
-    Best-effort hai — na bhi karo to OpenSearch scroll TTL khatam hone par
-    khud cleanup kar deta hai.
+    Explicitly release the scroll context once scrolling is done.
+    Best-effort — even if you skip this, OpenSearch cleans it up itself once
+    the scroll TTL expires.
 
     Response 200 — `data`: {"scroll_id": str}
     """
@@ -102,16 +102,16 @@ def download_backend_logs(
     batch_size: int = Query(1000, ge=1, le=10000, description="Docs per scroll batch fetched internally"),
 ):
     """
-    Poore matching date range ke logs ko seedha ek .log file ke roop me
-    stream karta hai — browser me click karte hi native download trigger
-    hota hai (Content-Disposition: attachment). Andar hi scroll lifecycle
-    (start/next/close) manage hoti hai, client ko scroll_id se kuch lena-
-    dena nahi. Koi server-side storage/temp-file nahi banti.
-    Frontend me seedha <a href="...">/window.location se hit karo, fetch+Blob
-    ki zaroorat nahi.
+    Streams the logs for the whole matching date range directly as a .log
+    file — clicking it in the browser triggers a native download
+    (Content-Disposition: attachment). The scroll lifecycle (start/next/close)
+    is managed internally; the client never needs to touch scroll_id. No
+    server-side storage/temp-file is created.
+    Hit it directly from the frontend with <a href="...">/window.location —
+    no need for fetch+Blob.
 
-    Response: 200, `Content-Type: text/plain` (ya similar), raw log lines
-    ka streaming body — koi JSON/APIResponse envelope nahi (isliye is route
-    pe `response_model` bhi declare nahi hai).
+    Response: 200, `Content-Type: text/plain` (or similar), a streaming body
+    of raw log lines — no JSON/APIResponse envelope (which is why this route
+    doesn't declare a `response_model` either).
     """
     return help_support_controller.download_backend_logs(start_date, end_date, start_time, end_time, services, batch_size)

@@ -1,3 +1,9 @@
+"""
+request_Logs_Service — HTTP request-audit log persistence.
+
+A middleware (or interceptor) sends the summary of every API request/response here,
+which is persisted in the RequestLog table (for the admin audit trail).
+"""
 from sqlalchemy.orm import Session
 from models.request_logger_model import RequestLog
 from datetime import datetime
@@ -6,6 +12,14 @@ import logging
 logger = logging.getLogger(__name__)
 
 def save_request_log(db: Session, log_data: dict):
+    """
+    Save the log record of one HTTP request/response to the DB.
+    Params: log_data — {"timestamp" (str "YYYY-MM-DD HH:MM:SS" or None → utcnow), "user" (default
+            "Anonymous"), "method", "url", "status", "duration" (seconds, an "Ns" suffix is also accepted),
+            "response" (stored in the details field)}.
+    Returns: RequestLog ORM object (created).
+    Raises: re-raises the original exception on a DB/parse error (after rollback).
+    """
     try:
         # Handle timestamp
         timestamp = log_data.get('timestamp')

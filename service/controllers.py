@@ -1,3 +1,18 @@
+"""
+service/controllers.py — Machine/Pool/Cluster orchestration service layer (VDI core).
+
+Most functions start Temporal workflows (create/update/delete Machine,
+Pool, Cluster) and await their result; some functions (the ones with "Bypasses
+Temporal" in the docstring) query the DB directly so that list/detail reads stay fast.
+
+SECURITY NOTE: `Pool.pool_ad_password` (AD join password, a plaintext DB column) is serialized
+by jsonable_encoder() and goes into the response of `get_pool_details`, `retrive_pool_data`,
+and `get_all_pools` as-is — this is an already-flagged issue in the output of these service
+functions (also noted in the docstrings of controllers/routes.py); it is outside the scope of
+the documentation pass, so it has not been fixed here, only flagged.
+
+Used by: controllers/routes.py (VM/Pool/Cluster endpoints).
+"""
 import requests
 import asyncio
 import logging
@@ -19,6 +34,7 @@ import uuid
 
 
 def unique_id():
+    """Build a short random hex string (8 chars) for use as a workflow-id suffix."""
     u_id = uuid.uuid4().hex[:8]
     logger.info(f"Generated unique ID - {u_id}")
     return u_id
@@ -45,6 +61,15 @@ def _is_proxmox_pool(db: Session, pool_id: int) -> bool:
 
 
 async def get_proxmox_storages(payload, db):
+    """
+    List the Proxmox storages available on the given nodes of a cluster (using a dedicated user
+    token, directly against the Proxmox REST API — no Temporal workflow involved).
+    For each node it tries all the cluster's IPs until one responds.
+
+    Params: payload — {.cluster_id, .nodes: list[str]}.
+    Returns: list of storage dicts (dedup by storage name across nodes).
+    Raises: HTTPException 400 (no nodes given), 502 (sab IPs unreachable for a node), 500 (other).
+    """
     try:
         cluster_data = await get_cluster_details(db, payload.cluster_id)
         api_token = get_api_token(db, cluster_data.name)
@@ -190,6 +215,11 @@ async def get_proxmox_networks(payload, db):
 
 
 async def create_pool(pool_data: dict, db) -> dict:
+    """
+    Start `PoolCreationWorkflow` and await its result.
+    Returns: workflow result dict (pool details).
+    Raises: HTTPException 400 if the workflow result status is "error".
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
@@ -222,6 +252,11 @@ async def create_pool(pool_data: dict, db) -> dict:
     return result
 
 async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dict:
+    """
+    Start `PoolUpdateWorkflow` and await its result.
+    Returns: workflow result dict.
+    Raises: HTTPException 400 if the workflow result status is "error".
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     pool_name = pool_data.get("pool_name", "UnknownPool")
@@ -256,6 +291,16 @@ async def update_pool(pool_id:int,email: Optional[str], pool_data: dict,db)->dic
 
  
 async def create_machine(machine_data: CreateMachineBase, db: Session = None):
+    """
+    Start `CreateMachineWorkflow` and await its result.
+
+    For Automated pools it also merges the already-running clone-workflow IDs
+    (`clone_workflow_id`, `workflowId`) into a `workflow_status_map` (per-workflow status
+    tracking) that is stored in the machine record's `workflow_status` field; for Manual pools
+    this step is skipped.
+    Returns: workflow result dict.
+    Raises: HTTPException 500 if the workflow fails.
+    """
     logger.info(f"Received machine_data for creation: {redact_secrets(machine_data.dict())}")
     own_db = False
     if db is None:
@@ -324,6 +369,11 @@ async def create_machine(machine_data: CreateMachineBase, db: Session = None):
 
 
 async def delete_machine(machine_identifier: str, email: Optional[str], db: Session):
+    """
+    Start `DeleteMachineWorkflow` and await its result.
+    Returns: workflow result dict.
+    Raises: HTTPException 404 if the machine identifier is not found in the DB.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
 
@@ -351,6 +401,13 @@ async def delete_machine(machine_identifier: str, email: Optional[str], db: Sess
 
 
 async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
+    """
+    Start `PoolDeletionWorkflow` — fire-and-forget (does not wait for the result), so the
+    HTTP request returns immediately with a "deleting" status while the real Proxmox VM-destroy
+    calls run in the background.
+    Returns: {"pool_id","workflow_id","status":"deleting"}.
+    Raises: HTTPException 404 if pool_id is not found.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
 
@@ -380,6 +437,7 @@ async def delete_pool(pool_id: int, email: Optional[str], db: Session) -> dict:
     return {"pool_id": pool_id, "workflow_id": handle.id, "status": "deleting"}
         
 async def add_user_to_machine( machine_identifier: str, username: str):
+    """Start `AddUserToMachineWorkflow` and await its result. Returns the workflow result dict."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -390,8 +448,12 @@ async def add_user_to_machine( machine_identifier: str, username: str):
     )
     result = await handle.result()
     return result
-#remove assigned user from a machine 
+#remove assigned user from a machine
 async def delete_user_from_machine(machine_identifier: str, user_id: str):
+    """
+    Start `DeleteUserFromMachineWorkflow` and await its result.
+    Returns: workflow result dict, or None if result["msg"] == "404" (user/machine not found).
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -406,6 +468,7 @@ async def delete_user_from_machine(machine_identifier: str, user_id: str):
 
 
 async def update_machine(machine_identifier: str, machine_data: UpdateMachineBase):
+    """Start `UpdateMachineWorkflow` and await its result. Returns the workflow result dict."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     machine_name = machine_data.name
@@ -427,7 +490,10 @@ async def update_machine(machine_identifier: str, machine_data: UpdateMachineBas
     return result  
 
 async def get_machines(db: Session = None):
-    """Directly query the database for all machines (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for all machines (Bypasses Temporal for responsiveness).
+    Returns: list of machine dicts (jsonable_encoder of every Machine column, raw ORM rows).
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -440,7 +506,7 @@ async def get_machines(db: Session = None):
             db.close()
 
 async def update_is_custom_machine(machine_identifier: str, machine_details: IsCustomeValue):
-    
+    """Start `UpdateIsCustomMachineWorkflow` (toggles the machine's `is_custom` flag) and await its result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -454,7 +520,10 @@ async def update_is_custom_machine(machine_identifier: str, machine_details: IsC
 
 
 async def list_of_all_machine_in_pool(pool_id: str, db: Session = None):
-    """Directly query the database for machines in a specific pool (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for machines in a specific pool (Bypasses Temporal for responsiveness).
+    Returns: list of machine dicts (jsonable_encoder of Machine rows filtered by pool_id).
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -468,7 +537,11 @@ async def list_of_all_machine_in_pool(pool_id: str, db: Session = None):
 
 #list all the assigned users to a machine
 async def list_assigned_users(machine_id: str, db: Session = None):
-    """Directly query the database for users assigned to a machine (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for users assigned to a machine (Bypasses Temporal for responsiveness).
+    Looks up the machine by `.id` first, falling back to `.identifier` if not found.
+    Returns: the `Machine.users_assigned` list (or [] if the machine is not found).
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -484,7 +557,15 @@ async def list_assigned_users(machine_id: str, db: Session = None):
             db.close()
 
 async def get_pool_details(pool_id: int, db: Session = None):
-    """Directly query the database for pool details (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for pool details (Bypasses Temporal for responsiveness).
+    Resolves `pool.cluster_id` (which can also be a "poolid_clusterid" combo) to the actual
+    cluster name.
+    Returns: {"msg","pool": <jsonable_encoder(pool) + "cluster": name-or-"NA">} when found,
+             {"msg": "Pool not found"} if not found.
+    SECURITY: the `pool` dict also includes `pool_ad_password` (the plaintext AD join password)
+    — jsonable_encoder() serializes every column, there is no masking.
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -516,7 +597,13 @@ async def get_pool_details(pool_id: int, db: Session = None):
             db.close()
 
 async def retrive_pool_data(pool_name: str, db: Session = None):
-    """Directly query the database for pool data by name (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for pool data by name (Bypasses Temporal for responsiveness).
+    Returns: {"msg","pool": <jsonable_encoder(pool) + "cluster": name-or-"NA">} when found,
+             {"msg": "{pool_name} Pool not found"} if not found.
+    SECURITY: `pool_ad_password` (plaintext) is also included in this response — see the
+    `get_pool_details` docstring, same underlying issue.
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -549,7 +636,10 @@ async def retrive_pool_data(pool_name: str, db: Session = None):
             db.close()
 
 async def get_all_pool_names(db: Session = None):
-    """Directly query the database for pool names (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for pool names (Bypasses Temporal for responsiveness).
+    Returns: {"msg", "pool_names": list[str]}.
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -569,6 +659,14 @@ async def get_all_pools(db: Session = None, page: int = None, page_size: int = N
     (returns every pool) so the other internal callers that rely on a full
     list after a mutation (activities_pool.py, activities_machine.py) are
     unaffected. Only the dedicated list route passes them.
+
+    Each pool's "entitled" count is computed live from the actual Machine.users_assigned
+    rather than from a stored counter (to avoid stale-counter drift); the "cluster" name
+    is also resolved.
+    Returns: {"msg", "pools": list[jsonable_encoder(pool)+"entitled"+"cluster"],
+              "pagination": {...} (only when page/page_size are given)}.
+    SECURITY: each pool dict also includes `pool_ad_password` (the plaintext AD password)
+    — same underlying issue as `get_pool_details`/`retrive_pool_data`.
     """
     own_db = False
     if db is None:
@@ -632,7 +730,11 @@ async def get_all_pools(db: Session = None, page: int = None, page_size: int = N
             db.close()
 
 async def get_machine_details(machine_id: str, db: Session = None):
-    """Directly query the database for machine details (Bypasses Temporal for responsiveness)."""
+    """
+    Directly query the database for machine details (Bypasses Temporal for responsiveness).
+    Looks up the machine by `.identifier` first, falling back to `.vm_id` if not found.
+    Returns: jsonable_encoder(machine) dict, or {"msg": "Machine not found"} if not found.
+    """
     own_db = False
     if db is None:
         db = SessionLocal()
@@ -652,6 +754,7 @@ async def get_machine_details(machine_id: str, db: Session = None):
 
 
 async def create_cluster(cluster_data: CreateClusterBase):
+    """Start `CreateClusterWorkflow` and await its result. Returns the workflow result dict."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     cluster_name = cluster_data['name']
@@ -673,6 +776,13 @@ async def create_cluster(cluster_data: CreateClusterBase):
     return result
 
 async def delete_cluster( db: Session, cluster_id: str, email: Optional[str] = None, ):
+    """
+    Start `DeleteClusterWorkflow` and await its result.
+    First checks that no Pool is linked to this cluster (by cluster_id or a
+    "poolid_clusterid" suffix match) — if one is, the delete is blocked.
+    Returns: workflow result dict.
+    Raises: HTTPException 400 if connected pools exist.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
 
@@ -711,6 +821,7 @@ async def delete_cluster( db: Session, cluster_id: str, email: Optional[str] = N
     return result
     
 async def update_cluster(db, cluster_id: str, cluster_data: UpdateClusterBase):
+    """Start `UpdateClusterWorkflow` and await its result. Returns the workflow result dict."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     
@@ -734,6 +845,11 @@ async def update_cluster(db, cluster_id: str, cluster_data: UpdateClusterBase):
     return result
  
 async def get_cluster_details(db: Session, cluster_id: str):
+    """
+    Fetch a single Cluster directly from the DB by id (without Temporal).
+    Returns: Cluster ORM object (raw — stripping the password field is the caller's responsibility).
+    Raises: HTTPException 404 if not found.
+    """
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found-")
@@ -741,6 +857,11 @@ async def get_cluster_details(db: Session, cluster_id: str):
 
 
 def create_task_details(task: task_models.Task_config, db: Session):
+    """
+    Create a scheduled-task record in the DB (a Task_DB row insert).
+    Returns: {"msg": "Task Added Successfully", "task": jsonable_encoder(task)}.
+    Raises: HTTPException 500 on a DB error (after rollback).
+    """
     try:
         task = task_models.Task_DB(**task.dict())
         db.add(task)

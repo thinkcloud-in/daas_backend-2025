@@ -11,7 +11,7 @@ class SSLService:
 
     async def get_client(self) -> Client:
         if not self.temporal_client:
-            # Temporal local/production server se connection setup
+            # Set up the connection to the Temporal local/production server
             self.temporal_client = await TemporalClientManager.get_temporal_client()
         return self.temporal_client
 
@@ -71,5 +71,5 @@ class SSLService:
         result = await handle.result()
         return result
 
-# Singleton Instance jo routers ke through access hoga
+# Singleton instance, accessed through the routers
 ssl_service = SSLService()

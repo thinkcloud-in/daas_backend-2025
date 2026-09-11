@@ -1,10 +1,22 @@
+"""
+smtp_service — SMTP configuration CRUD (singleton row) + test-email sending.
+
+All functions return raw ORM objects (password field included) — masking/stripping is
+handled at the controller layer (controllers/smtp_controller.py), not here.
+Used by: controllers/smtp_controller.py.
+"""
 from models.SMTP_models import SMTP
 from fastapi import HTTPException
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
- 
+
 def smtp_post(item, db):
+    """
+    Create a new SMTP config (singleton — rejected if a row already exists).
+    Returns: SMTP ORM object (created).
+    Raises: HTTPException 400 if config already exists; 500 on other DB error.
+    """
     try:
         existing = db.query(SMTP).first()
         if existing:
@@ -29,15 +41,27 @@ def smtp_post(item, db):
         raise HTTPException(status_code=500, detail=f"Error while creating SMTP: {str(e)}")
     
 def smtp_get(db):
+    """
+    Fetch all SMTP config rows (in practice there's only ever one, the singleton row).
+    Returns: list[SMTP] ORM objects, raw (password included — controller strips it).
+    Raises: HTTPException 500 on DB error.
+    """
     try:
         items = db.query(SMTP).all()
         return items
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"Error while fetching SMTPs: {str(e)}")
- 
- 
+
+
 def smtp_update_data(item, db):
+    """
+    Update the singleton SMTP config row, or create it if it doesn't exist yet (upsert).
+    Password is only overwritten if a non-empty `item.password` is supplied — an empty/missing
+    password on update leaves the existing stored password untouched.
+    Returns: SMTP ORM object (created or updated).
+    Raises: HTTPException 500 on DB error.
+    """
     try:
         db_item = db.query(SMTP).first()
         if db_item is None:
@@ -73,6 +97,11 @@ def smtp_update_data(item, db):
 
     
 def smtp_status_update(smtpStatus: bool, db):
+    """
+    Enable/disable the SMTP config (toggle `smtpStatus` on the singleton row).
+    Returns: SMTP ORM object (updated).
+    Raises: HTTPException 404 if no config exists yet; 500 on other DB error.
+    """
     try:
         db_item = db.query(SMTP).first()
         if db_item is None:
@@ -89,6 +118,13 @@ def smtp_status_update(smtpStatus: bool, db):
         raise HTTPException(status_code=500, detail=f"Error while updating SMTP status: {str(e)}")
     
 def smtp_test_mail(data, db):
+    """
+    Send a one-off test email using the given (not-yet-saved) SMTP settings, to verify they
+    work before persisting them. SSL uses `SMTP_SSL` directly; otherwise plain SMTP + STARTTLS.
+    Login only happens if `data.userAuthentication == "true"`.
+    Returns: {"message": "Test email sent successfully"}.
+    Raises: HTTPException 500 if sending fails (connection closed best-effort on failure too).
+    """
     try:
         # config = db.query(SMTP).first()
         # if config is None:

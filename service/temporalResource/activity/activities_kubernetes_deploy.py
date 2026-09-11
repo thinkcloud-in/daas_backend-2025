@@ -2,21 +2,21 @@
 Harbor K8s Deploy Activity — SSH-Free, Multi-Node
 
 Flow:
-  1.  DB se kubeconfig + cluster info load karo
-  2.  WebDAV se ZIP download karo (backend pe locally)
-  3.  version_metadata.json parse karo
+  1.  Load the kubeconfig + cluster info from the DB
+  2.  Download the ZIP from WebDAV (locally on the backend)
+  3.  Parse version_metadata.json
   4.  K8s API connectivity check
   5.  Already deployed? check via K8s API
-  6.  Namespace create karo via K8s API
-  7.  Images archive ZIP se extract karo (locally)
-  8.  Extracted archive WebDAV pe temp upload karo
-  9.  DaemonSet create karo — sab worker nodes pe images import (ctr via WebDAV wget)
-  10. Wait — sab pods ka log "HARBOR_IMPORT_DONE" check karo
-  11. DaemonSet + WebDAV temp file delete karo
-  12. YAML manifests apply karo (apply_order se) via K8s dynamic client
-  13. Harbor URL discover karo via K8s API (NodePort)
+  6.  Create the namespace via the K8s API
+  7.  Extract the images archive from the ZIP (locally)
+  8.  Upload the extracted archive to WebDAV temporarily
+  9.  Create a DaemonSet — import the images on all worker nodes (ctr via WebDAV wget)
+  10. Wait — check every pod's log for "HARBOR_IMPORT_DONE"
+  11. Delete the DaemonSet + the WebDAV temp file
+  12. Apply the YAML manifests (in apply_order) via the K8s dynamic client
+  13. Discover the Harbor URL via the K8s API (NodePort)
   14. Health check (max 5 min)
-  15. harbor-jobservice restart via K8s API
+  15. harbor-jobservice restart via the K8s API
 """
 
 import datetime
@@ -72,8 +72,8 @@ def _db_update(deploy_id: int, **kwargs):
 
 def _load_k8s_clients(kubeconfig_yaml: str, control_ip: str = None):
     """
-    kubeconfig YAML string se K8s clients init karo.
-    control_ip: hostname → IP replace (Windows DNS nahi resolve karta hostnames)
+    Init the K8s clients from a kubeconfig YAML string.
+    control_ip: replace hostname → IP (Windows DNS does not resolve hostnames)
     """
     from kubernetes import client as kc, config as kcfg, dynamic
 
@@ -113,7 +113,7 @@ def _load_k8s_clients(kubeconfig_yaml: str, control_ip: str = None):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _zip_root_prefix(zf) -> str:
-    """ZIP mein common root folder detect karo (e.g. 'harbor-v2.15.2-k8s-offline/')."""
+    """Detect the common root folder in the ZIP (e.g. 'harbor-v2.15.2-k8s-offline/')."""
     names = [n for n in zf.namelist() if n.strip("/")]
     if not names:
         return ""
@@ -125,10 +125,10 @@ def _zip_root_prefix(zf) -> str:
 
 def _find_yaml_prefix(zf, hint_path: str) -> str:
     """
-    YAML files ka actual prefix dynamically resolve karo.
-    1. root + hint_path try karo
-    2. hint_path without root try karo
-    3. Fallback: sabse zyada YAMLs wali directory use karo
+    Dynamically resolve the actual prefix of the YAML files.
+    1. Try root + hint_path
+    2. Try hint_path without root
+    3. Fallback: use the directory with the most YAMLs
     """
     names  = [n for n in zf.namelist() if n.strip("/")]
     root   = _zip_root_prefix(zf)
@@ -215,7 +215,7 @@ def _extract_images_archive(zip_path: str, archive_path_in_zip: str, dest_dir: s
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _webdav_upload(local_path: str, webdav_url: str):
-    """Local file WebDAV pe PUT karo."""
+    """PUT a local file to WebDAV."""
     size = os.path.getsize(local_path)
     with open(local_path, "rb") as f:
         resp = requests.put(
@@ -271,24 +271,24 @@ def _check_already_deployed(v1, namespace: str) -> bool:
 def _create_import_daemonset(apps_v1, namespace: str, ds_name: str,
                               images_webdav_url: str, images_filename: str):
     """
-    DaemonSet create karo jo sab nodes pe:
-    1. WebDAV se images tar.gz download kare
-    2. ctr -n k8s.io images import kare
-    3. HARBOR_IMPORT_DONE log kare
-    alpine:3.18 use karega (already available on all nodes)
+    Create a DaemonSet that, on all nodes:
+    1. downloads the images tar.gz from WebDAV
+    2. runs ctr -n k8s.io images import
+    3. logs HARBOR_IMPORT_DONE
+    Uses alpine:3.18 (already available on all nodes)
     """
     from kubernetes.client.exceptions import ApiException
 
-    # Purana DS hata do
+    # remove the old DS
     try:
         apps_v1.delete_namespaced_daemon_set(name=ds_name, namespace=namespace)
         time.sleep(5)
     except ApiException:
         pass
 
-    # chroot /host: alpine musl vs host glibc issue solve karta hai.
-    # Host root, run (containerd socket), tmp — teen alag mounts.
-    # Download /host/tmp/ me (= host /tmp), chroot me /tmp visible hai.
+    # chroot /host: solves the alpine musl vs host glibc issue.
+    # Host root, run (containerd socket), tmp — three separate mounts.
+    # Download to /host/tmp/ (= host /tmp); /tmp is visible inside the chroot.
     cmd = (
         f"wget -q --no-check-certificate -O /host/tmp/{images_filename} '{images_webdav_url}' && "
         f"echo 'Download complete, importing images...' && "
@@ -347,7 +347,7 @@ def _create_import_daemonset(apps_v1, namespace: str, ds_name: str,
 def _wait_import_daemonset(v1, apps_v1, namespace: str, ds_name: str,
                             timeout_sec: int = 1800) -> bool:
     """
-    Sab DaemonSet pods ke logs mein HARBOR_IMPORT_DONE aane ka wait karo.
+    Wait for HARBOR_IMPORT_DONE to appear in the logs of all DaemonSet pods.
     Returns True if all succeeded.
     """
     deadline = time.time() + timeout_sec
@@ -490,12 +490,12 @@ def _apply_yaml_docs(dyn_client, yaml_docs: List[Tuple[str, str]], namespace: st
 
 def _patch_harbor_deployments(apps_v1, namespace: str):
     """
-    Kompose-converted deployments ke liye K8s-specific fixes:
-    1. enableServiceLinks=false — K8s {SVC}_PORT env vars Harbor config override karte hain
-    2. proxy runAsUser=0 — nginx client_body_temp Permission denied fix
-    3. postgresql init container — PVC root-owned, postgres uid=999 needs chown
+    K8s-specific fixes for the Kompose-converted deployments:
+    1. enableServiceLinks=false — the K8s {SVC}_PORT env vars override the Harbor config
+    2. proxy runAsUser=0 — fixes the nginx client_body_temp Permission denied
+    3. postgresql init container — the PVC is root-owned, postgres uid=999 needs a chown
     """
-    # Fix 1: K8s service env injection disable karo (POSTGRESQL_PORT=tcp://... issue)
+    # Fix 1: disable K8s service env injection (the POSTGRESQL_PORT=tcp://... issue)
     all_deployments = []
     try:
         dep_list = apps_v1.list_namespaced_deployment(namespace=namespace)
@@ -523,7 +523,7 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
     except Exception as e:
         logger.warning(f"[K8sDeploy] proxy securityContext patch failed: {e}")
 
-    # Fix 3: postgresql PVC permission — init container se chown
+    # Fix 3: postgresql PVC permission — chown via an init container
     try:
         from kubernetes import client as k8s_client
         init_container = k8s_client.V1Container(
@@ -546,8 +546,8 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
     except Exception as e:
         logger.warning(f"[K8sDeploy] postgresql init container patch failed: {e}")
 
-    # Fix 4: registry — registry-cm2 (root.crt) ko registry-cm1 mein merge karo
-    # K8s mein mounted directory ke andar subPath file mount nahi ho sakta
+    # Fix 4: registry — merge registry-cm2 (root.crt) into registry-cm1
+    # In K8s, a subPath file cannot be mounted inside a mounted directory
     try:
         v1_api = apps_v1.api_client.__class__._get_openapi_types  # get v1 from apps_v1
     except Exception:
@@ -557,12 +557,12 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
         from kubernetes import client as k8s_client
         _v1 = k8s_client.CoreV1Api()
 
-        # registry-cm2 se root.crt nikalo
+        # get root.crt from registry-cm2
         cm2 = _v1.read_namespaced_config_map(name="registry-cm2", namespace=namespace)
         root_crt = (cm2.data or {}).get("root.crt", "")
 
         if root_crt:
-            # registry-cm1 mein add karo
+            # add it to registry-cm1
             cm1 = _v1.read_namespaced_config_map(name="registry-cm1", namespace=namespace)
             if "root.crt" not in (cm1.data or {}):
                 cm1.data = cm1.data or {}
@@ -570,14 +570,14 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
                 _v1.replace_namespaced_config_map(name="registry-cm1", namespace=namespace, body=cm1)
                 logger.info("[K8sDeploy] registry-cm1: root.crt merged from registry-cm2")
 
-            # registry deployment se cm2 volumeMount aur volume hatao
+            # remove the cm2 volumeMount and volume from the registry deployment
             dep = apps_v1.read_namespaced_deployment(name="registry", namespace=namespace)
-            # volumeMounts se registry-cm2 hatao
+            # remove registry-cm2 from volumeMounts
             vms = dep.spec.template.spec.containers[0].volume_mounts or []
             dep.spec.template.spec.containers[0].volume_mounts = [
                 vm for vm in vms if vm.name != "registry-cm2"
             ]
-            # volumes se registry-cm2 hatao
+            # remove registry-cm2 from volumes
             vols = dep.spec.template.spec.volumes or []
             dep.spec.template.spec.volumes = [v for v in vols if v.name != "registry-cm2"]
             apps_v1.replace_namespaced_deployment(name="registry", namespace=namespace, body=dep)
@@ -585,13 +585,13 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
     except Exception as e:
         logger.warning(f"[K8sDeploy] registry cm2 merge patch failed: {e}")
 
-    # Fix 5: proxy service → LoadBalancer (Cilium LB-IPAM se external IP milegi)
+    # Fix 5: proxy service → LoadBalancer (Cilium LB-IPAM will assign an external IP)
     try:
         from kubernetes import client as k8s_client
         _v1 = k8s_client.CoreV1Api()
         svc = _v1.read_namespaced_service(name="proxy", namespace=namespace)
         if svc.spec.type != "LoadBalancer":
-            # NodePort entries clear karo, type LoadBalancer karo
+            # clear the NodePort entries, set type to LoadBalancer
             for p in (svc.spec.ports or []):
                 p.node_port = None
             svc.spec.type = "LoadBalancer"
@@ -636,16 +636,16 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
 
 def _patch_harbor_env_configmap(v1, namespace: str):
     """
-    Kompose conversion kuch keys miss kar deta hai ya wrong name se banata hai.
-    Missing keys ko sensible defaults se patch karo taaki pods start ho sakein.
+    The Kompose conversion misses some keys or creates them under the wrong name.
+    Patch the missing keys with sensible defaults so the pods can start.
     """
     from kubernetes.client.exceptions import ApiException
 
     # Key mappings: kompose-missed ya wrong-name keys → (source_key_in_cm, default_value)
     REQUIRED = {
-        # PostgreSQL Docker image ka actual env var — Harbor ka POSTGRESQL_PASSWORD se alag naam
+        # the PostgreSQL Docker image's actual env var — a different name from Harbor's POSTGRESQL_PASSWORD
         "POSTGRES_PASSWORD":                          ("POSTGRESQL_PASSWORD", "Harbor12345"),
-        # Harbor jobservice defaults — kompose Docker Compose env se miss kar deta hai
+        # Harbor jobservice defaults — kompose misses these from the Docker Compose env
         "JOBSERVICE_WEBHOOK_JOB_HTTP_CLIENT_TIMEOUT": (None, "10"),
         "JOBSERVICE_WEBHOOK_JOB_MAX_RETRY":           (None, "10"),
     }
@@ -678,8 +678,8 @@ def _patch_harbor_env_configmap(v1, namespace: str):
 
 def _discover_harbor_url(v1, namespace: str, node_ip: str) -> Optional[str]:
     """
-    Harbor URL discover karo — priority order:
-    1. LoadBalancer external IP (Cilium LB-IPAM) → port 80 — no port in URL
+    Discover the Harbor URL — priority order:
+    1. LoadBalancer external IP (Cilium LB-IPAM) → port 80 — no port in the URL
     2. NodePort fallback → node_ip:nodePort
     """
     from kubernetes.client.exceptions import ApiException
@@ -701,13 +701,13 @@ def _discover_harbor_url(v1, namespace: str, node_ip: str) -> Optional[str]:
         ext_ip = next((i.ip for i in ingress if i.ip), None)
         if not ext_ip:
             continue
-        # proxy / nginx prefer karo, else port 80 wala
+        # prefer proxy / nginx, else the one on port 80
         for port in (svc.spec.ports or []):
             if port.port == 80:
                 url = f"http://{ext_ip}"
                 logger.info(f"[K8sDeploy] Harbor URL (LoadBalancer): {url}  svc={svc_name}")
                 return url
-        # koi bhi port pe
+        # fall back to any port
         url = f"http://{ext_ip}"
         logger.info(f"[K8sDeploy] Harbor URL (LoadBalancer fallback): {url}  svc={svc_name}")
         return url
@@ -915,7 +915,7 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
                 if not all_done:
                     raise RuntimeError(
                         "Image import timeout (30 min) — "
-                        f"kubectl logs -l app={_IMPORTER_DS_NAME} -n {namespace} se check karo"
+                        f"check with kubectl logs -l app={_IMPORTER_DS_NAME} -n {namespace}"
                     )
                 _ok("Harbor images imported on all nodes ✓")
 
@@ -983,7 +983,7 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
             time.sleep(10)
 
         if not harbor_ready:
-            steps_log.append("[WARN] Harbor health check timeout — pods start hone mein time lagega")
+            steps_log.append("[WARN] Harbor health check timeout — the pods will take time to start")
             _db_update(deploy_id, steps_log=json.dumps(steps_log))
 
         # ── Step 15: harbor-jobservice restart ───────────────────────────────

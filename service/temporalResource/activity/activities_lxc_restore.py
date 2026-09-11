@@ -41,8 +41,8 @@ def _proxmox_ssh_creds(cluster) -> tuple:
 @activity.defn(name="LXC-Upload-Template-to-Proxmox")
 def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
     """
-    Step 1 — HTTP GET se file download karo (devraq.dev.team/{dir}/{file}) → /tmp
-    Step 2 — /tmp se SFTP karke Proxmox /var/lib/vz/dump/ pe upload karo
+    Step 1 — download the file via HTTP GET (devraq.dev.team/{dir}/{file}) → /tmp
+    Step 2 — SFTP it from /tmp to Proxmox /var/lib/vz/dump/
     """
     db: Session = SessionLocal()
     try:
@@ -61,13 +61,13 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
 
         # ── Step 1: HTTP GET with Range resume → temp file ───────────────────
         # item.file_path = WebDAV URL (e.g. https://devraq.dev.team/library/harbor/file)
-        # Firewall har 30s pe connection kaate to bhi Range header se resume ho jaata hai.
+        # Even if the firewall cuts the connection every 30s, the Range header lets it resume.
         file_url   = item.file_path
         temp_path  = f"/tmp/lxc_deploy_{item.id}_{item.file_name}"
         chunk_size = 5 * 1024 * 1024  # 5 MB
-        max_retries = 200              # 200 x 5MB = 1TB tak handle ho sakta hai
+        max_retries = 200              # 200 x 5MB = can handle up to 1TB
 
-        # Total size HEAD request se pata karo
+        # find the total size via a HEAD request
         try:
             head_resp  = requests.head(file_url, verify=False, timeout=30)
             total_size = int(head_resp.headers.get("content-length", 0))
@@ -80,12 +80,12 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
         bytes_done = 0
 
         for attempt in range(1, max_retries + 1):
-            # Partial file check — resume karo agar pehle se kuch liya hua hai
+            # Partial file check — resume if something was already downloaded
             if os.path.exists(temp_path):
                 bytes_done = os.path.getsize(temp_path)
 
             if total_size > 0 and bytes_done >= total_size:
-                break  # poora aa gaya
+                break  # fully downloaded
 
             headers = {}
             if bytes_done > 0:
@@ -119,7 +119,7 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
                 time.sleep(5)
                 continue
 
-            # Agar yahan pahunche to is attempt mein connection normal end hua
+            # reaching here means the connection ended normally on this attempt
             break
 
         file_size = os.path.getsize(temp_path) if os.path.exists(temp_path) else 0
@@ -128,9 +128,9 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
                 f"Download incomplete: got {file_size:,} of {total_size:,} bytes after {max_retries} attempts"
             )
 
-        # ── Integrity check — corrupt file Proxmox pe jaane se pehle pakad lo ──
-        # zstd valid file ke pehle 4 bytes hamesha 0x28 0xB5 0x2F 0xFD hote hain.
-        # Agar file incomplete/html-error/empty hai to ye bytes match nahi honge.
+        # ── Integrity check — catch a corrupt file before it goes to Proxmox ──
+        # The first 4 bytes of a valid zstd file are always 0x28 0xB5 0x2F 0xFD.
+        # If the file is incomplete/an html-error/empty, these bytes will not match.
         activity.heartbeat("Verifying archive integrity...")
         _ZSTD_MAGIC = b'\x28\xb5\x2f\xfd'
         with open(temp_path, 'rb') as _f:
@@ -143,13 +143,13 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
             raise RuntimeError(
                 f"Downloaded file is not a valid zstd archive "
                 f"(magic bytes={_magic.hex()}, expected=28b52ffd). "
-                f"Source file may be corrupt — re-upload karo."
+                f"Source file may be corrupt — re-upload it."
             )
         logger.info(f"[LXC] Download complete + verified: {file_size:,} bytes → {temp_path}")
 
         # ── Step 2: SFTP temp → Proxmox /var/lib/vz/dump/ ───────────────────
-        # set_pipelined(True) large files mein silently truncate karta hai —
-        # isliye sftp.put() use karo jo internally reliable chunked transfer karta hai.
+        # set_pipelined(True) silently truncates large files —
+        # so use sftp.put(), which does a reliable chunked transfer internally.
         proxmox_ip, ssh_user, ssh_pass = _proxmox_ssh_creds(cluster)
         remote_path = f"/var/lib/vz/dump/{item.file_name}"
 
@@ -170,14 +170,14 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
                 pct = int(transferred * 100 / total) if total else 0
                 activity.heartbeat(f"SFTP to Proxmox {pct}% ({transferred:,}/{total:,} bytes)")
 
-            # sftp.put() — pipelining nahi, ACK ka wait karta hai, large files safe
+            # sftp.put() — no pipelining, waits for the ACK, safe for large files
             sftp.put(temp_path, remote_path, callback=_sftp_progress)
 
-            # Transfer ke baad remote file size verify karo
+            # after the transfer, verify the remote file size
             remote_size = sftp.stat(remote_path).st_size
             if remote_size != file_size:
                 raise RuntimeError(
-                    f"SFTP transfer incomplete: Proxmox pe {remote_size:,} bytes, "
+                    f"SFTP transfer incomplete: {remote_size:,} bytes on Proxmox, "
                     f"expected {file_size:,} bytes"
                 )
 
@@ -203,10 +203,10 @@ def upload_lxc_to_proxmox_activity(payload: dict) -> dict:
 @activity.defn(name="LXC-Restore-and-Clone-Container")
 def restore_lxc_container_activity(payload: dict) -> dict:
     """
-    Template dump ko Proxmox pe deploy karta hai (clone flow):
-      1. pct restore <tmp_vmid> <dump>  → template CT banta hai
-      2. pct clone <tmp_vmid> <clone_vmid> --full 1  → actual running container
-      3. pct destroy <tmp_vmid>  → temp template hatao
+    Deploys the template dump onto Proxmox (clone flow):
+      1. pct restore <tmp_vmid> <dump>  → creates a template CT
+      2. pct clone <tmp_vmid> <clone_vmid> --full 1  → the actual running container
+      3. pct destroy <tmp_vmid>  → remove the temp template
       4. pct set <clone_vmid> network + features
       5. pct start <clone_vmid>
     """
@@ -267,10 +267,10 @@ def restore_lxc_container_activity(payload: dict) -> dict:
             # File exist + zstd valid?
             f"test -f {dump_path} || (echo 'ERROR: dump not found' && exit 1)",
             f"zstd -t {dump_path} && echo '[OK] zstd valid' || (echo '[FAIL] zstd corrupt' && exit 1)",
-            # LVM free space — pct restore ke liye kam se kam uncompressed size chahiye
+            # LVM free space — pct restore needs at least the uncompressed size
             "vgdisplay pve 2>/dev/null | grep 'Free' || true",
             f"df -h /var/lib/vz/ | tail -1",
-            # tmp_vmid pehle se exist kare to destroy karo (previous failed attempt cleanup)
+            # if tmp_vmid already exists, destroy it (cleanup of a previous failed attempt)
             f"pct status {tmp_vmid} 2>/dev/null && "
             f"(echo 'Cleaning up stale VMID {tmp_vmid}...' && "
             f"pct stop {tmp_vmid} 2>/dev/null; "
@@ -397,10 +397,10 @@ def setup_lxc_container_activity(payload: dict) -> dict:
         "echo '=== [2] Removing stale containers ==='; "
         "podman rm --all --force 2>/dev/null || true; "
 
-        # harbor.yml mein hostname AND external_url dono update karo.
-        # external_url overrides hostname for EXT_ENDPOINT — agar sirf hostname
-        # update karo aur external_url purana rahe to token URL abhi bhi purana IP use karta hai.
-        # Fallback: common/config/core/env mein EXT_ENDPOINT directly bhi update karo.
+        # update BOTH hostname AND external_url in harbor.yml.
+        # external_url overrides hostname for EXT_ENDPOINT — if you only update
+        # hostname and external_url stays old, the token URL still uses the old IP.
+        # Fallback: also update EXT_ENDPOINT directly in common/config/core/env.
         f"NEW_IP='{container_ip}'; "
         # Search /usr/local/src/harbor first (confirmed install path), then fallbacks
         "HARBOR_YML=$(find /usr/local/src/harbor /opt/harbor /root/harbor /etc/harbor "
@@ -465,9 +465,9 @@ def setup_lxc_container_activity(payload: dict) -> dict:
 @activity.defn(name="Harbor-ORAS-Login")
 def oras_login_to_harbor_activity(payload: dict) -> dict:
     """
-    1. /usr/local/src/harbor/common/config/core/env mein EXT_ENDPOINT update karo
-    2. harbor-core restart karo
-    3. HARBOR_ADMIN_PASSWORD wahan se padh ke oras login karo
+    1. Update EXT_ENDPOINT in /usr/local/src/harbor/common/config/core/env
+    2. Restart harbor-core
+    3. Read HARBOR_ADMIN_PASSWORD from there and do an oras login
     """
     container_ip   = payload["container_ip"]
     container_user = payload.get("container_ssh_user", "root")
@@ -478,7 +478,7 @@ def oras_login_to_harbor_activity(payload: dict) -> dict:
     oras_cmd = (
         f"HARBOR_IP='{container_ip}'; "
 
-        # core/env find karo (primary: /usr/local/src/harbor, fallback: /opt/harbor)
+        # find core/env (primary: /usr/local/src/harbor, fallback: /opt/harbor)
         "CORE_ENV=$(find /usr/local/src/harbor /opt/harbor /root/harbor "
         "  -path '*/common/config/core/env' 2>/dev/null | head -1); "
         "if [ -z \"$CORE_ENV\" ]; then "
@@ -486,17 +486,17 @@ def oras_login_to_harbor_activity(payload: dict) -> dict:
         "fi; "
         "echo \"core/env: $CORE_ENV\"; "
 
-        # EXT_ENDPOINT update karo — koi bhi purana IP replace hoga
+        # update EXT_ENDPOINT — any old IP will be replaced
         "sed -i \"s|EXT_ENDPOINT=http://[^/]*|EXT_ENDPOINT=http://$HARBOR_IP|g\" \"$CORE_ENV\"; "
         "echo \"Updated: $(grep EXT_ENDPOINT $CORE_ENV)\"; "
 
-        # harbor-core restart karo nayi config ke saath
+        # restart harbor-core with the new config
         "echo 'Restarting harbor-core...'; "
         "podman restart harbor-core 2>&1; "
         "echo 'Waiting 60s for harbor-core to become healthy...'; "
         "sleep 60; "
 
-        # HARBOR_ADMIN_PASSWORD core/env se padho
+        # read HARBOR_ADMIN_PASSWORD from core/env
         "HARBOR_PASS=$(grep 'HARBOR_ADMIN_PASSWORD' \"$CORE_ENV\" | cut -d'=' -f2 | tr -d '\\r\\n'); "
         "HARBOR_PASS=${HARBOR_PASS:-Harbor12345}; "
         "echo \"Password found: $([ -n \"$HARBOR_PASS\" ] && echo yes || echo no)\"; "
@@ -522,7 +522,7 @@ _FAILURE_STATUSES = {
 @activity.defn(name="LXC-Update-Job-Status-in-DB")
 def update_lxc_job_status_activity(payload: dict) -> None:
     """Final DB status update for the LXC restore job.
-    Failure statuses pe IP automatically release ho jaata hai Ip_Entries table mein."""
+    On failure statuses the IP is automatically released in the Ip_Entries table."""
     db: Session = SessionLocal()
     try:
         job = db.query(LXCRestoreJob).filter(LXCRestoreJob.id == payload["job_id"]).first()
@@ -534,7 +534,7 @@ def update_lxc_job_status_activity(payload: dict) -> None:
                 setattr(job, key, val)
         db.commit()
 
-        # Failure pe IP wapas "unused" mark karo taaki dobaara allocate ho sake
+        # on failure, mark the IP "unused" again so it can be reallocated
         new_status = payload.get("status", "")
         if new_status in _FAILURE_STATUSES and job.ip_address:
             ip_entry = (

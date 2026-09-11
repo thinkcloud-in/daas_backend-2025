@@ -1,6 +1,6 @@
 """
-IP-pool controller — router/ip_router.py ("/v1/ips") is par delegate karta
-hai. Actual DB logic service/IPService.py mein hai.
+IP-pool controller — router/ip_router.py ("/v1/ips") delegates to this. The
+actual DB logic is in service/IPService.py.
 """
 from fastapi import Depends, Query
 from sqlalchemy.orm import Session
@@ -17,16 +17,16 @@ from db_configuration.config import get_db
 
 
 def to_dict(model_instance):
-    """SQLAlchemy model instance ko plain dict mein convert karo (saare columns)."""
+    """Convert a SQLAlchemy model instance into a plain dict (all columns)."""
     return {c.name: getattr(model_instance, c.name) for c in model_instance.__table__.columns}
 
 def create_ips_routes(ips_data, db):
     """
-    Naya IP pool banao.
+    Create a new IP pool.
 
     Used by: POST /v1/ips/add_ips
     Args: ips_data = IPSRequest (pool_name + IP list/range).
-    Returns: success_response ke `data` mein saved pool record.
+    Returns: success_response's `data` has the saved pool record.
     """
     data = create_ips(db, ips_data)
     data_dict = to_dict(data)
@@ -34,10 +34,10 @@ def create_ips_routes(ips_data, db):
 
 def read_ips(ips_id: int, db: Session = Depends(get_db)):
     """
-    Ek IP pool ki detail lo, id se.
+    Get one IP pool's detail, by id.
 
     Used by: GET /v1/ips/ips/{ips_id}
-    Returns: 404 (error_response) agar na mile.
+    Returns: 404 (error_response) if not found.
     """
     data = get_ips(db, ips_id)
     if data is None:
@@ -46,10 +46,10 @@ def read_ips(ips_id: int, db: Session = Depends(get_db)):
 
 def read_all_ips(page: int, page_size: int, db: Session):
     """
-    Saare IP pools list karo (paginated).
+    List all IP pools (paginated).
 
     Used by: GET /v1/ips/get_all_ips
-    Returns: success_response ke `data` mein {"items": [...], "pagination": {...}}.
+    Returns: success_response's `data` has {"items": [...], "pagination": {...}}.
     """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
@@ -69,10 +69,10 @@ def read_all_ips(page: int, page_size: int, db: Session):
 
 def read_pool_names(db: Session):
     """
-    Sirf pool names ki list lo (dropdown ke liye).
+    Get just the list of pool names (for a dropdown).
 
     Used by: GET /v1/ips/ip_pool_names
-    Returns: success_response ke `data` mein [str, ...].
+    Returns: success_response's `data` has [str, ...].
     """
     data = get_all_pool_names(db)
     return success_response(200, "All IP pool names retrieved successfully", data)
@@ -83,11 +83,11 @@ def get_available_ips_route(
     db: Session = Depends(get_db)
 ):
     """
-    Pool se `count` free IPs nikalo (preview — reserve nahi karta).
+    Pull `count` free IPs from a pool (preview only — doesn't reserve them).
 
     Used by: GET /v1/ips/available_ips/{pool_id}
-    Returns: success_response ke `data` mein [str, ...] (IP addresses),
-    404 (error_response) agar itni free IPs na ho.
+    Returns: success_response's `data` has [str, ...] (IP addresses),
+    404 (error_response) if there aren't that many free IPs.
     """
     ips = get_available_ips(db, pool_id, count)
     if not ips:
@@ -97,7 +97,7 @@ def get_available_ips_route(
 
 def delete_pool_by_name(pool_name, db):
     """
-    IP pool (aur uski saari entries) delete karo, naam se.
+    Delete an IP pool (and all its entries), by name.
 
     Used by: DELETE /v1/ips/delete_pool_by_name/{pool_name}
     """
