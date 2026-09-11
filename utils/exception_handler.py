@@ -19,14 +19,12 @@ def exception_handlers(app: FastAPI):
     async def global_exception_handler(request: Request, exc: Exception):
         logger.error(f"[Unhandled Exception] {request.url}: {exc}", exc_info=True)
         traceback.print_exc()
-        response = error_response(500, "Internal Server Error", str(exc))
-        return JSONResponse(status_code=500, content=response.dict())
+        return error_response(500, "Internal Server Error", str(exc))
 
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
         logger.error(f"[Validation Error] {request.url}: {exc.errors()}", exc_info=True)
-        response = error_response(422, "Validation Error", exc.errors())
-        return JSONResponse(status_code=422, content=response.dict())
+        return error_response(422, "Validation Error", exc.errors())
 
     @app.exception_handler(StarletteHTTPException)
     async def http_exception_handler(request: Request, exc: StarletteHTTPException):
@@ -37,14 +35,12 @@ def exception_handlers(app: FastAPI):
         else:
             msg  = exc.detail
             data = None
-        response = error_response(exc.status_code, msg, data)
-        return JSONResponse(status_code=exc.status_code, content=response.dict())
+        return error_response(exc.status_code, msg, data)
 
     @app.exception_handler(SQLAlchemyError)
     async def db_exception_handler(request: Request, exc: SQLAlchemyError):
         logger.error(f"[Database Error] {request.url}: {str(exc)}", exc_info=True)
-        response = error_response(500, "Database Error", str(exc))
-        return JSONResponse(status_code=500, content=response.dict())
+        return error_response(500, "Database Error", str(exc))
 
     @app.exception_handler(WorkflowFailureError)
     async def workflow_failure_exception_handler(request: Request, exc: WorkflowFailureError):
@@ -58,5 +54,4 @@ def exception_handlers(app: FastAPI):
             msg = str(cause)
             cause = getattr(cause, "__cause__", None)
         logger.error(f"[WorkflowFailureError] {request.url}: {msg}", exc_info=True)
-        response = error_response(400, "Workflow Error", msg)
-        return JSONResponse(status_code=400, content=response.dict())
+        return error_response(400, "Workflow Error", msg)
