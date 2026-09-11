@@ -93,7 +93,7 @@ async def delete_ipmi_server_route(ipmi_id, request, db):
     try:
         raw_body = await request.body()
         if not raw_body:
-            return response_format.error_response(400, "Request body is empty", None).dict()
+            return response_format.error_response(400, "Request body is empty", None)
 
         body = json.loads(raw_body)
         email = body.get("email")
