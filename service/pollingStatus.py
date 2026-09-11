@@ -1,3 +1,14 @@
+"""
+pollingStatus — Machine workflow-status aggregation + Temporal "status-poller" cron management.
+
+A machine can have multiple sub-workflows (create/clone-related) — this module's core
+job is to aggregate their combined status/error into `Machine.status`/`Machine.error_message`
+(`update_workflow_status`). The remaining functions manage an always-running Temporal cron
+workflow (`StatusPollerWorkflow`, "* * * * *" — every minute) that periodically refreshes
+machine statuses; this cron follows a singleton pattern (the workflow id is always
+"status-poller", and it first checks whether one is already running to prevent a duplicate
+start).
+"""
 from models.models import Machine
 from temporalio.client import WorkflowExecutionStatus
 from service.temporalResource.workflows import workflows_pollingStatus
@@ -11,7 +22,15 @@ logger = logging.getLogger(__name__)
 
 
 def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: str,vm_status: str = None):
+    """
+    Record a new status/error for one workflow-id in a machine's `workflow_status` JSON dict,
+    then combine the statuses of all workflow-ids to set the machine's overall `.status`/`.error_message`:
+    if all are "COMPLETED" the machine is "COMPLETED" too (vm_status, if given, goes into error_message),
+    otherwise the first non-completed status is used and errors are joined with "; " into error_message.
 
+    Returns: (workflow_status dict, machine.status, machine.error_message) tuple.
+    Raises: Exception if machine_id is not found in the DB.
+    """
     machine = db.query(Machine).filter(Machine.id == machine_id).first()
     if not machine:
         logger.error(f"[update_workflow_status] Machine {machine_id} not found")
@@ -43,6 +62,14 @@ def update_workflow_status(db, machine_id: int, wfid: str, status: str, error: s
     return machine.workflow_status, machine.status, machine.error_message
 
 async def get_workflow_failure_message_simple(workflow_id):
+    """
+    Describe a Temporal workflow's current status, and if it is FAILED, extract the actual
+    failure message from its event history (recursively unwrapping the nested `cause` chain).
+
+    Returns: {"failure_message": str, "status": str} if FAILED, otherwise
+             {"failure_message": "power-off", "status": <status>} for non-failed states
+             (this is a default placeholder, not an actual power-off event).
+    """
     client = await TemporalClientManager.get_temporal_client()
     handle = client.get_workflow_handle(workflow_id)
     desc = await handle.describe()
@@ -72,6 +99,10 @@ async def get_workflow_failure_message_simple(workflow_id):
 _status_poller_workflow_id = None
 
 async def is_status_poller_cron_running():
+    """
+    Check whether the Temporal cron workflow named "status-poller" is already in the RUNNING state.
+    Returns: (True, workflow_id) if running, otherwise (False, None) (exceptions also return (False, None)).
+    """
     # Routine/expected-path checks stay at DEBUG — this runs on every machine
     # creation, not just once, and would otherwise flood app.log with noise
     # that isn't business-logic-relevant. Only genuine failures are logged.
@@ -93,6 +124,14 @@ async def is_status_poller_cron_running():
         return False, None
 
 async def start_status_poller_workflow(force=False):
+    """
+    Start the "status-poller" Temporal cron workflow (`StatusPollerWorkflow`, "* * * * *"),
+    unless one is already running. If `force=True` is given, the existing running workflow is
+    terminated and restarted fresh.
+
+    Returns: {"message","workflow_id","status": "already_running"|"started", ["will_run"]}.
+    Raises: HTTPException 500 if an error occurs while starting the workflow.
+    """
     global _status_poller_workflow_id
 
     is_running, existing_id = await is_status_poller_cron_running()
@@ -140,6 +179,11 @@ async def start_status_poller_workflow(force=False):
         raise HTTPException(status_code=500, detail=f"Error starting status poller workflow: {str(e)}")
 
 async def ensure_status_poller_running(force=False):
+    """
+    A safe wrapper around `start_status_poller_workflow()` — called from app startup; it
+    swallows exceptions and returns an error dict (so it never crashes startup).
+    Returns: the result of `start_status_poller_workflow()`, or {"message": "Error: ...", "status": "error"}.
+    """
     try:
         result = await start_status_poller_workflow(force=force)
         logger.info(f"Status poller ensured (force={force}): {result}")

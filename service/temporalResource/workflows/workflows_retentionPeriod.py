@@ -4,25 +4,24 @@ from service.temporalResource.activity import activities_retentionPeriod
 from temporalio.common import RetryPolicy
 from datetime import timedelta
 
-# NOTE: yaha jaan-boojh kar koi try/except -> raise HTTPException/Exception nahi hai.
-# Temporal workflow ke andar se HTTPException (ya koi bhi custom re-wrapped
-# Exception) raise karne se Temporal ise ek "Workflow Task Failure" samajhta
-# hai (business/activity failure nahi) -- aur Workflow Task Failures ko
-# Temporal server bina kisi limit ke hamesha retry karta rehta hai (koi
-# maximum_attempts cap nahi), jisse workflow kabhi "Failed" state me terminate
-# nahi hota, hamesha ke liye loop karta rehta hai. execute_activity() ka
-# ActivityError ko as-is upar propagate hone dena hi safe/correct tarika hai --
-# Temporal ise khud ek clean, single WorkflowExecutionFailed me convert kar
-# deta hai.
+# NOTE: there is deliberately no try/except -> raise HTTPException/Exception here.
+# Raising an HTTPException (or any custom re-wrapped Exception) from inside a
+# Temporal workflow makes Temporal treat it as a "Workflow Task Failure"
+# (not a business/activity failure) -- and the Temporal server retries
+# Workflow Task Failures forever with no limit (no maximum_attempts cap), so
+# the workflow never terminates in a "Failed" state and loops forever instead.
+# Letting execute_activity()'s ActivityError propagate up as-is is the
+# safe/correct approach -- Temporal itself converts it into a clean, single
+# WorkflowExecutionFailed.
 
 
 @workflow.defn(sandboxed=False)
 class GetNamespacesWorkflow:
     @workflow.run
     async def run(self) -> Dict[str, Any]:
-        # TEMPORAL_SERVER_ADDRESS wrapper API unreachable hone par turant/bounded
-        # fail ho jaye (~30-45s max) -- pehle 5 attempts x 60s timeout se
-        # request 4+ minute tak "pending" reh jaati thi.
+        # Fail fast/bounded (~30-45s max) when the TEMPORAL_SERVER_ADDRESS
+        # wrapper API is unreachable -- previously, with 5 attempts x 60s
+        # timeout, the request stayed "pending" for 4+ minutes.
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,
@@ -41,9 +40,9 @@ class UpdateRetentionWorkflow:
 
     @workflow.run
     async def run(self, namespace: str, retention_days: int) -> Dict[str, Any]:
-        # TEMPORAL_SERVER_ADDRESS wrapper API unreachable hone par turant/bounded
-        # fail ho jaye (~30-45s max) -- pehle 5 attempts x 60s timeout se
-        # request 4+ minute tak "pending" reh jaati thi.
+        # Fail fast/bounded (~30-45s max) when the TEMPORAL_SERVER_ADDRESS
+        # wrapper API is unreachable -- previously, with 5 attempts x 60s
+        # timeout, the request stayed "pending" for 4+ minutes.
         retry_policy = RetryPolicy(
             initial_interval=timedelta(seconds=2),
             backoff_coefficient=2.0,

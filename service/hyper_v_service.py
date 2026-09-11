@@ -1,3 +1,14 @@
+"""
+hyper_v_service — service layer for Hyper-V cluster/VM orchestration.
+
+Plays the same role for Hyper-V that clusterService/controllers.py play for Proxmox:
+communication with the actual Hyper-V host goes through a per-cluster "agent" (a lightweight
+HTTP service running on `cluster.ip`:`cluster.agent_port` — default port 8765). Some
+operations go directly over agent HTTP (get_vms, get_switches, get_vm_info), some go through
+Temporal workflows (clone, delete, ping, verify, rebuild) so that the multi-step
+orchestration (agent call → DB register → power-on) is properly tracked.
+Used by: controllers/hyper_v_controller.py.
+"""
 from typing import Optional, Union
 from fastapi import HTTPException
 from fastapi.encoders import jsonable_encoder
@@ -15,16 +26,23 @@ from urllib.parse import urlparse
 logger = logging.getLogger(__name__)
 
 def unique_id():
+    """Build an `HH:MM:SS` string from the current time, for use as a workflow-id suffix."""
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
-    
+
 #--------helping hand-----------
 def get_agent_url(cluster:Cluster)->str:
+    """Build the Hyper-V agent's base URL from the cluster's first IP + `agent_port` (default 8765)."""
     ip = cluster.ip.split(',')[0] if cluster.ip else "localhost"
     port = cluster.agent_port or 8765
     return f"http://{ip}:{port}"
 
 async def resolve_cluster_from_vm(vm_id: str, db: Session) -> Cluster:
+    """
+    Resolve a VM's parent Cluster from its `vm_id` (Machine → Pool → Cluster chain, case-insensitive vm_id match).
+    Returns: Cluster ORM object.
+    Raises: HTTPException 404 (machine/pool/cluster not found), 500 (pool.cluster_id malformed).
+    """
     # Machine.vm_id is a string, and GUIDs can be case-variant
     machine = db.query(Machine).filter(Machine.vm_id.ilike(str(vm_id))).first()
     if not machine:
@@ -46,6 +64,11 @@ async def resolve_cluster_from_vm(vm_id: str, db: Session) -> Cluster:
 #--------helping hand--------------------
 
 async def get_vms(cluster_id:int, db:Session):
+    """
+    Fetch all of the cluster's VMs directly from the Hyper-V agent (GET `/v1/hyper-v/get_vms`).
+    Returns: list of VM info dicts (the agent's raw "data"; a single-dict response is also wrapped in a list).
+    Raises: HTTPException 404 (cluster not found); the underlying exception is re-raised on agent call failure.
+    """
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -64,6 +87,19 @@ async def get_vms(cluster_id:int, db:Session):
         raise e
 
 async def clone_vm_hyper_v_service(request, skip_name_check: bool = False) -> dict:
+    """
+    Actually clone one or multiple Hyper-V VMs (by calling the agent's `/clone_vm_hyper_v` or
+    `/full_clone_vm_hyper_v` endpoint — is_full_clone is decided from `destination_path`). For
+    multinode clusters it dispatches each VM to the least-loaded node (by VMCount). To avoid
+    naming conflicts it collects existing VM names from both the agent and the DB and generates
+    unique names (`skip_name_check=True` uses the exact given name — the rebuild use-case).
+
+    Params: request (dict or pydantic model) — cluster_id, template_vm_id/template fields,
+            count, name_template, ip_list, domain-join fields, resource overrides, etc.
+    Returns: {"machines_created": int, "created_names": list, "vms": [{"name","vmid","ip"}, ...]},
+             or {"error": "..."} if unique names cannot be found.
+    Raises: HTTPException 404 if cluster_id is not found.
+    """
     req_dict = request if isinstance(request, dict) else jsonable_encoder(request)
     cluster_id = req_dict.get("cluster_id")
     db: Session = SessionLocal()
@@ -281,6 +317,11 @@ async def clone_vm_hyper_v(clone_payload: dict) -> dict:
 
 
 async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Union[int, str]):
+    """
+    Start `PingAgentWorkflow` — checks whether the Hyper-V agent (at the given ip:port) is reachable.
+    Returns: workflow result (connectivity status dict).
+    Raises: HTTPException 500 if the Temporal client is unavailable or the workflow fails to start.
+    """
     workflow_id = f"ping_agent_hyperv-{uuid.uuid4().hex}"
 
     client = await TemporalClientManager.get_temporal_client()
@@ -313,6 +354,12 @@ async def ping_agent(cluster_id: Optional[int], db: Session, ip: str, port: Unio
 
 
 async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
+    """
+    Fetch a VM's details directly from the Hyper-V agent (GET `/v1/hyper-v/get_vm_info/{vm_id}`).
+    If cluster_id is not given, the cluster is auto-resolved from the VM (`resolve_cluster_from_vm`).
+    Returns: the agent's "data" field (dict), or {"error": "..."} on timeout/failure/not-found.
+    Raises: HTTPException 404 if the cluster cannot be resolved.
+    """
     if not cluster_id:
         cluster = await resolve_cluster_from_vm(vm_id, db)
     else:
@@ -349,6 +396,11 @@ async def get_vm_info(vm_id:str, db:Session, cluster_id:int=None):
     return agent_data
     
 async def get_switches(cluster_id:int, db:Session):
+    """
+    List the cluster's Hyper-V virtual switches (GET `/v1/hyper-v/get_switches`, directly from the agent).
+    Returns: the agent's "data" field (list of switch names/objects).
+    Raises: HTTPException 404 if the cluster is not found.
+    """
     cluster = db.query(Cluster).filter(Cluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail="Cluster not found")
@@ -361,6 +413,13 @@ async def get_switches(cluster_id:int, db:Session):
 
 
 async def delete_hyperv_vm(request, db:Session, cluster_id:int=None):
+    """
+    Delete a Hyper-V VM (by POSTing directly to the agent's `/delete_vm_hyper_v` — no Temporal
+    involved). If the AD domain-join credentials are missing, they are auto-filled from the Pool record.
+    In a multinode cluster it first resolves the VM's owning node (`get_node_via_vm_id`).
+    Returns: the agent's raw JSON response.
+    Raises: HTTPException 404 (cluster not found, or the cluster node cannot be resolved).
+    """
     if isinstance(request, str):
         req_dict = {"vm_id": request}
     else:
@@ -412,6 +471,12 @@ async def delete_hyperv_vm(request, db:Session, cluster_id:int=None):
     return data
 
 async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
+    """
+    Fetch a VM's current power status from the Hyper-V agent (GET `/v1/hyper-v/get_status/{vm_id}/...`).
+    Returns: the agent's "data" field (dict).
+    Raises: HTTPException 404 (cluster not found); httpx.HTTPStatusError is re-raised on an agent error
+            (a warning is logged for the 404 case — in cluster environments the VM may be on another node).
+    """
     if not cluster_id:
         cluster = await resolve_cluster_from_vm(vm_id, db)
     else:
@@ -434,6 +499,12 @@ async def get_status(vm_id: str, db:Session, cluster_id:int=None) -> dict:
         raise e
     
 async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
+    """
+    Start `HandleActionHyperVWorkflow` — a generic VM power-action (start/stop/restart/etc.);
+    resolves the cluster from the payload's `vm_id`/`vm_name` and injects `cluster_id` into the payload.
+    Returns: workflow result dict.
+    Raises: HTTPException 404 (cluster not found), 500 (Temporal client/workflow start failure).
+    """
     payload = request.dict() if hasattr(request, "dict") else request
     vm_id_val = payload.get("vm_id") or payload.get("vm_name")
     
@@ -474,6 +545,11 @@ async def handle_action(request, db:Session, cluster_id:int=None) -> dict:
 
 
 async def vm_rebuild(request, db:Session, cluster_id:int=None):
+    """
+    Start `VmRebuildHyperVWorkflow` — re-provisions an existing VM (rebuild from a fresh disk).
+    Returns: workflow result dict on success, {"status":"error","error":"..."} on failure
+             (exceptions are not raised here, they are wrapped in a dict).
+    """
     payload = request.dict() if hasattr(request, "dict") else request
     vm_id = payload.get("vm_id")    
     # if not cluster_id:
@@ -508,6 +584,13 @@ async def vm_rebuild(request, db:Session, cluster_id:int=None):
         return {"status": "error", "error": str(e)}
 
 async def pool_rebuild(request, db:Session, cluster_id:int = None):
+    """
+    Start `HyperVPoolRebuildWorkflow` (fire-and-forget — does not wait for the result) — rebuilds
+    all of a pool's VMs from a new vhdPath.
+    Returns: {"workflow_id","status":"success","msg":"..."} if the workflow started,
+             {"status":"error","error":"..."} on failure.
+    Raises: HTTPException 404 if the pool/cluster cannot be resolved.
+    """
     payload = request.dict() if hasattr(request, "dict") else request
     pool_id = payload.get("pool_id")
     
@@ -548,6 +631,12 @@ async def pool_rebuild(request, db:Session, cluster_id:int = None):
         return {"status": "error", "error": str(e)}
 
 async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None):
+    """
+    Start `VerifyHyperVWorkflow` — verifies reachability/auth to a Hyper-V host using the given
+    agent credentials (ip/username/password/agent_port) (before adding the cluster).
+    Returns: workflow result (verification status dict).
+    Raises: HTTPException 500 if the Temporal client is unavailable or the workflow fails to start.
+    """
     workflow_id = f"verify_hyper_v-{uuid.uuid4().hex}"
 
     client = await TemporalClientManager.get_temporal_client()
@@ -578,6 +667,12 @@ async def verify_hyper_v(request, db: Session, cluster_id: Optional[int] = None)
     return result
 
 async def fetch_hyper_v_cluster_nodes(request:dict):
+    """
+    Start `FetchClusterNodesWorkflow` — lists the member nodes of a Hyper-V failover cluster
+    using the given credentials (for node discovery while adding a cluster).
+    Returns: workflow result (list of nodes).
+    Raises: HTTPException 500 if the Temporal client is unavailable or the workflow fails to start.
+    """
     workflow_id = f"fetch_cluster_nodes-{uuid.uuid4().hex}"
     client = await TemporalClientManager.get_temporal_client()
     if client is None:

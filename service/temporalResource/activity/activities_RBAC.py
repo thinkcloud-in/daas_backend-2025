@@ -152,11 +152,11 @@ async def deleting_role_activity(role_name: str, authorization: str):
             get_res = await client.delete(url, headers=auth_header)
             logger.info(f"Keycloak DELETE response status: {url} -> {get_res.status_code}")
             
-            # Keycloak delete karne par 204 (No Content) ya 200 deta hai
+            # A Keycloak delete returns 204 (No Content) or 200
             if get_res.status_code in [200, 204]:
                 logger.info(f"Successfully deleted realm role '{role_name}' from Keycloak.")
             elif get_res.status_code == 404:
-                # Agar Keycloak par wo role pehle se hi nahi hai, toh use error nahi balki success maanenge
+                # If that role is already absent in Keycloak, treat it as success rather than an error
                 logger.warning(f"Role '{role_name}' not found in Keycloak (Already deleted).")
             else:
                 raise Exception(f"Keycloak deletion failed with status {get_res.status_code}: {get_res.text}")
@@ -182,7 +182,7 @@ async def deleting_role_activity(role_name: str, authorization: str):
 
 
 def _prepare_keycloak_attributes(components_list: list) -> dict:
-    """Components ki list ko safely 3 chunks mein distribute karke comma-separated banata hai."""
+    """Safely distribute the components list into 3 chunks and make each comma-separated."""
     clean_comps = [c.strip() for c in components_list if c.strip()]
     n = len(clean_comps)
 

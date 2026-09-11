@@ -1,3 +1,12 @@
+"""
+schedule_service — service layer for report scheduling (Guacamole session reports emailed periodically).
+
+As soon as a new schedule is created, a Temporal Schedule (recurring cron) is set up in a
+background thread (`temporalService.temporal_schedules` — the asyncio event loop runs in a
+separate thread so the sync `post_data()` caller is not blocked). The remaining CRUD
+reads/updates/deletes all go through Temporal workflows.
+Used by: controllers/schedule_controller.py.
+"""
 import threading
 from fastapi import HTTPException
 from models.schedule_model import Schdeule
@@ -21,7 +30,12 @@ GUACAMOLE_REPORT_URL = os.getenv('GUACAMOLE_REPORT_URL')
 HORIZON_REPORT_URL = os.getenv('HORIZON_REPORT_URL')
 
 def run_temporal_schedule(*args):
-
+    """
+    Entry point for the background thread: creates its own new asyncio event loop and runs
+    `temporal_schedules(*args)` (which sets up the Temporal recurring Schedule for report emailing).
+    Raises: HTTPException 500 if scheduling fails (inside the thread — it does not propagate to the
+            caller, only the thread crashes; `post_data` starts this fire-and-forget in a daemon thread).
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -31,6 +45,7 @@ def run_temporal_schedule(*args):
     finally:
         loop.close()
 def schedul_id(username: str, schedule_type: str, report_type: str):
+    """Build a human-readable unique schedule ID: "{user}-{schedule-type-initial}-{report-code}-{timestamp}"."""
     date_time = datetime.now().replace(microsecond=0)
     dateTime = date_time.strftime("%Y%m%d%H-%M%S")
     
@@ -43,6 +58,14 @@ def schedul_id(username: str, schedule_type: str, report_type: str):
     res = user + '-' + schedule + '-' + report + '-' + dateTime
     return res
 def post_data(item, db):
+    """
+    Create a new report-schedule in the DB and kick off its Temporal recurring-schedule setup
+    in a daemon background thread (non-blocking — the HTTP response does not wait for the
+    schedule to be created).
+    Params: item — {.userEmail,.receiverEmail (comma-separated),.reportName,.time,.schedule_date,.schedule_type}.
+    Returns: Schdeule ORM object (the DB record; Temporal schedule creation may still be pending in the background).
+    Raises: HTTPException 500 if the SMTP config is missing or a DB error occurs (after rollback).
+    """
     try:
         scheduleId = schedul_id(
             username=item.userEmail, 
@@ -94,11 +117,13 @@ def post_data(item, db):
         raise HTTPException(status_code=500, detail=f"Error while creating item: {str(e)}")
 
 def unique_id():
+    """Build an `HH:MM:SS` string from the current time, for use as a workflow-id suffix."""
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-    
+
 async def get_data():
+    """Start `get_report_data_workflow` — lists all schedules. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     
@@ -112,6 +137,7 @@ async def get_data():
 
 
 async def get_data_id(item_id:int):
+    """Start `get_report_data_by_id_workflow` — the detail of a single schedule. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     
@@ -126,6 +152,7 @@ async def get_data_id(item_id:int):
 
 
 async def get_data_report(limit: int, offset: int, db):
+    """Start `get_report_along_report_workflow` — paginated schedules + their report data. Returns the workflow result."""
     uniqueID = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     
@@ -139,6 +166,11 @@ async def get_data_report(limit: int, offset: int, db):
     return result
 
 async def update_data_id(item_id: int, item, db):
+    """
+    Start `update_schedule_data_id_workflow` — updates one schedule record.
+    Returns: the workflow result's "data" field.
+    Raises: HTTPException with the workflow's own status_code/msg if the result code != 200; 500 on workflow-start failure.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
 
@@ -160,6 +192,7 @@ async def update_data_id(item_id: int, item, db):
 
 
 async def delete_data_id(item_id: int, db):
+    """Start `delete_schedule_data_id_workflow` — deletes one schedule. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
 
@@ -174,6 +207,13 @@ async def delete_data_id(item_id: int, db):
 
 
 async def get_temporal_status(schedule_id: str):
+    """
+    Resolve the latest execution status of a Temporal Schedule (schedule → its recent action →
+    the workflow that action started → mapping its describe() to a status code).
+    Returns: "PENDING" (no execution has happened yet), "RUNNING"/"COMPLETED"/"FAILED"/
+             "CANCELED"/"TERMINATED"/"TIMED_OUT" (mapped from workflow status codes 1-6),
+             "Workflow not found...", or an "Error : ..."/exception string on failure (never raises).
+    """
     async def get_schedule_execution_details(schedule_id):
         client = await TemporalClientManager.get_temporal_client()
         schedule_handle = client.get_schedule_handle(schedule_id)

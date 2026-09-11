@@ -33,7 +33,7 @@ _HARBOR_PUSH_WF_TYPE  = "HarborPushWorkflow"
 
 
 async def _enrich_k8s_deploy(wf: dict) -> dict:
-    """K8s Harbor deploy workflow ko DB steps_log se enrich karo."""
+    """Enrich a K8s Harbor deploy workflow with its DB steps_log."""
     import json as _json
     from db_configuration.config import SessionLocal
     from models.kubernetes_deploy_model import KubernetesDeployment
@@ -85,7 +85,7 @@ async def _enrich_k8s_deploy(wf: dict) -> dict:
 
 
 async def _enrich_harbor_push(wf: dict) -> dict:
-    """HarborPushWorkflow ko library item push_status se enrich karo."""
+    """Enrich a HarborPushWorkflow with the library item's push_status."""
     from db_configuration.config import SessionLocal
     from models.library_model import LibraryItem
 
@@ -132,8 +132,8 @@ TEMPORAL_SERVER = os.getenv("TEMPORAL_SERVER")
 @router.post('/get_proxmox_storages', response_model=APIResponse)
 async def get_proxmox_storages(payload: models.NodeRequest, db: Session = Depends(get_db)):
     """
-    Proxmox node(s) pe available storages list karo (VM/pool create karte
-    waqt "storage" dropdown ke liye).
+    List the storages available on Proxmox node(s) (for the "storage"
+    dropdown when creating a VM/pool).
 
     Request body: models.NodeRequest (cluster_id + node names).
     Response `data`: [ {"storage": str, "type": str, "avail": int, ...}, ... ]
@@ -149,11 +149,11 @@ async def get_proxmox_networks(payload: models.NodeRequest, db: Session = Depend
 @router.post('/create_pool', response_model=APIResponse)
 async def create_pool_endpoint(pool_data: models.CreatePoolBase, db: Session = Depends(get_db)):
     """
-    Naya VDI pool banao (Guacamole connection-group + Proxmox/Hyper-V VM
+    Create a new VDI pool (a Guacamole connection-group + Proxmox/Hyper-V VM
     template binding — RDP/SSH/VNC settings, IP-pool, machine-naming pattern
-    sab CreatePoolBase mein).
+    are all in CreatePoolBase).
 
-    Response `data`: created pool ka summary/id.
+    Response `data`: the created pool's summary/id.
     """
     pool_data_dict = pool_data.dict()
     res = await controller.create_pool(pool_data_dict,db)
@@ -162,15 +162,15 @@ async def create_pool_endpoint(pool_data: models.CreatePoolBase, db: Session = D
 @router.get('/retrive_pool/{pool_name}', response_model=APIResponse)
 async def retrive_machihe(pool_name:str,db: Session = Depends(get_db)):
     """
-    Pool ki detail lo, naam se (DB se direct, Temporal ke bina — fast path).
+    Get a pool's detail, by name (direct from the DB, no Temporal — the fast path).
 
-    Response `data`: {"msg": str, "pool": {...saare Pool columns...}}
-    NOTE: `pool` object mein Pool model ke saare columns raw jaate hain,
-    jisme `pool_password`, `pool_ad_password`, `pool_gateway_password`,
-    `pool_sftp_password`, `pool_private_key`, etc. bhi shamil hain — abhi
-    plaintext mein return hote hain (encrypt/redact nahi hote). Yeh sirf
-    documentation pass hai, fix nahi kiya gaya — alag se dekhna hoga
-    (Cluster.password jaisa hi issue jo pehle fix kiya tha).
+    Response `data`: {"msg": str, "pool": {...every Pool column...}}
+    NOTE: the `pool` object includes every column of the Pool model raw,
+    including `pool_password`, `pool_ad_password`, `pool_gateway_password`,
+    `pool_sftp_password`, `pool_private_key`, etc. — these currently come
+    back in plaintext (not encrypted/redacted). This is a documentation-only
+    pass, not fixed here — needs a separate look (the same kind of issue as
+    Cluster.password, which was already fixed).
     """
     res = await controller.retrive_pool_data(pool_name ,db)
     return response_format.success_response(200, "Pool retrieved successfully.", res)
@@ -178,11 +178,11 @@ async def retrive_machihe(pool_name:str,db: Session = Depends(get_db)):
 @router.put('/vdi_pools/update_pool/{pool_id}', response_model=APIResponse)
 async def update_pool_route(pool_id: str, request: Request, db: Session = Depends(get_db)):
     """
-    Pool settings update karo (raw JSON body — jo bhi keys do, unhi columns
-    pe update hota hai).
+    Update pool settings (raw JSON body — whatever keys you send get
+    updated on the matching columns).
 
-    Request body: {"email": str, ...koi bhi Pool column...}
-    Response `data`: update-result summary.
+    Request body: {"email": str, ...any Pool column...}
+    Response `data`: the update-result summary.
     """
     pool_id_int = int(pool_id)
 
@@ -197,10 +197,10 @@ async def update_pool_route(pool_id: str, request: Request, db: Session = Depend
 @router.delete('/delete_pool/{pool_id}', response_model=APIResponse)
 async def delete_pool_route(pool_id: str, request: Request, db: Session = Depends(get_db)):
     """
-    Pool delete karo (Temporal workflow — pool ke saare machines bhi cleanup
-    hoti hain).
+    Delete a pool (via a Temporal workflow — all of the pool's machines get
+    cleaned up too).
 
-    Request body: {"email": str}  (audit ke liye, empty body pe 400).
+    Request body: {"email": str}  (for audit, 400 on an empty body).
     Response `data`: {"workflow_id": str, "status": "started", ...}
     """
     pool_id_int = int(pool_id)
@@ -218,7 +218,7 @@ async def delete_pool_route(pool_id: str, request: Request, db: Session = Depend
 @router.get('/pools_names', response_model=APIResponse)
 async def list_pools_names(db: Session = Depends(get_db)):
     """
-    Sirf pool names ki list lo (dropdown ke liye).
+    Get just the list of pool names (for a dropdown).
 
     Response `data`: {"msg": str, "pool_names": [str, ...]}
     """
@@ -229,7 +229,7 @@ async def list_pools_names(db: Session = Depends(get_db)):
 @router.get('/vdi_pools/pools', response_model=APIResponse)
 async def list_pools(page: int = 1, page_size: int = 10):
     """
-    Saare pools list karo (paginated).
+    List all pools (paginated).
 
     Response `data`:
         {"items": [ {..pool summary..}, ... ], "pagination": {page, page_size, total, total_pages, has_next, has_prev}}
@@ -244,11 +244,11 @@ async def list_pools(page: int = 1, page_size: int = 10):
 @router.get("/vdi_pools/pool/{pool_id}", response_model=APIResponse)
 async def get_pool_details_route(pool_id: int):
     """
-    Pool ki detail lo, id se.
+    Get a pool's detail, by id.
 
-    Response `data`: {"msg": str, "pool": {...saare Pool columns, "cluster": str...}}
-    NOTE: same security caveat as `/retrive_pool/{pool_name}` — raw
-    credential columns bhi is response mein aate hain.
+    Response `data`: {"msg": str, "pool": {...every Pool column, "cluster": str...}}
+    NOTE: same security caveat as `/retrive_pool/{pool_name}` — the raw
+    credential columns come through in this response too.
     """
     data = await controller.get_pool_details(pool_id)
     return response_format.success_response(200, "Pool details retrieved successfully.", data)
@@ -257,9 +257,9 @@ async def get_pool_details_route(pool_id: int):
 @router.post('/vdi_pools/create_machine',response_model=APIResponse)
 async def create_machine_endpoint(machine_data: models.CreateMachineBase):
     """
-    Ek pool mein naya machine/connection add karo.
+    Add a new machine/connection to a pool.
 
-    Response `data`: created machine ka summary/id.
+    Response `data`: the created machine's summary/id.
     """
     data = await controller.create_machine( machine_data)
     return response_format.success_response(200, "Machine created successfully.", data)
@@ -267,11 +267,11 @@ async def create_machine_endpoint(machine_data: models.CreateMachineBase):
 @router.delete("/vdi_pools/delete_machine/{machine_id}", response_model=APIResponse)
 async def delete_machine_by_id(machine_id: str, email: str, db: Session = Depends(get_db)):
     """
-    Machine (Guacamole connection) delete karo.
+    Delete a machine (Guacamole connection).
 
-    Query param: `email` (required, audit ke liye).
-    Response `data`: deletion summary.
-    Errors: 400 agar `email` na diya ho.
+    Query param: `email` (required, for audit).
+    Response `data`: the deletion summary.
+    Errors: 400 if `email` isn't given.
     """
     if not email:
         raise HTTPException(status_code=400, detail="Email is required")
@@ -283,9 +283,9 @@ async def delete_machine_by_id(machine_id: str, email: str, db: Session = Depend
 @router.put('/vdi_pools/update_machine/{machine_identifier}', response_model=APIResponse)
 async def update_machine_endpoint(machine_identifier: str, machine_data: models.UpdateMachineBase):
     """
-    Machine/connection settings update karo.
+    Update a machine/connection's settings.
 
-    Response `data`: updated machine summary.
+    Response `data`: the updated machine summary.
     """
     data = await controller.update_machine( machine_identifier,machine_data)
     return response_format.success_response(200, "Machine updated successfully.", data)
@@ -295,7 +295,7 @@ async def update_machine_endpoint(machine_identifier: str, machine_data: models.
 @router.get("/machines", response_model=APIResponse)
 async def list_machines():
     """
-    Saare machines (across all pools) list karo.
+    List all machines (across all pools).
 
     Response `data`: [ {..machine summary: id, name, pool_id, status, ip, ...}, ... ]
     """
@@ -306,11 +306,11 @@ async def list_machines():
 @router.put("/machines/{machine_identifier}/is_custom_machine/", response_model=APIResponse)
 async def update_machine_isCustom_field(machine_identifier: str, machine_data: models.IsCustomeValue):
     """
-    Machine ka `is_custom` flag toggle karo (custom-named/standalone machine
-    vs pool-managed/auto-named machine).
+    Toggle a machine's `is_custom` flag (custom-named/standalone machine vs
+    pool-managed/auto-named machine).
 
     Request body: models.IsCustomeValue = {"is_custom": bool}
-    Response `data`: updated machine summary.
+    Response `data`: the updated machine summary.
     """
     res = await controller.update_is_custom_machine( machine_identifier, machine_data)
     return response_format.success_response(200, "Machine is_custom field updated successfully.", res)
@@ -319,7 +319,7 @@ async def update_machine_isCustom_field(machine_identifier: str, machine_data: m
 #route to assign user to a machine
 @router.post("/add_user_to_machine/{machine_id}/{user_id}", response_model=APIResponse)
 async def add_user(machine_id: str, user_id: str):
-    """User ko machine access assign karo (Guacamole permission grant)."""
+    """Grant a user access to a machine (a Guacamole permission grant)."""
     res = await controller.add_user_to_machine( machine_id, user_id)
     return response_format.success_response(200, "User added to machine successfully.", res)
 
@@ -327,7 +327,7 @@ async def add_user(machine_id: str, user_id: str):
 #delete user from the machine
 @router.delete("/delete_user_from_machine/{machine_id}/{user_id}", response_model=APIResponse)
 async def delete_user(machine_id: str, user_id: str):
-    """User ka machine access revoke karo."""
+    """Revoke a user's access to a machine."""
     res = await controller.delete_user_from_machine( machine_id, user_id)
     return response_format.success_response(200, "User deleted from machine successfully.", res)
 
@@ -336,7 +336,7 @@ async def delete_user(machine_id: str, user_id: str):
 @router.get("/pool/machines/{pool_id}", response_model=APIResponse)
 async def list_machines_in_pool(pool_id: str):
     """
-    Ek pool ke saare machines list karo.
+    List all machines in a pool.
 
     Response `data`: [ {..machine summary..}, ... ]
     """
@@ -349,7 +349,7 @@ async def list_machines_in_pool(pool_id: str):
 @router.get("/machine/users/{machine_id}", response_model=APIResponse)
 async def list_assigned_users_route(machine_id: str):
     """
-    Ek machine ko assigned saare users list karo.
+    List all users assigned to a machine.
 
     Response `data`: [ {"user_id": str, "username": str, ...}, ... ]
     """
@@ -361,7 +361,7 @@ async def list_assigned_users_route(machine_id: str):
 @router.get("/machine/{machine_id}", response_model=APIResponse)
 async def get_machine_details_route(machine_id: str):
     """
-    Ek machine ki poori detail lo.
+    Get a machine's full detail.
 
     Response `data`: {..machine record: id, name, pool_id, ip, status, ...}
     """
@@ -379,16 +379,15 @@ async def get_machine_details_route(machine_id: str):
 @router.post('/create_cluster', response_model=APIResponse)
 async def create_cluster_endpoint(cluster_data: models.CreateClusterBase):
     """
-    Naya Proxmox/VMware/Hyper-V cluster add karo (type ke hisaab se alag
-    validation/setup hoti hai — Proxmox ke liye API-token bhi auto-create
-    hota hai).
+    Add a new Proxmox/VMware/Hyper-V cluster (validation/setup differs by
+    type — an API token is also auto-created for Proxmox).
 
     Request body: models.CreateClusterBase.
-    Response `data`: {"cluster": {...password field kabhi nahi..., "ip": [str,...]}}
-    (password DB mein encrypted save hoti hai, response se hamesha excluded.)
+    Response `data`: {"cluster": {...password field never included..., "ip": [str,...]}}
+    (the password is saved encrypted in the DB, always excluded from the response.)
 
-    Errors: agar naam/IP already exist kare to plain error-message string
-    return hoti hai (exception nahi).
+    Errors: if the name/IP already exists, a plain error-message string is
+    returned (not an exception).
     """
     cluster_data_dict = cluster_data.dict()
     res = await controller.create_cluster(cluster_data_dict)
@@ -398,16 +397,16 @@ async def create_cluster_endpoint(cluster_data: models.CreateClusterBase):
 @router.get('/cluster/clusters', response_model=APIResponse[Any])
 async def list_clusters(page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
     """
-    Saare clusters list karo (paginated).
+    List all clusters (paginated).
 
     Response `data`:
         {
           "items": [ {id, type, name, ip, port, agent_port, username, tls, node_type} , ... ],
           "pagination": {page, page_size, total, total_pages, has_next, has_prev}
         }
-    `password` field kabhi response mein nahi aata (dekho `strip_password`
-    helper — encrypt/decrypt DB level pe hota hai, plaintext kabhi client
-    tak nahi jaata).
+    The `password` field never appears in the response (see the
+    `strip_password` helper — encrypt/decrypt happens at the DB level,
+    plaintext never reaches the client).
     """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
@@ -430,11 +429,11 @@ async def list_clusters(page: int = 1, page_size: int = 10, db: Session = Depend
 @router.get("/cluster/{cluster_id}", response_model=APIResponse)
 async def get_cluster_details_endpoint(cluster_id: str, db: Session = Depends(get_db)):
     """
-    Ek cluster ki detail lo.
+    Get one cluster's detail.
 
-    Response `data`: cluster record (upar `list_clusters` jaisa shape,
-    `password` field kabhi nahi).
-    Errors: 404 agar cluster_id na mile.
+    Response `data`: the cluster record (same shape as `list_clusters`
+    above, `password` field never included).
+    Errors: 404 if cluster_id is not found.
     """
     res = await controller.get_cluster_details(db, cluster_id)
     res_json = strip_password(jsonable_encoder(res))
@@ -444,12 +443,11 @@ async def get_cluster_details_endpoint(cluster_id: str, db: Session = Depends(ge
 @router.delete('/cluster/delete_cluster/{cluster_id}', response_model=APIResponse)
 async def delete_cluster_route(cluster_id: str, request: Request, db: Session = Depends(get_db)):
     """
-    Cluster delete karo (Temporal workflow).
+    Delete a cluster (via a Temporal workflow).
 
-    Request body: {"email": str}  (audit ke liye, empty body pe 400).
-    Response `data`: delete-result.
-    Errors: 400 agar isse linked active Pools/Machines hon (pehle unhe
-    delete karo).
+    Request body: {"email": str}  (for audit, 400 on an empty body).
+    Response `data`: the delete-result.
+    Errors: 400 if it has linked active Pools/Machines (delete those first).
     """
     # cluster_id_int = int(cluster_id)
     raw_body = await request.body()
@@ -464,12 +462,12 @@ async def delete_cluster_route(cluster_id: str, request: Request, db: Session = 
 @router.put('/cluster/update_cluster/{cluster_id}', response_model=APIResponse)
 async def update_cluster_endpoint(cluster_id: str, cluster_data: models.UpdateClusterBase, db: Session = Depends(get_db)):
     """
-    Cluster credentials/settings update karo (Temporal workflow).
+    Update cluster credentials/settings (via a Temporal workflow).
 
-    Request body: models.UpdateClusterBase (sab optional — sirf jo change
-    karni ho wo do).
-    Response `data`: update-result (`password` field kabhi nahi).
-    Errors: 404 agar cluster_id na mile.
+    Request body: models.UpdateClusterBase (everything optional — only send
+    what you want to change).
+    Response `data`: the update-result (`password` field never included).
+    Errors: 404 if cluster_id is not found.
     """
     res = await controller.update_cluster(db, cluster_id, cluster_data)
     return response_format.success_response(200, "Cluster updated successfully.", res)
@@ -482,11 +480,11 @@ async def update_cluster_endpoint(cluster_id: str, cluster_data: models.UpdateCl
 @router.post('/domain/ad_ldap_connection' ,response_model=APIResponse)
 async def ldap_Configuration(ldap_data:models.LDAPCredential):
     """
-    Naya AD/LDAP provider Keycloak mein configure karo (user-sync source).
+    Configure a new AD/LDAP provider in Keycloak (a user-sync source).
 
     Request body: models.LDAPCredential.
-    Response `data`: Keycloak ka create-result.
-    Errors: 500 (error_response) agar Keycloak call fail ho.
+    Response `data`: Keycloak's create-result.
+    Errors: 500 (error_response) if the Keycloak call fails.
     """
     res =  await key_config.configuration_ad(ldap_data)
     if isinstance(res, dict) and res.get("msg") == "Error occurred":
@@ -497,7 +495,7 @@ async def ldap_Configuration(ldap_data:models.LDAPCredential):
 @router.get('/ldaps', response_model=APIResponse)
 async def get_LDAPs_from_keycloak_endpoint():
     """
-    Saare configured LDAP providers list karo.
+    List all configured LDAP providers.
 
     Response `data`: [ {..Keycloak LDAP provider config..}, ... ]
     """
@@ -510,12 +508,11 @@ async def get_LDAPs_from_keycloak_endpoint():
 @router.post('/domain/test_ldap_connection', response_model=APIResponse)
 async def test_ldap_connection_endpoint(ldap_data:models.LDAP_test_connection_model):
     """
-    LDAP server se network/bind connection test karo (DB me save kiye
-    bina).
+    Test a network/bind connection to an LDAP server (without saving it to the DB).
 
-    NOTE: yeh function seedha Keycloak ke result ko return karta hai — koi
-    aur success_response wrapping nahi (comment mein bhi likha hai isko
-    badalne se workflow break ho sakta hai).
+    NOTE: this function returns Keycloak's result directly — no extra
+    success_response wrapping (there's also a comment below saying changing
+    this could break the workflow).
     """
     res = await key_config.test_ldap_connection(ldap_data)
     return res #--------------don't change this format it may break the workflow and response format
@@ -524,10 +521,10 @@ async def test_ldap_connection_endpoint(ldap_data:models.LDAP_test_connection_mo
 @router.post('/domain/test_ldap_authentication', response_model=APIResponse)
 async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connection_model):
     """
-    Ek diye gaye user-credential se LDAP authentication test karo.
+    Test LDAP authentication with a given user credential.
 
-    NOTE: same as `test_ldap_connection` — raw Keycloak result return hota
-    hai, koi extra wrapping nahi.
+    NOTE: same as `test_ldap_connection` — returns the raw Keycloak result,
+    no extra wrapping.
     """
     res = await key_config.test_ldap_authentication(ldap_data)
     return res #--------------don't change this format it may break the workflow and response format
@@ -535,7 +532,7 @@ async def test_ldap_authentication_endpoint(ldap_data:models.LDAP_test_connectio
 # Route to delete LDAP configuration
 @router.delete('/domain/delete_ldap_configuration/{ldap_id}', response_model=APIResponse)
 async def delete_ldap_config_endpoint(ldap_id: str):
-    """LDAP provider delete karo Keycloak se."""
+    """Delete an LDAP provider from Keycloak."""
     res = await key_config.delete_ldap_config(ldap_id)
     if isinstance(res, dict) and res.get("msg") == "Error occurred":
         return response_format.error_response(500, res.get("error", "Failed to delete LDAP configuration"), res)
@@ -544,7 +541,7 @@ async def delete_ldap_config_endpoint(ldap_id: str):
 # get LDAP details by id
 @router.get('/domain/get_ldap_by_id/{ldap_id}', response_model=APIResponse)
 async def get_LDAP_by_id_endpoint(ldap_id: str):
-    """Ek LDAP provider ki config detail lo."""
+    """Get one LDAP provider's config detail."""
     data = await key_config.get_LDAP_by_id(ldap_id)
     if isinstance(data, dict) and data.get("msg") == "Error occurred":
         return response_format.error_response(500, data.get("error", "Failed to retrieve LDAP configuration"), data)
@@ -553,7 +550,7 @@ async def get_LDAP_by_id_endpoint(ldap_id: str):
 # update_ldap_config
 @router.put('/domain/update_ldap_config/{ldap_id}')
 async def update_ldap_config_endpoint(ldap_data: models.LDAPCredential,ldap_id: str):
-    """LDAP provider config update karo."""
+    """Update an LDAP provider's config."""
     ldap_data_dict = ldap_data.dict()
     data = await key_config.update_ldap_config(ldap_data_dict,ldap_id)
     if isinstance(data, dict) and data.get("msg") == "Error occurred":
@@ -562,25 +559,25 @@ async def update_ldap_config_endpoint(ldap_data: models.LDAPCredential,ldap_id: 
 
 @router.get('/domain/sync_users/{ldap_id}', response_model=APIResponse)
 async def sync_ad_user_from_keycloak(ldap_id: str):
-    """LDAP se naye/existing users ko Keycloak mein sync (import) karo."""
+    """Sync (import) new/existing LDAP users into Keycloak."""
     res = await key_config.sync_user_from_keycloak(ldap_id)
     return response_format.success_response(200, "User synced successfully.", res)
 
 @router.get('/domain/sync_changed_users/{ldap_id}', response_model=APIResponse)
 async def sync_changed_users_from_keycloak_endpoint(ldap_id: str):
-    """LDAP mein change hue users (naam/email/attributes) ko re-sync karo."""
+    """Re-sync users that changed in LDAP (name/email/attributes)."""
     res = await key_config.sync_changed_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Changed users synced successfully.", res)
 
 @router.get('/domain/unlink_users/{ldap_id}', response_model=APIResponse)
 async def unlink_users_from_keycloak_endpoint(ldap_id: str):
-    """LDAP-linked users ko unlink karo (Keycloak account rehta hai, LDAP se disconnect ho jaata hai)."""
+    """Unlink LDAP-linked users (the Keycloak account stays, it's just disconnected from LDAP)."""
     res = await key_config.unlink_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Users unlinked successfully.", res)
 
 @router.get('/domain/remove_imported_users/{ldap_id}', response_model=APIResponse)
 async def remove_imported_users_from_keycloak_endpoint(ldap_id: str):
-    """LDAP se import hue saare users ko Keycloak se hi delete kar do."""
+    """Delete all users imported from an LDAP provider, from Keycloak."""
     res = await key_config.remove_imported_users_from_keycloak(ldap_id)
     return response_format.success_response(200, "Imported users removed successfully.", res)
 
@@ -591,10 +588,10 @@ async def remove_imported_users_from_keycloak_endpoint(ldap_id: str):
 @router.put('/totp/enable-disable-totp-browser/{value}')
 def enable_browser_authflow(value):
     """
-    Admin login (browser) ke liye globally OTP enforce/disable karo.
+    Globally enforce/disable OTP for admin (browser) login.
 
     Path param: value = "true"|"false" (string).
-    Response: Keycloak auth-flow-update result (raw, koi envelope nahi).
+    Response: Keycloak's auth-flow-update result (raw, no envelope).
     """
     if value == 'true':
         value=True
@@ -605,10 +602,10 @@ def enable_browser_authflow(value):
 @router.put('/totp/enable-disable-guac/{value}')
 def enable_browser_guacamole_authflow(value):
     """
-    Guacamole (end-user) login ke liye globally OTP enforce/disable karo.
+    Globally enforce/disable OTP for Guacamole (end-user) login.
 
     Path param: value = "true"|"false" (string).
-    Response: Keycloak auth-flow-update result (raw).
+    Response: Keycloak's auth-flow-update result (raw).
     """
     if value == 'true':
         value=True
@@ -619,16 +616,16 @@ def enable_browser_guacamole_authflow(value):
 @router.get('/totp/get-enable-disable-totp-browser')
 def  get_enable_browser_authflow():
     """
-    Admin-browser OTP flag ka current state lo.
+    Get the current state of the admin-browser OTP flag.
 
-    Response: bool (raw, koi envelope nahi) — True = OTP required.
+    Response: bool (raw, no envelope) — True = OTP required.
     """
     return  key_config.get_Auth_flow_Value_browser()
 
 @router.get('/totp/get-enable-disable-guac')
 def get_enable_browser_guacamole_authflow():
     """
-    Guacamole OTP flag ka current state lo.
+    Get the current state of the Guacamole OTP flag.
 
     Response: bool (raw) — True = OTP required.
     """
@@ -637,10 +634,10 @@ def get_enable_browser_guacamole_authflow():
 @router.post('/totp/reset-guac-totp/{user_id}')
 def reset_guac_totp(user_id: str):
     """
-    Ek user ka TOTP/OTP setup reset karo (Keycloak se OTP credential remove
-    — user ko dobara QR-scan karke setup karna padega).
+    Reset a user's TOTP/OTP setup (removes the OTP credential from Keycloak
+    — the user will need to set it up again via QR-scan).
 
-    Response: Keycloak reset-result (raw).
+    Response: Keycloak's reset-result (raw).
     """
     return  key_config.reset_guac_totp(user_id)
 
@@ -673,11 +670,11 @@ def verify_totp(body: _TOTPVerifyBody, request: Request):
     If user has no OTP configured in Keycloak, returns verified=True (OTP not required).
 
     Request body: {"totp_code": str}
-    Header: Authorization (Bearer, required — user pehchanne ke liye).
+    Header: Authorization (Bearer, required — to identify the user).
 
-    Response `data`: {"verified": true}. Verification 5 minute ke liye cache
-    hoti hai (isi window mein delete jaisi sensitive actions bina dobara
-    OTP maange chalti hain).
+    Response `data`: {"verified": true}. The verification is cached for 5
+    minutes (sensitive actions like delete can proceed within that window
+    without asking for OTP again).
     Errors: 401 missing/invalid token, 401 invalid TOTP code.
     """
     payload  = _extract_jwt_claims(request)
@@ -703,29 +700,29 @@ async def list_workflows():
     """
     Fetch and return active workflows from Temporal.
 
-    Sirf "Entity" search-attribute wale workflows dikhata hai (utility/cron
-    workflows chhod deta hai). LLM-pool/Library/K8s-Harbor-deploy/Harbor-push
-    workflow-types ke liye extra step-by-step progress bhi enrich hoti hai.
+    Only shows workflows that have the "Entity" search-attribute (utility/cron
+    workflows are excluded). LLM-pool/Library/K8s-Harbor-deploy/Harbor-push
+    workflow types also get extra step-by-step progress enrichment.
 
-    Response `data` (raw list, koi APIResponse-wrapping ke andar bhi list
-    hoti hai — envelope khud `success_response` se aata hai):
+    Response `data` (a raw list — even inside the APIResponse wrapping it's
+    still a list, the envelope itself comes from `success_response`):
         [
           {
             "workflow_id": str, "run_id": str, "workflow_type": str,
             "task_name": str,     # search-attribute "Entity"
             "action": str,        # search-attribute "Action"
             "start_time": str,    # IST, "YYYY-MM-DDTHH:MM:SS.mmm"
-            "close_time": str,    # IST ya "Ongoing"
-            "execution_time": str|None,  # e.g. "1.23s" ya "450ms"
+            "close_time": str,    # IST or "Ongoing"
+            "execution_time": str|None,  # e.g. "1.23s" or "450ms"
             "status": str,        # Temporal WorkflowExecutionStatus name
             "UserName": str,
-            # LLM/Library/LXC workflow types ke liye extra:
+            # extra fields for LLM/Library/LXC workflow types:
             "steps": [ {..step info..}, ... ], "total_steps": int,
             "completed_steps": int, "current_step": str|None,
-            # K8sHarborDeployWorkflow ke liye extra:
+            # extra fields for K8sHarborDeployWorkflow:
             "deploy_id", "cluster_id", "node_ip", "namespace", "deploy_status",
             "progress", "harbor_url", "error_message",
-            # HarborPushWorkflow ke liye extra:
+            # extra fields for HarborPushWorkflow:
             "library_item_id", "library_name", "push_status", "harbor_image", "push_error",
           }, ...
         ]
@@ -841,10 +838,10 @@ from service.pollingStatus import get_workflow_failure_message_simple
 @router.get("/workflow-status/{workflow_id}")
 async def workflow_status(workflow_id: str):
     """
-    Ek workflow (agar wo fail ho gaya ho) ka simplified, human-readable
-    failure-reason lo — raw Temporal stack-trace ki jagah ek short message.
+    Get a simplified, human-readable failure reason for a workflow (if it
+    failed) — a short message instead of the raw Temporal stack trace.
 
-    Response: {"failed": bool, "message": str|None, ...} (raw, koi APIResponse envelope nahi).
+    Response: {"failed": bool, "message": str|None, ...} (raw, no APIResponse envelope).
     """
     return await get_workflow_failure_message_simple(workflow_id)
 
@@ -856,13 +853,13 @@ def update_pool_status(
     db: Session = Depends(get_db)
 ):
     """
-    Bulk — multiple pools ka status (enabled/disabled) ek saath set karo.
+    Bulk-set the status (enabled/disabled) of multiple pools at once.
 
     Request body: pool_ids (list of int, JSON array body), query/body param `status`.
-    Response (raw dict, koi APIResponse envelope nahi):
+    Response (raw dict, no APIResponse envelope):
         {"message": "Status updated", "updated_pools": [int, ...]}
-    Errors: 400 agar `status` "enabled"/"disabled" na ho, 404 agar koi bhi
-    pool_id na mile.
+    Errors: 400 if `status` isn't "enabled"/"disabled", 404 if none of the
+    pool_ids are found.
     """
     if status not in ["enabled", "disabled"]:
         raise HTTPException(status_code=400, detail="Invalid status value")
@@ -877,7 +874,7 @@ def update_pool_status(
 @router.post('/add-tasks-data')
 async def add_data(task,db: Session = Depends(get_db)):
     """
-    Generic task-record create karo (internal/bookkeeping use).
+    Create a generic task record (internal/bookkeeping use).
 
     Response `data`: {"msg": str, "task": {...saved Task_DB record...}}
     """

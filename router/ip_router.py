@@ -11,29 +11,29 @@ ip_router = APIRouter(prefix="/v1/ips", tags=["ips"])
 @ip_router.post("/add_ips")
 def create_ip_pool(ips_data: IPSRequest, db: Session = Depends(get_db)):
     """
-    Naya IP pool banao (ek naam ke neeh IP-range/list define hoti hai jo
-    baad mein VDI pools/deployments ko assign hoti hai).
+    Create a new IP pool (defines an IP range/list under a name, which is
+    later assigned to VDI pools/deployments).
 
     Request body: IPSRequest (pool_name + IP list/range details).
 
-    Response 201 — `data`: saved pool record (dict of columns, id included).
-    Errors: 409 agar `pool_name` already exist karta ho.
+    Response 201 — `data`: the saved pool record (dict of columns, id included).
+    Errors: 409 if `pool_name` already exists.
     """
     return ip_controller.create_ips_routes(ips_data, db)
 
 @ip_router.get("/ips/{ips_id}")
 def get_ip_pool(ips_id: int):
     """
-    Ek IP pool ki detail lo (id se).
+    Get one IP pool's detail (by id).
 
-    Response 200 — `data`: pool record. Response 404 (error_response) agar na mile.
+    Response 200 — `data`: the pool record. Response 404 (error_response) if not found.
     """
     return ip_controller.read_ips(ips_id)
 
 @ip_router.get("/get_all_ips")
 def get_all_ip_pools(page: int = 1, page_size: int = 10, db: Session = Depends(get_db)):
     """
-    Saare IP pools list karo (paginated).
+    List all IP pools (paginated).
 
     Response 200 — `data`:
         {"items": [ <pool record>, ... ], "pagination": {page, page_size, total, total_pages, has_next, has_prev}}
@@ -43,8 +43,8 @@ def get_all_ip_pools(page: int = 1, page_size: int = 10, db: Session = Depends(g
 @ip_router.get("/ip_pool_names", response_model=APIResponse[List[str]])
 def get_pool_names(db: Session = Depends(get_db)):
     """
-    Sirf pool names ki list lo (dropdown/select populate karne ke liye —
-    poora record nahi).
+    Get just the list of pool names (to populate a dropdown/select — not the
+    full record).
 
     Response 200 — `data`: ["pool-name-1", "pool-name-2", ...]
     """
@@ -53,19 +53,19 @@ def get_pool_names(db: Session = Depends(get_db)):
 @ip_router.get("/available_ips/{pool_id}", response_model=APIResponse[List[str]])
 def get_available_ips(pool_id: int, count: int = Query(1, ge=1), db: Session = Depends(get_db)):
     """
-    Diye gaye pool se `count` free (unused) IPs nikalo — reserve nahi karta,
-    sirf preview/availability check ke liye.
+    Pull `count` free (unused) IPs from the given pool — doesn't reserve
+    them, just for a preview/availability check.
 
     Response 200 — `data`: ["10.0.0.5", "10.0.0.6", ...]  (length <= count)
-    Errors: 404 (error_response) agar pool mein itni free IPs na ho.
+    Errors: 404 (error_response) if the pool doesn't have that many free IPs.
     """
     return ip_controller.get_available_ips_route(pool_id, count, db)
 
 @ip_router.delete("/delete_pool_by_name/{pool_name}", response_model=APIResponse[Optional[Any]])
 def delete_pool(pool_name: str, db: Session = Depends(get_db)):
     """
-    IP pool (aur uski saari IP entries) delete karo, naam se.
+    Delete an IP pool (and all its IP entries), by name.
 
-    Response 200 — `data`: deleted pool ka summary/id.
+    Response 200 — `data`: a summary/id of the deleted pool.
     """
     return ip_controller.delete_pool_by_name(pool_name, db)

@@ -1,3 +1,19 @@
+"""
+clusterService — service layer for Proxmox cluster onboarding/offboarding and the
+InfluxDB metric-server integration.
+
+Two big flows:
+1. Cluster CRUD: `create_cluster_proxmox()` uses root credentials to provision a
+   dedicated, cluster-specific user + API token on Proxmox (via the Temporal workflows
+   `CreateUserWorkflow`/`AssignRoleToUserWorkflow`) — the root credentials themselves are
+   never stored, they are used once only for provisioning; ongoing calls use the dedicated
+   token. `delete_cluster_proxmox()` is the reverse flow (deleting the dedicated user with root).
+2. InfluxDB metric server: `create_and_get_metric_server()`/`delete_influxdb_metric_server()`
+   register/unregister DevRaQ's own InfluxDB metrics-export target on the Proxmox cluster
+   (independent of any the customer has configured themselves, under a distinct `{name}-devraq` id).
+
+Used by: the cluster and metric-server endpoints in controllers/routes.py.
+"""
 from datetime import datetime
 import json
 import random
@@ -27,6 +43,7 @@ INFLUXDB_PORT = os.getenv("INFLUXDB_PORT")
 
 
 def unique_id():
+    """Build an `HH:MM:SS` string from the current time, for use as a workflow-id suffix (for uniqueness)."""
     unique_id = datetime.now()
     logger.info(f"Generated unique ID - {unique_id}")
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
@@ -36,6 +53,11 @@ def unique_id():
 logger = logging.getLogger("clusterService")
 
 def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
+    """
+    Ticket-auth login with the Proxmox root (or any given) credential.
+    Returns: (headers: {"CSRFPreventionToken"}, cookies: {"PVEAuthCookie"}).
+    Raises: requests.HTTPError if the login fails.
+    """
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": ROOT_USERNAME, "password": ROOT_PASSWORD}
     
@@ -51,6 +73,15 @@ def root_proxmox_login(PROXMOX_HOST,ROOT_USERNAME,ROOT_PASSWORD):
 
 
 async def create_user(cluster_data: dict, root_username: str, root_password: str, cred: dict = None):
+    """
+    Start `CreateUserWorkflow` (with root credentials) so that a new dedicated user
+    (`cred['username']`) is created on Proxmox, and await its result.
+
+    Params: cred (optional) — {"username","password","token"}; if not given, it is freshly
+            generated via `init_proxmox_context()`.
+    Returns: workflow result dict (must have "status": "success").
+    Raises: Exception if the workflow result status is not "success".
+    """
     uniqueId = unique_id()
     cred = cred or init_proxmox_context()
     client = await TemporalClientManager.get_temporal_client()
@@ -76,6 +107,11 @@ async def create_user(cluster_data: dict, root_username: str, root_password: str
 
 
 async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_username: str, root_password: str, cred: dict = None):
+    """
+    Start `AssignRoleToUserWorkflow` so that the given `role` (e.g. "Administrator") is
+    assigned to the newly-created dedicated user on Proxmox at that `path` (e.g. "/").
+    Returns: the workflow's result.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     userName = cluster_data.get('email') or "UnknownUser"
@@ -95,6 +131,10 @@ async def assign_role_to_user(cluster_data: dict, role: str, path: str, root_use
     result = await handle.result()
     return result
 def new_user_proxmox_login(PROXMOX_HOST, cred: dict = None):
+    """
+    Ticket-auth login with the dedicated (root-provisioned, non-root) user.
+    Returns: (headers, cookies) — same shape as `root_proxmox_login`.
+    """
     cred = cred or init_proxmox_context()
     url = f"{PROXMOX_HOST}/api2/json/access/ticket"
     payload = {"username": cred['username'], "password": cred['password']}
@@ -109,6 +149,10 @@ def new_user_proxmox_login(PROXMOX_HOST, cred: dict = None):
 
 # Step 5: Create API token as the new user
 def create_api_token_newUser(PROXMOX_HOST, cred: dict = None):
+    """
+    Generate a new Proxmox API token for the dedicated user (as that user, not root).
+    Returns: (api_token: "user@realm!tokenid=secret" combined string, full_token, secret).
+    """
     cred = cred or init_proxmox_context()
     headers, cookies = new_user_proxmox_login(PROXMOX_HOST, cred)
     payload = {
@@ -127,20 +171,29 @@ def create_api_token_newUser(PROXMOX_HOST, cred: dict = None):
 
  #--------------------------------------------helper functions--------------------------------------------#
 def model_to_dict(obj):
+    """Convert a SQLAlchemy ORM object into a plain dict (all table columns)."""
     return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
 
 #--------------------------------------------helper functions--------------------------------------------#
 
 def get_all_proxmox_users(db: Session):
+    """Return all Proxmox (dedicated-user-per-cluster) DB records."""
     data=db.query(Proxmox).all()
     return data
 def get_api_token(db: Session, cluster_name: str):
+    """Fetch the stored Proxmox API token for a cluster from the DB. Returns "" if not found."""
     obj = db.query(Proxmox).filter(Proxmox.cluster_name == cluster_name).first()
     data = model_to_dict(obj) if obj else {}
     
     return data.get("api_token", "")
  
 def store_proxmox_user(db: Session, role, path, api_token, full_token, secret, cluster_name, cred: dict = None):
+    """
+    Upsert the cluster's dedicated Proxmox user + token details into the DB
+    (update on a Proxmox.cluster_name match, otherwise insert a new row).
+    Returns: Proxmox ORM object (created or updated).
+    Raises: exception on insert failure (re-raised after rollback).
+    """
     cred = cred or init_proxmox_context()
     existing_user = db.query(Proxmox).filter(
         Proxmox.cluster_name == cluster_name
@@ -247,6 +300,12 @@ async def create_cluster_proxmox(cluster_data):
     
  
 def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
+    """
+    Find the first reachable IP among the cluster's multiple IPs and build its base URL.
+    Params: cluster_data — a dict or model, `.ip`/`ip_field` (comma-separated string or list) + `.port`.
+    Returns: "https://{ip}:{port}" for the reachable one.
+    Raises: ValueError if no IP is valid/reachable.
+    """
     if isinstance(cluster_data, dict):
         ip_field = cluster_data.get('ip')
         port = cluster_data.get('port')
@@ -274,6 +333,12 @@ def getting_Proxmox_host(cluster_data, timeout: float = 3.0) -> str:
 
 
 def get_all_nodes(cluster_data):
+    """
+    List all the cluster's online nodes (Proxmox `/cluster/status` API, using the dedicated user token).
+    Tries multiple IPs until one responds.
+    Returns: list of {"name","ip","status":"online"}.
+    Raises: RuntimeError if all the cluster IPs fail.
+    """
     db = next(get_db())
     try:
         api_token = get_api_token(db, cluster_data.name)
@@ -313,6 +378,13 @@ def get_all_nodes(cluster_data):
         db.close()
  
 def delete_cluster_proxmox(cluster_data, db: Session):
+    """
+    While deregistering a cluster, delete its dedicated Proxmox user (with root credentials),
+    then remove our DB record. DB cleanup still happens even if the user is already gone
+    (401/404/"no such user").
+    Returns: a success message string, or "Cluster '...' not found in the database." if there is no DB record.
+    Raises: Exception if the Proxmox delete fails for any other reason.
+    """
     ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if ip.strip()]
     any_ip = random.choice(ip_list) if ip_list else None
     if not any_ip:
@@ -362,6 +434,11 @@ def get_devraq_metric_server_id(cluster_data):
     return f"{cluster_data.name}-devraq"
 
 def add_influxdb_metric_server(cluster_data, payload):
+    """
+    Register DevRaQ's InfluxDB metric-server on the Proxmox cluster (POST).
+    Returns: the Proxmox API's JSON response.
+    Raises: Exception if the API returns an error.
+    """
     db = next(get_db())
     try:
         api_token = get_api_token(db, cluster_data.name)
@@ -411,6 +488,7 @@ def get_influxdb_metric_server(cluster_data):
         db.close()
  
 def get_influxdb_env_defaults():
+    """Get the DevRaQ InfluxDB defaults configured in `.env` (server/port/proto/org/bucket/token)."""
     parsed_url = urlparse(INFLUXDB_URL)
     return {
         "server": parsed_url.hostname,
@@ -422,6 +500,11 @@ def get_influxdb_env_defaults():
     }
 
 def create_and_get_metric_server(cluster_data, overrides: Optional[dict] = None):
+    """
+    Create DevRaQ's InfluxDB metric-server on Proxmox (building the payload from env defaults +
+    optional overrides), then immediately fetch and return its details.
+    Returns: the result of `get_influxdb_metric_server()` (a dict).
+    """
     defaults = get_influxdb_env_defaults()
     overrides = overrides or {}
     # Field name "influxdbproto" confirmed against Proxmox VE 9.2.2's own schema
@@ -451,6 +534,12 @@ def save_metric_server_to_db(
     monitoring: bool,
     is_custom_integration: Optional[bool] = None
 ):
+    """
+    Upsert a cluster's MetricServer DB record (from the metric_data returned by Proxmox).
+    `is_custom_integration` is only updated when it is explicitly given
+    (to avoid an accidental overwrite on GET calls).
+    Returns: MetricServer ORM object.
+    """
     ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
     if not ms:
         ms = MetricServer(
@@ -476,6 +565,10 @@ def save_metric_server_to_db(
  
 
 def delete_influxdb_metric_server(cluster_data):
+    """
+    Remove DevRaQ's InfluxDB metric-server from the Proxmox cluster (DELETE).
+    Returns: {"status": "success"} on success, {"error": "..."} on failure (does not raise an exception).
+    """
     db = next(get_db())
     try:
         api_token = get_api_token(db, cluster_data.name)
@@ -497,7 +590,12 @@ def delete_influxdb_metric_server(cluster_data):
         db.close()
 
 def can_delete_metric_server(db, cluster_id):
-
+    """
+    Check whether a cluster's metric-server integration is eligible for deletion
+    (only DevRaQ-managed custom monitoring integrations can be deleted).
+    Returns: a bare `True` (not a tuple) on success, or a `(False, "<reason>")` tuple on failure —
+             the caller must unpack this with the asymmetry in mind.
+    """
     ms = db.query(MetricServer).filter(MetricServer.cluster_id == cluster_id).first()
     if not ms:
         return False, "Metric server integration not found."
@@ -506,6 +604,7 @@ def can_delete_metric_server(db, cluster_id):
     return True
 
 def get_metric_server_from_db(cluster_id: int) -> Optional[MetricServer]:
+    """Fetch a cluster's MetricServer DB record. Returns None if not found or if the query fails."""
     db: Optional[Session] = None
     try:
         db = SessionLocal()

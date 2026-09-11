@@ -12,8 +12,8 @@ logger = activity.logger
 @activity.defn(name="Harbor-Image-SFTP-and-Push")
 def sftp_and_push_harbor_image_activity(payload: dict) -> dict:
     """
-    1. Temp file SFTP karo Harbor LXC container pe
-    2. Harbor project create karo (agar exist nahi karta)
+    1. SFTP the temp file to the Harbor LXC container
+    2. Create the Harbor project (if it does not exist)
     3. podman load + tag + push
     4. Temp file cleanup (local + remote)
     """
@@ -60,7 +60,7 @@ def sftp_and_push_harbor_image_activity(payload: dict) -> dict:
         finally:
             ssh.close()
 
-        # Local temp file ab kaam nahi — delete karo
+        # Local temp file is no longer needed — delete it
         try:
             os.remove(temp_path)
         except OSError:
@@ -77,7 +77,7 @@ def sftp_and_push_harbor_image_activity(payload: dict) -> dict:
             "  | cut -d'=' -f2 | tr -d '\\r\\n'); "
             "HARBOR_PASS=${HARBOR_PASS:-Harbor12345}; "
 
-            # Harbor project create karo (ignore 409 = already exists)
+            # Create the Harbor project (ignore 409 = already exists)
             f"echo '=== [1] Creating Harbor project: {project} ==='; "
             f"HTTP_CODE=$(curl -s -o /dev/null -w '%{{http_code}}' "
             f"  -X POST 'http://127.0.0.1/api/v2.0/projects' "

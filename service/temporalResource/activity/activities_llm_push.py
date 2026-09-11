@@ -2,15 +2,15 @@
 LLM Push Activity  (shared-PV, push-image wrapper)
 
 Flow:
-  1. DB se library item + harbor registry record lo
-  2. ZIP ko shared PV (STORAGE_TEMP_DIR) pe hi extract karo — metadata JSON
-     ko chhodkar baaki saari files (koi extension filter nahi)
-  3. GGUF / template metadata nikalo (local file read + version_metadata.json)
-  4. OCI annotations build karo (version_metadata.json ke SAARE fields)
-  5. HTTP POST /push/artifact → image-push-tool pod (isi PV ko mount karta
-     hai) → oras push → Harbor. File ke bytes bhejne ki zaroorat nahi, sirf
-     shared-PV path bata dete hain.
-  6. Harbor REST API se repository description set karo
+  1. Get the library item + harbor registry record from the DB
+  2. Extract the ZIP directly onto the shared PV (STORAGE_TEMP_DIR) — all files
+     except the metadata JSON (no extension filter)
+  3. Extract the GGUF / template metadata (local file read + version_metadata.json)
+  4. Build the OCI annotations (ALL fields of version_metadata.json)
+  5. HTTP POST /push/artifact → the image-push-tool pod (which mounts the same
+     PV) → oras push → Harbor. No need to send the file's bytes, just pass the
+     shared-PV path.
+  6. Set the repository description via the Harbor REST API
   7. DB update: harbor_image, version, harbor_owner, push_status=pushed
 """
 
@@ -42,8 +42,8 @@ def _clean_env_url(value: str | None) -> str:
 
 
 _PUSH_IMAGE_BASE_URL = _clean_env_url(os.getenv("PUSH_IMAGE_BASE_URL", ""))
-# library aur image-push-tool pod dono isi PV ko mount karte hain — extraction
-# yahi honi chahiye, warna image-push-tool ko extracted files dikhengi hi nahi.
+# both the library and the image-push-tool pod mount this same PV — extraction
+# must happen here, otherwise the image-push-tool cannot see the extracted files.
 _STORAGE_TEMP_DIR = os.getenv("STORAGE_TEMP_DIR") or None
 
 
@@ -54,7 +54,7 @@ def _sanitize(name: str) -> str:
 # ── GGUF metadata reader ──────────────────────────────────────────────────────
 
 def _read_gguf_metadata(file_path: str) -> dict:
-    """GGUF binary header se metadata nikalo. Fallback: filename parse."""
+    """Extract metadata from the GGUF binary header. Fallback: parse the filename."""
     try:
         from gguf import GGUFReader
 
@@ -113,7 +113,7 @@ def _read_gguf_metadata(file_path: str) -> dict:
 
 
 def _parse_from_filename(filename: str) -> dict:
-    """Fallback: filename se name + version nikalo."""
+    """Fallback: extract name + version from the filename."""
     stem = os.path.splitext(filename)[0]
 
     quant_match = re.search(r"[-_]((?:Q|F|BF)\d+[_A-Z0-9]*)\s*$", stem, re.IGNORECASE)
@@ -144,8 +144,8 @@ def _parse_from_filename(filename: str) -> dict:
 
 def _build_template_meta_from_raw(data: dict) -> dict:
     """
-    version_metadata.json ka already-parsed dict (chahe wo DB ke
-    metadata_json se aaya ho ya kahi aur se) se rich meta fields banao.
+    Build the rich meta fields from an already-parsed version_metadata.json dict
+    (whether it came from the DB's metadata_json or from somewhere else).
     """
     if not data:
         return {}
@@ -153,7 +153,7 @@ def _build_template_meta_from_raw(data: dict) -> dict:
     try:
         logger.info(f"[LLMPush] version_metadata loaded: artifact={data.get('artifact_name')} v={data.get('version')}")
 
-        # Components — list of dicts ya list of strings dono handle karo
+        # Components — handle both a list of dicts and a list of strings
         raw_components = data.get("components", [])
         if raw_components and isinstance(raw_components[0], dict):
             components_str = ", ".join(c.get("name", "") for c in raw_components if c.get("name"))
@@ -215,7 +215,7 @@ def _build_template_meta_from_raw(data: dict) -> dict:
             # Components
             "components":     components_str,
             "components_list": raw_components,
-            # Full raw JSON (DB mein store ke liye)
+            # Full raw JSON (to store in the DB)
             "_raw": data,
         }
     except Exception as exc:
@@ -225,13 +225,13 @@ def _build_template_meta_from_raw(data: dict) -> dict:
 
 def _read_template_metadata(zip_path: str) -> dict:
     """
-    ZIP ke andar version_metadata.json padho — rich format support.
-    NOTE: llm_push_activity ab isse call NAHI karta (backend push ke time
-    ZIP ke andar nahi jhaankta — jo bhi upload hui wahi as-is push hoti hai).
-    Metadata ab seedha DB ke item.metadata_json se (_build_template_meta_from_raw
-    ke through) aata hai, jo upload ke time hi library_controller.py ne
-    ZIP se padh kar save kiya tha. Ye function sirf future reference/reuse
-    ke liye rakha gaya hai.
+    Read version_metadata.json from inside the ZIP — supports the rich format.
+    NOTE: llm_push_activity no longer calls this (the backend does not look
+    inside the ZIP at push time — whatever was uploaded is pushed as-is).
+    Metadata now comes straight from the DB's item.metadata_json (via
+    _build_template_meta_from_raw), which library_controller.py read from the
+    ZIP and saved at upload time. This function is kept only for future
+    reference/reuse.
     """
     import zipfile
     import json as _json
@@ -262,7 +262,7 @@ def _set_harbor_repo_description(
     harbor_host: str, harbor_user: str, harbor_pass: str,
     project: str, repo_name: str, meta: dict, is_template: bool = False,
 ) -> None:
-    """Harbor repository Info tab pe description set karo via REST API."""
+    """Set the description on the Harbor repository Info tab via the REST API."""
     import base64
     import json as _json
     import urllib.parse
@@ -325,9 +325,9 @@ def _set_harbor_repo_description(
         return
 
     description = "\n".join(desc_lines)
-    # Double-encoding zaroori hai — Harbor ke gateway se guzarte waqt ek layer
-    # % -decode ho jaata hai, isliye single-encoded "%2F" wapas "/" ban jaata
-    # hai aur repository route match hi nahi hota (verified live).
+    # Double-encoding is required — one layer of %-decoding happens as the
+    # request passes through Harbor's gateway, so a single-encoded "%2F" turns
+    # back into "/" and the repository route does not match (verified live).
     url  = (
         f"http://{harbor_host}/api/v2.0/projects/{project}/repositories/"
         f"{urllib.parse.quote(urllib.parse.quote(repo_name, safe=''), safe='')}"
@@ -364,11 +364,11 @@ _OCI_STD_KEYS = {
 
 def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
     """
-    JSON dict ke SAARE fields → OCI annotation dict.
+    ALL fields of the JSON dict → an OCI annotation dict.
     - Known fields   → org.opencontainers.image.* standard keys
-    - Baaki sab      → <key> prefix ke saath
-    Harbor Overview tab mein jo bhi fields hain sab dikh jaayenge.
-    Wrapper in annotations ko oras --annotation key=value flags mein pass karega.
+    - Everything else → with the ai.artifact.<key> prefix
+    All the fields will show in the Harbor Overview tab.
+    The wrapper passes these annotations as oras --annotation key=value flags.
     """
     import json as _j
 
@@ -377,14 +377,14 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
         if isinstance(v, (dict, list)):
             v = _j.dumps(v, ensure_ascii=False, separators=(",", ":"))
         s = str(v).strip() if v is not None else ""
-        # OCI annotation values mein newlines allowed nahi
+        # newlines are not allowed in OCI annotation values
         return s.replace("\n", " ").replace("\r", "").replace('"', "'")[:500]
 
     ann: dict = {}
 
     for key, value in raw_data.items():
         val_str = _s(value)
-        # Empty, null, ya empty container skip karo
+        # skip empty, null, or an empty container
         if not val_str or val_str in ("null", "None", "[]", "{}", ""):
             continue
 
@@ -396,7 +396,7 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
             if clean:
                 ann[f"{clean}"] = val_str
 
-    # display_name → title mein highest priority (name se override)
+    # display_name → highest priority for the title (overrides name)
     if raw_data.get("display_name"):
         ann["org.opencontainers.image.title"] = _s(raw_data["display_name"])
 
@@ -413,13 +413,13 @@ def _push_artifact_via_api(
 ) -> None:
     """
     HTTP POST → push-image wrapper (image-push-tool pod) → oras push → Harbor.
-    file_paths ek path (str) ya paths ki list ho sakta hai — ye pod se PV
-    share karta hai (library upload isi PV pe files rakhta hai), isliye yaha
-    file ke bytes bhejne ki zaroorat nahi, sirf path bata dete hain.
+    file_paths can be a single path (str) or a list of paths — this shares the
+    PV with the pod (the library upload puts files on this same PV), so there
+    is no need to send the file's bytes here, just pass the path.
 
-    NOTE: multi-file (`file_paths` list) tabhi kaam karega jab image-push-tool
-    pod ke apne /push/artifact handler me bhi is field ko support kiya gaya ho
-    (multi-layer oras push) — wo alag service hai, is repo ke bahar.
+    NOTE: multi-file (a `file_paths` list) only works if the image-push-tool
+    pod's own /push/artifact handler also supports this field (multi-layer
+    oras push) — that is a separate service, outside this repo.
     """
     if not _PUSH_IMAGE_BASE_URL:
         raise RuntimeError("PUSH_IMAGE_BASE_URL env var is not set")
@@ -437,7 +437,7 @@ def _push_artifact_via_api(
         "artifact_name": artifact_name,
         "tag":           tag,
         "file_path":     file_paths[0],   # backward-compat single-file field
-        "file_paths":    file_paths,      # multi-file — pod-side support zaroori
+        "file_paths":    file_paths,      # multi-file — needs pod-side support
         "plain_http":    True,
     }
     if annotations:
@@ -466,8 +466,8 @@ def _push_artifact_via_api(
 
 def _push_blob(reg_url: str, harbor_host: str, auth: tuple, file_path: str) -> tuple:
     """
-    Ek file ko OCI blob ke roop me upload karo (skip agar already exist ho).
-    Streaming hoti hai (memory safe, chahe file kitni bhi badi ho).
+    Upload a file as an OCI blob (skip if it already exists).
+    Streamed (memory-safe, no matter how large the file is).
     Returns: (digest, size)
     """
     import hashlib
@@ -493,7 +493,7 @@ def _push_blob(reg_url: str, harbor_host: str, auth: tuple, file_path: str) -> t
     if not session_url.startswith("http"):
         session_url = f"http://{harbor_host}{session_url}"
 
-    # PATCH — file stream karo (large files ke liye memory safe)
+    # PATCH — stream the file (memory-safe for large files)
     logger.info(f"[LLMPush] Uploading blob {file_size / 1e9:.2f} GB ({os.path.basename(file_path)})...")
     with open(file_path, "rb") as fh:
         patch_r = requests.patch(
@@ -531,13 +531,13 @@ def _push_oci_artifact_direct(
     annotations: dict = None,
 ) -> str:
     """
-    OCI Distribution Spec se directly Harbor pe artifact push karo.
-    Wrapper ya oras CLI ki zaroorat nahi — annotations manifest mein directly embed hoti hain.
-    Harbor Overview tab mein saare annotations dikhengi.
+    Push an artifact to Harbor directly via the OCI Distribution Spec.
+    No wrapper or oras CLI needed — the annotations are embedded directly in the manifest.
+    All the annotations show in the Harbor Overview tab.
 
-    file_paths: ek file ka path (str) ya files ki list — har file apna alag
-    OCI layer banti hai (koi zip/repack nahi, extension ki koi filtering
-    nahi) — isi manifest ke andar sab layers ke roop me push ho jaati hain.
+    file_paths: a single file path (str) or a list of files — each file becomes
+    its own OCI layer (no zip/repack, no extension filtering) — they are all
+    pushed as layers within this one manifest.
     Returns: manifest digest (sha256:xxx)
     """
     import hashlib
@@ -556,7 +556,7 @@ def _push_oci_artifact_direct(
         f"({len(file_paths)} file(s): {[os.path.basename(p) for p in file_paths]})"
     )
 
-    # ── 1+2. Har file ko apna blob/layer banao ────────────────────────────────
+    # ── 1+2. Make each file its own blob/layer ───────────────────────────────
     layers = []
     for fp in file_paths:
         digest, size = _push_blob(reg_url, harbor_host, auth, fp)
@@ -623,11 +623,11 @@ _META_FILE_NAMES = {
 
 def _extract_all_except_metadata(zip_path: str, dest_dir: str) -> list:
     """
-    ZIP ke andar ki SAARI files ko extract karo, sirf metadata JSON files
-    (version_metadata.json etc.) ko chhodkar — koi extension-based filtering
-    nahi, jo bhi ho wo push honi hai. Directory entries skip hoti hain.
-    Returns: list of extracted file paths (empty list agar zip nahi hai ya
-    metadata ke alawa kuch mila hi nahi).
+    Extract ALL files inside the ZIP, except the metadata JSON files
+    (version_metadata.json etc.) — no extension-based filtering, whatever is
+    there gets pushed. Directory entries are skipped.
+    Returns: list of extracted file paths (empty list if it is not a zip, or
+    nothing but metadata was found).
     """
     import zipfile as _zf
 
@@ -637,7 +637,7 @@ def _extract_all_except_metadata(zip_path: str, dest_dir: str) -> list:
             if name.endswith("/"):
                 continue  # directory entry
             if os.path.basename(name).lower() in _META_FILE_NAMES:
-                continue  # metadata — sirf annotations ke liye, push nahi karni
+                continue  # metadata — only for annotations, not to be pushed
             z.extract(name, dest_dir)
             extracted.append(os.path.join(dest_dir, name))
     return extracted
@@ -683,7 +683,7 @@ def llm_push_activity(params: dict) -> dict:
     gguf_temp_dir = None
 
     try:
-        # ── 1. Records load karo ─────────────────────────────────────────────
+        # ── 1. Load the records ─────────────────────────────────────────────
         item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
         if not item:
             raise RuntimeError(f"Library item {item_id} not found")
@@ -692,7 +692,7 @@ def llm_push_activity(params: dict) -> dict:
         if not temp_path or not os.path.exists(temp_path):
             raise RuntimeError(f"File not found: {temp_path}")
 
-        # ── 2. Harbor registry details lo ────────────────────────────────────
+        # ── 2. Get the Harbor registry details ──────────────────────────────
         harbor_dep = db.query(KubernetesDeployment).filter(
             KubernetesDeployment.id == item.harbor_registry_id
         ).first()
@@ -717,13 +717,13 @@ def llm_push_activity(params: dict) -> dict:
         logger.info(f"[LLMPush] harbor_host={harbor_host} project={project}")
         _update("pushing", h_url=harbor_dep.harbor_url, h_user=harbor_user, h_pass=harbor_pass)
 
-        # ── 3. Metadata nikalo — type ke hisab se ────────────────────────────
+        # ── 3. Extract the metadata — per type ──────────────────────────────
         is_gguf = item.type == "llm_model"
 
-        # Backend ab ZIP ke andar bilkul nahi jhaankta — jo bhi upload hui
-        # (ZIP ho ya koi aur file), wahi as-is push hogi. Saara metadata
-        # DB ke item.metadata_json se aata hai, jo upload ke time hi
-        # library_controller.py ne ZIP se padh kar save kiya tha.
+        # The backend no longer looks inside the ZIP at all — whatever was
+        # uploaded (a ZIP or any other file) is pushed as-is. All the metadata
+        # comes from the DB's item.metadata_json, which library_controller.py
+        # read from the ZIP and saved at upload time.
         push_file_paths = [temp_path]
 
         if is_gguf:
@@ -737,12 +737,12 @@ def llm_push_activity(params: dict) -> dict:
                 except Exception as _de:
                     logger.warning(f"[LLMPush] DB metadata_json parse failed: {_de}")
 
-            # GGUF binary header se meta nikalne ki koshish — agar temp_path
-            # khud ek .gguf file na ho (jaise ZIP ho), to filename-fallback
-            # (_read_gguf_metadata ke andar hi handle hota hai) chal jaata hai.
+            # try to extract meta from the GGUF binary header — if temp_path is
+            # not itself a .gguf file (e.g. it is a ZIP), the filename fallback
+            # (handled inside _read_gguf_metadata) kicks in.
             meta = _read_gguf_metadata(temp_path)
 
-            # version_metadata.json fields se override karo (JSON > GGUF binary header)
+            # override from version_metadata.json fields (JSON > GGUF binary header)
             if _raw_json_data:
                 for _src, _dst in [
                     ("name",         "name"),
@@ -761,7 +761,7 @@ def llm_push_activity(params: dict) -> dict:
             if item.version and item.version not in ("", "latest"):
                 meta["version"] = item.version
 
-            # DB mein store ke liye full JSON
+            # full JSON to store in the DB
             _raw_json = _j.dumps(_raw_json_data, ensure_ascii=False) if _raw_json_data else None
         else:
             # llm_template
@@ -830,13 +830,13 @@ def llm_push_activity(params: dict) -> dict:
             _ann_source = {}
         oci_annotations = _build_oci_annotations_from_raw(_ann_source)
 
-        # ── 5. push-image wrapper (image-push-tool pod) ke through push ───────
-        # File shared PV (_STORAGE_TEMP_DIR) pe already extract ho chuki hai —
-        # image-push-tool bhi wahi PV mount karta hai, isliye bytes dobara
-        # bhejne ki zaroorat nahi, sirf path bata dete hain aur pod internally
-        # `oras push` chalata hai.
-        # push_file_paths me metadata JSON ko chhodkar ZIP ki saari files hain
-        # (koi extension filtering nahi).
+        # ── 5. push via the push-image wrapper (image-push-tool pod) ─────────
+        # The file has already been extracted onto the shared PV
+        # (_STORAGE_TEMP_DIR) — image-push-tool mounts the same PV, so there is
+        # no need to send the bytes again, just pass the path and the pod runs
+        # `oras push` internally.
+        # push_file_paths holds all the ZIP's files except the metadata JSON
+        # (no extension filtering).
         _push_artifact_via_api(
             harbor_host, harbor_user, harbor_pass,
             project, f"{author_slug}/{model_name}", version,
@@ -845,7 +845,7 @@ def llm_push_activity(params: dict) -> dict:
         )
         logger.info(f"[LLMPush] push done: {harbor_image}")
 
-        # ── 6. Harbor Info tab description set karo ───────────────────────────
+        # ── 6. Set the Harbor Info tab description ──────────────────────────
         _set_harbor_repo_description(
             harbor_host, harbor_user, harbor_pass,
             project, f"{author_slug}/{model_name}", meta,

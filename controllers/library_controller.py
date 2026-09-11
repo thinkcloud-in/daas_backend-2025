@@ -1,3 +1,20 @@
+"""
+Library (file/model/container/template repository) controller —
+router/library_router.py ("/v1/library") delegates to this. It is the
+largest and most central controller:
+
+- 2-step upload flow: `create_library_item` (DB record + item_id) →
+  `upload_library_file` (raw bytes stream — routed to WebDAV/local-temp per
+  item.type, then triggers a type-specific push workflow:
+  LibraryUploadWorkflow / HarborPushWorkflow (container) / LLMPushWorkflow
+  (llm_model, llm_template)).
+- Harbor artifacts browsing (`list_harbor_artifacts`) — from both the Harbor
+  REST + OCI Distribution API, with drill-down (projects → repos → artifacts).
+- Deploy — deploy a library item to an LXC (Proxmox) or Kubernetes (Harbor)
+  target, via Temporal workflows.
+- Update/Delete — see `update_library_item`/`delete_library_item` (delete also
+  does Harbor cleanup — that logic is in activities_library.py).
+"""
 import asyncio
 import logging
 import os
@@ -36,6 +53,7 @@ _USERNAME_KEY = SearchAttributeKey.for_keyword("UserName")
 
 
 def _make_search_attrs(entity: str, action: str, username: str) -> TypedSearchAttributes:
+    """Build Entity/Action/UserName search-attributes for a Temporal workflow (for the workflow-monitoring UI)."""
     return TypedSearchAttributes([
         SearchAttributePair(_ENTITY_KEY,   entity),
         SearchAttributePair(_ACTION_KEY,   action),
@@ -50,6 +68,7 @@ _HARBOR_PUSH_TYPES = {"container", "llm_model", "llm_template", "postgresql"}  #
 
 
 def _extract_username(request: Request) -> str:
+    """Extract preferred_username (or sub) from the Bearer JWT, for audit/search-attributes. Falls back to "system" if the token is missing/invalid."""
     try:
         import jwt as _pyjwt
         token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
@@ -62,6 +81,11 @@ def _extract_username(request: Request) -> str:
 
 
 def _item_to_dict(item: LibraryItem) -> dict:
+    """
+    Convert a LibraryItem ORM row into an API dict — `harbor_user`/`harbor_pass`
+    are NOT included here (already safe), only non-secret Harbor metadata like
+    `harbor_image`/`harbor_url`/`push_status` goes out.
+    """
     directory = TYPE_SUBDIR.get(item.type, "general")
     return {
         "id":              item.id,
@@ -108,13 +132,13 @@ async def create_library_item(
     metadata:           dict | None = None,
 ):
     """
-    Step 1 — DB record create karo, milliseconds mein item_id milta hai.
-    Frontend PUT /{item_id}/file se file stream karta hai.
+    Step 1 — create the DB record; the item_id comes back in milliseconds.
+    The frontend then streams the file via PUT /{item_id}/file.
 
-    container / llm_model / llm_template ke liye:
+    For container / llm_model / llm_template:
       harbor_registry_id = kubernetes_deployments.id (Harbor instance)
-      Backend K8s cluster automatically derive karta hai.
-      name = optional — container type ke liye Docker image metadata se auto-set hoga.
+      The backend derives the K8s cluster automatically.
+      name = optional — for container type it is auto-set from the Docker image metadata.
     """
     from models.kubernetes_deploy_model import KubernetesDeployment
 
@@ -125,14 +149,14 @@ async def create_library_item(
             detail=f"Invalid type '{effective_type}'. Valid: {', '.join(sorted(LIBRARY_TYPES))}",
         )
 
-    # container type ke liye name optional hai — placeholder use karo, activity update karega
-    # Types jahan name ZIP version_metadata.json se auto-set hoga
+    # for container type the name is optional — use a placeholder, the activity will update it
+    # Types where the name is auto-set from the ZIP's version_metadata.json
     _AUTO_NAME_TYPES = _HARBOR_PUSH_TYPES | {"harbor_template", "general", "base_os"}
 
     effective_name = (name or "").strip()
     if not effective_name:
         if effective_type in _AUTO_NAME_TYPES:
-            # name ZIP/metadata se upload ke baad set hoga — file stem placeholder
+            # the name will be set from the ZIP/metadata after upload — file stem as placeholder
             effective_name = os.path.splitext(file_name)[0]
         else:
             raise HTTPException(status_code=400, detail="'name' field required for this type")
@@ -141,7 +165,7 @@ async def create_library_item(
     dest_path = f"{LIBRARY_BASE_PATH}/{subdir}/{file_name}"
     temp_path = os.path.join(LIBRARY_TEMP_PATH, f"{uuid.uuid4().hex}_{file_name}")
 
-    # Harbor push types ke liye harbor_registry_id required hai
+    # harbor_registry_id is required for Harbor push types
     k8s_cluster_id = None
     if effective_type in _HARBOR_PUSH_TYPES:
         if not harbor_registry_id:
@@ -163,15 +187,15 @@ async def create_library_item(
                 status_code=409,
                 detail=f"Harbor id={harbor_registry_id} has no harbor_url set — deploy it first"
             )
-        k8s_cluster_id = harbor_dep.cluster_id   # backend derive karta hai
+        k8s_cluster_id = harbor_dep.cluster_id   # the backend derives it
         logger.info(f"[Library] harbor_registry={harbor_registry_id} → k8s_cluster={k8s_cluster_id} derived")
 
-    # container ke liye: owner_name field harbor_owner se override karta hai
+    # for container: the owner_name field overrides harbor_owner
     if effective_type == "container" and owner_name:
         harbor_owner = owner_name.strip() or harbor_owner
 
-    # Harbor push types ke liye version image inspect se aayega
-    # Exception: container type mein user ne explicitly version diya to use karo (tag banega Harbor mein)
+    # for Harbor push types the version comes from the image inspect
+    # Exception: if the user explicitly gave a version for container type, use it (it becomes the tag in Harbor)
     if effective_type == "container" and version:
         effective_version = version.strip() or None
     elif effective_type in _HARBOR_PUSH_TYPES and harbor_registry_id:
@@ -200,7 +224,7 @@ async def create_library_item(
         k8s_cluster_id     = k8s_cluster_id,
         harbor_owner       = harbor_owner,
         push_status        = "pending" if harbor_registry_id else None,
-        # metadata_json: upload API se pass hua JSON — push activity mein use hoga annotations ke liye
+        # metadata_json: the JSON passed from the upload API — used by the push activity for annotations
         display_name       = str(metadata.get("display_name", "")).strip() or None if metadata else None,
         description        = str(metadata.get("description", "")).strip() or None if metadata else None,
         category           = str(metadata.get("category", "")).strip() or None if metadata else None,
@@ -219,7 +243,7 @@ async def create_library_item(
 
 
 def _update_progress_in_db(item_id: int, pct: int, db_session):
-    """Progress DB mein update karo — thread-safe nahi, sirf upload thread se call karo."""
+    """Update progress in the DB — not thread-safe, only call from the upload thread."""
     try:
         item = db_session.query(LibraryItem).filter(LibraryItem.id == item_id).first()
         if item:
@@ -241,15 +265,15 @@ def _put_file_to_webdav_with_progress(
     chunk_size:  int = 8 * 1024 * 1024,
 ):
     """
-    Phase 2 (backend temp file -> WebDAV storage) chunk-by-chunk stream karo,
-    taaki progress_pct pct_start se pct_end tak granularly (1% steps) update
-    hoti rahe -- pehle poori file ek hi blocking PUT me jaati thi, tab tak
-    progress 50% pe atki dikhti thi (badi files ke liye ye kaafi der tak
-    "stuck" jaisa dikhta tha).
+    Stream Phase 2 (backend temp file -> WebDAV storage) chunk-by-chunk, so
+    that progress_pct updates granularly (1% steps) from pct_start to pct_end
+    -- previously the whole file went in a single blocking PUT, during which
+    progress showed stuck at 50% (for large files this looked "stuck" for a
+    long time).
 
-    Ye asyncio.to_thread() se ek alag thread me chalta hai (jabki caller
-    coroutine sirf await karke wait karta hai, DB session ko concurrently
-    kahin aur touch nahi karta) — isliye yahan se db_session use karna safe hai.
+    This runs in a separate thread via asyncio.to_thread() (while the caller
+    coroutine just awaits and does not touch the DB session concurrently
+    elsewhere) — so it is safe to use db_session from here.
     """
     last_bucket = pct_start - 1
     sent = 0
@@ -388,6 +412,29 @@ async def upload_library_file(
     request: Request,
     db:      Session,
 ):
+    """
+    Step 2 — stream the raw file bytes (Content-Type: application/octet-stream).
+    There are 3 branches depending on `item.type`:
+
+    - `container` → `_upload_harbor_direct_to_webdav()` (browser → WebDAV
+      directly, no /tmp write), then trigger HarborPushWorkflow.
+    - `llm_model`/`llm_template` → written to a local temp file
+      (STORAGE_TEMP_DIR or the OS default); the file does not go to WebDAV —
+      the temp_path is passed straight to LLMPushWorkflow (push-image-tool
+      accesses this path from the shared PV — a known gotcha of this design is
+      that if the backend runs outside the cluster / on a local dev machine,
+      the STORAGE_TEMP_DIR local filesystem alias does not work).
+    - all other types → local temp file → WebDAV (`_put_file_to_webdav_with_progress`,
+      chunk-by-chunk so progress_pct updates granularly) → LibraryUploadWorkflow.
+
+    In all branches, if the ZIP contains a `version_metadata.json`,
+    name/version/owner are auto-updated.
+
+    Used by: PUT /v1/library/{item_id}/file
+    Returns: success_response with, in `data`, the updated `_item_to_dict()` +
+    workflow_id (or push_workflow_id).
+    Errors: a disk/WebDAV-write failure → 500 (the item is also delete/failed-marked).
+    """
     import tempfile
 
     record = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
@@ -439,8 +486,8 @@ async def upload_library_file(
     record.progress_pct = 50
     db.commit()
 
-    # ── ZIP: version_metadata.json se name + version DB mein update karo ────────
-    # Sab types ke liye — container, llm_model, llm_template, harbor_template
+    # ── ZIP: update name + version in the DB from version_metadata.json ────────
+    # For all types — container, llm_model, llm_template, harbor_template
     try:
         import zipfile as _zf, json as _zjson
         if _zf.is_zipfile(temp_path):
@@ -466,7 +513,7 @@ async def upload_library_file(
     except Exception as _ze:
         logger.warning(f"[Library] ZIP metadata read (non-fatal): {_ze}")
 
-    # ── llm_model / llm_template: temp path pass karo, direct OCI push ──────────
+    # ── llm_model / llm_template: pass the temp path, direct OCI push ──────────
     if record.type in ("llm_model", "llm_template"):
         record.file_path    = temp_path
         record.file_size    = bytes_written
@@ -504,10 +551,10 @@ async def upload_library_file(
             "push_workflow_id": push_workflow_id,
         })
 
-    # ── Baki sab types: temp file → WebDAV (internal URL) → PV ──────────────
+    # ── All other types: temp file → WebDAV (internal URL) → PV ──────────────
     subdir       = TYPE_SUBDIR.get(record.type, "general")
     storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
-    # PUT + file_path dono STORAGE_BASE_URL se — APISIX pe client_max_body_size badha rakha hai
+    # both the PUT and file_path use STORAGE_BASE_URL — client_max_body_size is raised on APISIX
     public_url = f"{storage_base}/{subdir}/{record.file_name}"
 
     try:
@@ -558,19 +605,23 @@ async def upload_library_file(
 
 async def upload_library_direct(request: Request, db: Session):
     """
-    Single-call upload: metadata X-Library-Metadata header mein, file raw body mein.
+    Single-call upload: metadata in the X-Library-Metadata header, file in the raw body.
 
     Header example:
       X-Library-Metadata: {"file_name":"harbor.zip","type":"harbor_template","metadata":{...}}
 
-    Ye create_library_item + upload_library_file ko ek hi request mein karta hai.
+    This does create_library_item + upload_library_file in a single request.
+
+    ⚠ No router calls this (confirmed via grep — no reference anywhere in this
+    repo) — it looks like dead/legacy code; `create_library_item` +
+    `upload_library_file` (the 2-step flow) is the actual API surface.
     """
     import json as _json
     import tempfile
 
     username = _extract_username(request)
 
-    # ── Metadata header parse karo ────────────────────────────────────────────
+    # ── Parse the metadata header ────────────────────────────────────────────
     meta_header = request.headers.get("X-Library-Metadata", "").strip()
     if not meta_header:
         raise HTTPException(status_code=400, detail="X-Library-Metadata header required (JSON string)")
@@ -585,7 +636,7 @@ async def upload_library_direct(request: Request, db: Session):
     item_version       = params.get("version")
     harbor_registry_id = params.get("harbor_registry_id")
     harbor_owner       = params.get("harbor_owner")
-    metadata           = params.get("metadata")  # nested dict — annotations ke liye
+    metadata           = params.get("metadata")  # nested dict — for annotations
 
     if not file_name:
         raise HTTPException(status_code=400, detail="file_name required in X-Library-Metadata")
@@ -594,7 +645,7 @@ async def upload_library_direct(request: Request, db: Session):
 
     total_size = int(request.headers.get("content-length") or 0)
 
-    # ── DB record banao (create_library_item logic same) ─────────────────────
+    # ── Create the DB record (same logic as create_library_item) ─────────────
     from models.kubernetes_deploy_model import KubernetesDeployment as _KDep
 
     _AUTO_NAME_TYPES = _HARBOR_PUSH_TYPES | {"harbor_template", "general", "base_os"}
@@ -673,7 +724,7 @@ async def upload_library_direct(request: Request, db: Session):
     record.progress_pct = 50
     db.commit()
 
-    # ── ZIP metadata parse karo (name/version/owner auto-set) ────────────────
+    # ── Parse the ZIP metadata (name/version/owner auto-set) ─────────────────
     try:
         import zipfile as _zf
         if _zf.is_zipfile(temp_path):
@@ -695,7 +746,7 @@ async def upload_library_direct(request: Request, db: Session):
     except Exception as _ze:
         logger.warning(f"[Library] Direct upload ZIP metadata (non-fatal): {_ze}")
 
-    # ── Phase 2: type ke hisab se file finalize karo ─────────────────────────
+    # ── Phase 2: finalize the file per type ─────────────────────────────────
     # llm_model / llm_template → local temp path, direct OCI push
     if item_type in ("llm_model", "llm_template"):
         record.file_path    = temp_path
@@ -799,6 +850,7 @@ async def upload_library_direct(request: Request, db: Session):
 
 
 def _deployment_summary(job: LXCRestoreJob) -> dict:
+    """Convert an LXCRestoreJob into a small summary dict (to embed alongside the library item)."""
     return {
         "job_id":     job.id,
         "name":       job.name,
@@ -848,8 +900,8 @@ _TYPE_LABELS = {
     "vectordb":        "Vector DB",
 }
 
-# Virtual types — DB mein stored nahi, query-time filter hain
-# name ya harbor_owner mein in keywords mein se koi bhi match hona chahiye
+# Virtual types — not stored in the DB, they are query-time filters
+# any of these keywords must match in the name or harbor_owner
 # db_types: list of actual DB types to include in query (supports items uploaded as container OR postgresql)
 _VIRTUAL_TYPE_MAP = {
     "openwebui": {
@@ -861,14 +913,14 @@ _VIRTUAL_TYPE_MAP = {
         "keywords": ["vectordb", "vector-db", "vector_db", "pgvector", "chroma", "qdrant", "weaviate"],
     },
     "postgresql": {
-        "db_types": ["container", "postgresql"],   # purane container uploads + naye postgresql type
+        "db_types": ["container", "postgresql"],   # old container uploads + the new postgresql type
         "keywords": ["postgres", "postgresql"],
     },
 }
 
 
 def _build_filters(db: Session) -> list:
-    """DB se distinct types + count nikalo, frontend ke liye filter list banao."""
+    """Get the distinct types + count from the DB and build the filter list for the frontend."""
     from sqlalchemy import func
     rows = (
         db.query(LibraryItem.type, func.count(LibraryItem.id).label("count"))
@@ -894,6 +946,15 @@ def list_library_items(
     owner_filter:       str | None = None,
     harbor_registry_id: int | None = None,
 ):
+    """
+    List library items — filtered by type/owner/harbor_registry, grouped by
+    directory, with deployments (LXC/K8s) also attached.
+
+    Used by: GET /v1/library/list
+    Returns: success_response with, in `data`, {"filters": [...], "directories":
+    {"<dir>": [<item>, ...], ...}, "total": int, "pagination": {...}}
+    Errors: 400 if `type_filter` is not a valid type/virtual-type.
+    """
     from sqlalchemy import func
 
     query = db.query(LibraryItem)
@@ -904,7 +965,7 @@ def list_library_items(
             vt = _VIRTUAL_TYPE_MAP[type_filter]
             db_types = vt.get("db_types", [vt.get("db_type", "container")])
             query = query.filter(LibraryItem.type.in_(db_types))
-            # name ya harbor_owner mein se koi bhi keyword match kare
+            # match any keyword in the name or harbor_owner
             keyword_conditions = []
             for kw in vt["keywords"]:
                 keyword_conditions.append(LibraryItem.name.ilike(f"%{kw}%"))
@@ -921,11 +982,11 @@ def list_library_items(
                 ),
             )
 
-    # owner_filter — harbor_owner se partial case-insensitive match
+    # owner_filter — partial case-insensitive match against harbor_owner
     if owner_filter:
         query = query.filter(LibraryItem.harbor_owner.ilike(f"%{owner_filter}%"))
 
-    # harbor_registry_id filter — specific harbor registry ke items
+    # harbor_registry_id filter — items of a specific harbor registry
     if harbor_registry_id is not None:
         query = query.filter(LibraryItem.harbor_registry_id == harbor_registry_id)
 
@@ -935,8 +996,8 @@ def list_library_items(
 
     enriched = _attach_deployments([_item_to_dict(i) for i in items], db)
 
-    # Virtual type filter hone par directory override karo
-    # e.g. type=postgresql → container type items bhi "postgresql" directory mein dikhenge
+    # Override the directory when a virtual-type filter is applied
+    # e.g. type=postgresql → container-type items also show in the "postgresql" directory
     if type_filter and type_filter in _VIRTUAL_TYPE_MAP:
         for item in enriched:
             item["directory"] = type_filter
@@ -966,6 +1027,13 @@ def list_library_items(
 
 
 def get_library_item(item_id: int, db: Session):
+    """
+    Get a library item's full detail, with attached deployments.
+
+    Used by: GET /v1/library/{item_id}
+    Returns: success_response with `<item>` in `data` (see `list_library_items`).
+    Errors: 404 if item_id is not found.
+    """
     item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Library item {item_id} not found")
@@ -975,10 +1043,10 @@ def get_library_item(item_id: int, db: Session):
 
 def _parse_artifact_annotations(raw_ann: dict) -> dict:
     """
-    Harbor artifact ke OCI + ai.artifact.* annotations parse karo.
-    llm_model/llm_template push "ai.artifact.<key>" prefix ke saath likhta
-    hai, VM-template (Proxmox) push bina prefix ke bare keys likhta hai --
-    isliye prefixed key pehle try karo, phir bare key fallback.
+    Parse a Harbor artifact's OCI + ai.artifact.* annotations.
+    The llm_model/llm_template push writes them with the "ai.artifact.<key>"
+    prefix, the VM-template (Proxmox) push writes bare keys without a prefix --
+    so try the prefixed key first, then fall back to the bare key.
     """
     import ast as _ast, json as _json
 
@@ -1019,7 +1087,7 @@ def _artifact_matches(
     os_type:     str | None,
     os_name:     str | None = None,
 ) -> bool:
-    """Parsed annotation dict ke against filters check karo (partial, case-insensitive)."""
+    """Check the filters against the parsed annotation dict (partial, case-insensitive)."""
     if type_filter and type_filter.lower() not in ann.get("type", "").lower():
         return False
     if hypervisor and hypervisor.lower() not in ann.get("hypervisor", "").lower():
@@ -1048,11 +1116,24 @@ def list_harbor_artifacts(
     page_size:   int        = 20,
 ):
     """
-    Harbor pe deploy hue artifacts ki list fetch karo.
-    - registry_id alone                     → sab projects list
-    - + project                             → us project ke repositories list
-    - + project + repository                → us repo ke artifacts (tags) list
-    - + project + filter params             → cross-repo filtered artifacts
+    Fetch the list of artifacts deployed on Harbor — uses both the Harbor REST
+    API (`/api/v2.0`, for the projects/repositories list) and the OCI
+    Distribution API (`/v2/...`, for tags/manifests — literal slashes in the
+    URL, so the %2F double-encoding issue does not apply here).
+
+    Used by: GET /v1/library/harbor/{registry_id}/artifacts
+
+    4 modes, depending on the params, each with a different `data` shape:
+    - registry_id alone → {"registry_id","harbor_url","page","page_size","count","projects": [{"id","name","repo_count","chart_count","creation_time","update_time","public"}, ...]}
+    - + project → {"registry_id","harbor_url","project","owner","page","page_size","count","repositories": [{"name","full_name","artifact_count","pull_count","update_time"}, ...]}
+    - + project + repository → {"registry_id","harbor_url","project","repository","page","page_size","count","artifacts": [{"digest","tags","name","repository","size","full_image","annotations"}, ...]}
+    - + project + (type/hypervisor/os_type/os_name) → cross-repo filtered
+      search — {"registry_id","harbor_url","project","total","page","page_size",
+      "total_pages","has_next","has_prev","artifacts": [...]} (every
+      repository's tags are scanned, so this mode is the slowest)
+
+    Errors: 404 if registry_id is not found, 409 if harbor_url is not set, 502 if Harbor
+    is unreachable/auth-invalid/API-error.
     """
     import httpx as _httpx
     from models.kubernetes_deploy_model import KubernetesDeployment
@@ -1118,7 +1199,7 @@ def list_harbor_artifacts(
         return r.json().get("tags") or [] if r.is_success else []
 
     def _oci_manifest(full_name: str, ref: str) -> dict:
-        """OCI /v2/ API se manifest (with annotations) fetch karo."""
+        """Fetch a manifest (with annotations) from the OCI /v2/ API."""
         url = f"{base}/v2/{full_name}/manifests/{ref}"
         try:
             r = _httpx.get(url, auth=auth, timeout=_timeout, verify=False,
@@ -1135,7 +1216,7 @@ def list_harbor_artifacts(
         size    = sum(lyr.get("size", 0) for lyr in (manifest.get("layers") or []))
         digest  = manifest.get("config", {}).get("digest", "")
         raw_ann = manifest.get("annotations") or {}
-        # model: saari annotations, template: OCI standard keys exclude
+        # model: all annotations; template: exclude the OCI standard keys
         if type_filter == "model":
             annotations = raw_ann
         else:
@@ -1153,7 +1234,7 @@ def list_harbor_artifacts(
     # ── Filter mode: project + any filter → cross-repo search ───────────────
     _filters_set = any([type_filter, hypervisor, os_type, os_name])
     if project and _filters_set:
-        # 1. Sab repos fetch karo (up to 200)
+        # 1. Fetch all repos (up to 200)
         all_repos_raw = _get(f"/projects/{project}/repositories", {"page": 1, "page_size": 100})
         if len(all_repos_raw) == 100:
             all_repos_raw += _get(f"/projects/{project}/repositories", {"page": 2, "page_size": 100})
@@ -1164,7 +1245,7 @@ def list_harbor_artifacts(
             repo_name = full_name.split("/", 1)[-1]    # "raqsoft/proxmox-template"
             if owner and not repo_name.startswith(f"{owner}/"):
                 continue
-            # OCI /v2/ API — repo name ke slashes directly URL mein, no %2F needed
+            # OCI /v2/ API — the repo name's slashes go directly in the URL, no %2F needed
             for tag in _oci_tags(full_name):
                 raw_ann = _oci_manifest(full_name, tag).get("annotations") or {}
                 ann     = _parse_artifact_annotations(raw_ann)
@@ -1261,6 +1342,12 @@ def list_harbor_artifacts(
 
 
 def get_library_item_path(item_id: int, db: Session) -> tuple[str, str]:
+    """
+    Get the item's (file_path, file_name) tuple — for building a download redirect.
+
+    Used by: GET /v1/library/download/{item_id} (via RedirectResponse)
+    Errors: 404 if item_id is not found, 409 if the status is not "ready".
+    """
     item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Library item {item_id} not found")
@@ -1279,6 +1366,15 @@ async def update_library_item(
     db:      Session,
     request: Request,
 ):
+    """
+    Update the item's name/version (LibraryUpdateWorkflow, Temporal — async,
+    the file/Harbor image is not touched).
+
+    Used by: PUT /v1/library/{item_id}
+    Returns: success_response with the updated `<item>` in `data` (right after
+    the workflow start — the real DB write happens a bit later in the background).
+    Errors: 404 if item_id is not found, 409 if the status is "uploading".
+    """
     item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Library item {item_id} not found")
@@ -1306,18 +1402,33 @@ async def update_library_item(
 
 
 async def delete_library_item(item_id: int, db: Session, request: Request):
+    """
+    Delete a library item.
+
+    - status "uploading"/"failed" → immediate sync delete (DB record + temp
+      file if it exists), no Temporal/Harbor involvement.
+    - status "ready" → LibraryDeleteWorkflow (Temporal, async) — if it was
+      pushed to Harbor (`_HARBOR_PUSH_TYPES`: container, llm_model,
+      llm_template, postgresql), Harbor is cleaned up first, then the DB
+      record (if the Harbor delete fails, the DB record is NOT deleted — see
+      activities_library.py's `delete_library_file_activity`).
+
+    Used by: DELETE /v1/library/{item_id}
+    Returns: sync path → {"id": item_id}; async path → {"id": item_id, "workflow_id": str}
+    Errors: 404 if item_id is not found.
+    """
     item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not item:
         raise HTTPException(status_code=404, detail=f"Library item {item_id} not found")
 
     username = _extract_username(request)
 
-    # uploading/failed state mein — seedha DB se delete karo, koi Temporal nahi
+    # in the uploading/failed state — delete straight from the DB, no Temporal
     if item.status in ("uploading", "failed"):
         file_path = item.file_path
         db.delete(item)
         db.commit()
-        # File bhi hata do agar exist kare
+        # Remove the file too if it exists
         if file_path and os.path.exists(file_path):
             try:
                 os.remove(file_path)
@@ -1353,6 +1464,16 @@ async def deploy_library_item(
     db:      Session,
     request: Request,
 ):
+    """
+    Deploy a library item — dispatch by `deployment_type`:
+    "lxc" (default) → Proxmox LXC restore, "kubernetes" → K8s Harbor deploy
+    (see kubernetes_controller.deploy_harbor_to_k8s).
+
+    Used by: POST /v1/library/{item_id}/deploy
+    Args: body = LibraryDeployBody (deployment_type, name, cluster_id, +
+    lxc-only: ip_pools/storage, + k8s-only: namespace/http_port).
+    Returns: see `_deploy_library_lxc` / `kubernetes_controller.deploy_harbor_to_k8s`.
+    """
     deployment_type = body.get("deployment_type", "lxc").lower()
 
     if deployment_type == "kubernetes":
@@ -1371,7 +1492,7 @@ async def deploy_library_item(
 
 
 async def _deploy_library_k8s(item_id: int, body: dict, db: Session):
-    """Library item ko K8s cluster pe Harbor ke roop me deploy karo."""
+    """Deploy a library item onto a K8s cluster as Harbor."""
     from controllers.kubernetes_controller import deploy_harbor_to_k8s
 
     cluster_id = body["cluster_id"]
@@ -1396,6 +1517,18 @@ async def _deploy_library_lxc(
     db:         Session,
     request:    Request,
 ):
+    """
+    Restore a library item (an LXC backup) onto Proxmox as a new LXC container
+    — validate the item/cluster, reserve the first available IP from the given
+    `ip_pools`, create an LXCRestoreJob record, then start LXCRestoreWorkflow
+    (Temporal). The bridge/SSH creds come from env, not the request body
+    (security).
+
+    Returns: success_response(202) with, in `data`, {"job_id", "name",
+    "ip_address", "cluster", "library_item", "workflow_id", "status": "provisioning"}.
+    Errors: 404 if item_id/cluster_id is not found, 409 if the item is not ready, 400 if
+    no pool has a free IP.
+    """
     # Validate library item
     item = db.query(LibraryItem).filter(LibraryItem.id == item_id).first()
     if not item:

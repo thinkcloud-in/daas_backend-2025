@@ -7,10 +7,9 @@ logger = activity.logger
 @activity.defn
 def guacamole_retention_cleanup_activity(retention_days: int) -> Dict[str, Any]:
     """
-    Do external APIs ko hit karta hai (dono URLs .env se) -- ek connection
-    history retention ke liye, ek recording-PV retention ke liye. Sync
-    activity hai (httpx blocking calls) -- worker ThreadPoolExecutor me
-    chalata hai.
+    Hits two external APIs (both URLs from .env) -- one for connection-history
+    retention, one for recording-PV retention. This is a sync activity (httpx
+    blocking calls) -- the worker runs it in a ThreadPoolExecutor.
     """
     from service import guacamole_retention_service
 

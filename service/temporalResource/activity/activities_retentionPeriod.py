@@ -9,13 +9,13 @@ from google.protobuf.duration_pb2 import Duration
 
 from utils.temporal_client import TemporalClientManager
 
-# Pehle ye activities ek alag wrapper HTTP API (TEMPORAL_SERVER_ADDRESS) ko call
-# karti thi, jo namespace retention badalne ke liye khud `temporal operator
-# namespace update` type command chalati thi. Wo service down/unreachable
-# nikli. Temporal ka apna Python SDK client (jo already TEMPORAL_SERVER se
-# connected hai) me hi ye UpdateNamespace/ListNamespaces RPC seedhe available
-# hain -- isliye ab koi external wrapper dependency nahi chahiye, seedha
-# already-connected client use karte hain.
+# These activities used to call a separate wrapper HTTP API
+# (TEMPORAL_SERVER_ADDRESS) which itself ran a `temporal operator namespace
+# update`-type command to change namespace retention. That service turned out
+# to be down/unreachable. Temporal's own Python SDK client (already connected
+# to TEMPORAL_SERVER) exposes these UpdateNamespace/ListNamespaces RPCs
+# directly -- so no external wrapper dependency is needed any more, we use the
+# already-connected client directly.
 
 
 @activity.defn

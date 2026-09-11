@@ -13,13 +13,13 @@ temporal_namespace_router = APIRouter(prefix="/v1/retention", tags=["Retention"]
 @temporal_namespace_router.get("/get_namespaces", summary="Get all Temporal namespaces and their current retention")
 async def api_get_namespaces():
     """
-    Saare Temporal namespaces list karo, har ek ki current
-    workflow-execution-retention (kitne din tak completed workflow history
-    Temporal mein queryable rehti hai) ke saath.
+    List all Temporal namespaces, along with each one's current
+    workflow-execution-retention (how many days a completed workflow's
+    history stays queryable in Temporal).
 
     Response `data`: [ {"namespace": str, "retention_days": int, ...}, ... ]
-    (raw list — koi APIResponse envelope nahi wrap hota, Temporal ke apne
-    `/temporal/retention` endpoint ka JSON as-is aata hai.)
+    (a raw list — not wrapped in an APIResponse envelope, it's Temporal's own
+    `/temporal/retention` endpoint's JSON as-is.)
     """
     return await temporal_namespace_controller.api_get_namespaces()
 
@@ -32,17 +32,18 @@ async def api_update_namespace_retention(
     db: Session = Depends(get_db),
 ):
     """
-    Ek hi call se do cheezein update hoti hain:
-    1. Temporal ke default namespace ki workflow-execution-retention (Temporal
-       operator API/CLI wrapper ke through).
-    2. OpenSearch ke `backend-logs-*` indices ke liye ISM retention-policy
-       (auto-delete purani log-indices) — DB (`retention_settings` table)
-       mein bhi record hota hai audit/GET ke liye.
+    A single call updates two things:
+    1. The Temporal default namespace's workflow-execution-retention (via a
+       Temporal operator API/CLI wrapper).
+    2. The ISM retention policy for OpenSearch's `backend-logs-*` indices
+       (auto-deletes old log indices) — also recorded in the DB
+       (`retention_settings` table) for audit/GET purposes.
 
     Request body: UpdateRetentionRequest = {"namespace": str, "retention_days": int, "email": str}
-    (`namespace` field abhi ignore hota hai — hamesha app ka default namespace update hota hai.)
+    (the `namespace` field is currently ignored — the app's default namespace
+    is always the one updated.)
 
-    Response `data`: updated namespaces list (dekho `get_namespaces`).
+    Response `data`: the updated namespaces list (see `get_namespaces`).
     """
     return await temporal_namespace_controller.api_update_namespace_retention(request, db)
 
@@ -52,8 +53,8 @@ async def api_update_namespace_retention(
 )
 async def api_get_retention_settings(db: Session = Depends(get_db)):
     """
-    Retention setting kabhi update hui hai to DB se wo dikhao, warna
-    hardcoded default (30 din) dikhao.
+    Show the retention setting from the DB if it's ever been updated,
+    otherwise show the hardcoded default (30 days).
 
     Response `data`:
         {

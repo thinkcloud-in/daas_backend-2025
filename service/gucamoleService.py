@@ -1,3 +1,16 @@
+"""
+gucamoleService — service layer for Guacamole connection/user management + session-report +
+RBAC(Keycloak). The largest/most varied service file: it wraps all three of the Guacamole
+REST API (connections/users/history), the Keycloak Admin REST API (roles/role-mappings), and
+Temporal workflows (reports, RBAC operations).
+
+Common pattern (most async functions): get a Temporal client → run a `workflows_guacmole`/
+`workflows_RBAC` workflow via `start_workflow()` → await `handle.result()` → return the
+result. Each such function's docstring only names which workflow runs and what result shape
+to expect — not the full workflow implementation detail (that is in temporalResource/workflows/).
+
+Used by: the Guacamole/RBAC/report endpoints in controllers/routes.py.
+"""
 import asyncio
 import base64
 from datetime import datetime
@@ -29,11 +42,13 @@ logger = logging.getLogger(__name__)
 
 
 def unique_id():
+    """Build an `HH:MM:SS` string from the current time, for use as a workflow-id suffix."""
     unique_id = datetime.now()
     return f"{unique_id.hour }:{unique_id.minute}:{unique_id.second}"
 
-        
+
 async def startup_event_client():
+    """Eagerly initialize the Temporal client singleton at app startup (called from main.py)."""
     logger.info("Starting up FastAPI server...")
     # Initialize the singleton connection
     await TemporalClientManager.get_temporal_client()
@@ -44,6 +59,11 @@ async def startup_event_client():
 logger = logging.getLogger("guacamole_login_logger")
 
 async def login_with_guacamole():
+    """
+    Start `LoginWorkflow` — fetches an auth token using the Guacamole admin credentials.
+    Returns: workflow result (an auth token string, depending on the workflow implementation).
+    Raises: HTTPException 500 if the workflow fails.
+    """
     uniqueId = unique_id()
     logger.info(f"Starting login process with Guacamole, unique ID: {uniqueId}.")
     client = await TemporalClientManager.get_temporal_client()
@@ -82,6 +102,13 @@ async def logout_from_guacamole(token: str):
 
 #------------------------------------------------------Connection/machine ----------------------------------------------------
 def return_payload(machine_data:MachineDto):
+    """
+    Convert a machine dict into the JSON payload (a string) expected by the Guacamole
+    "create/update connection" REST API, per protocol (rdp/vnc/telnet/kubernetes/ssh).
+    Note: for RDP/VNC/SSH the "password" field going into the payload is intentional (the
+    Guacamole contract), not a leak.
+    Returns: a JSON string. Raises: ValueError if the protocol is unsupported.
+    """
     protocol = machine_data['protocol'].lower()
     match protocol:
         case "rdp":   
@@ -378,6 +405,7 @@ def return_payload(machine_data:MachineDto):
     return payload 
 
 async def creating_connection(machine_data: CreateMachineBase):
+    """Start `CreateMachineWorkflow` (guacamole workflows) — creates a connection in Guacamole. Returns the workflow result."""
     uniqueId = unique_id()
     logger.info(f"Starting to create connection with unique ID: {uniqueId}.")
     
@@ -404,6 +432,11 @@ async def creating_connection(machine_data: CreateMachineBase):
    
 # Assign User to Connections/machine   Create a pool manully
 async def assign_connection_to_user(username:str, connection:str):
+    """
+    Grant a Guacamole user READ permission on a connection
+    (PATCH `/users/{username}/permissions`, op="add").
+    Returns: HTTP status code (int) from Guacamole.
+    """
     token = await login_with_guacamole()
     gucamole_connection_To_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users/"
     url = gucamole_connection_To_user_url + username + "/permissions?token="+ token
@@ -425,6 +458,11 @@ async def assign_connection_to_user(username:str, connection:str):
 
 # Delete machines/connection from guacamole
 async def revoke_user_from_connection(username:str, connection:str):
+    """
+    Revoke a Guacamole user's READ permission on a connection
+    (PATCH `/users/{username}/permissions`, op="remove").
+    Returns: HTTP status code (int) from Guacamole.
+    """
     token = await login_with_guacamole()
     gucamole_connection_To_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users/"
     url = gucamole_connection_To_user_url + username + "/permissions?token="+ token
@@ -446,6 +484,7 @@ async def revoke_user_from_connection(username:str, connection:str):
 
 # LIST OF MACHINE OR CONNECTION
 async def list_machines():
+    """Start `ListOfMachinesWorkflow` — lists all of Guacamole's connections. Returns the workflow result."""
     uniqueId = unique_id()
     logger.info(f"Generated unique ID: {uniqueId}")
     
@@ -474,14 +513,16 @@ async def list_machines():
  
 # Delete users from assine machine/connection
 async def delete_connection(connection):
+    """Delete a connection from Guacamole (DELETE `/connections/{connection}`). Returns the HTTP status code."""
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     token = await login_with_guacamole()
     url = gucamole_update_url +connection+ "?token=" + token
     response = requests.request("DELETE", url)
     return response.status_code
- 
+
 # modify machine/connection
 async def modify_connection(machine_data:Machine):
+    """PUT-update a Guacamole connection with new parameters (building the body via `return_payload()`). Returns the HTTP status code."""
     gucamole_update_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/connections/"
     guacamole_login =  await login_with_guacamole()
     url = gucamole_update_url+str(machine_data['identifier'])+"?token="+ guacamole_login
@@ -495,6 +536,7 @@ async def modify_connection(machine_data:Machine):
 #------------------------------------------------------User----------------------------------------------------
 # LIST OF USER from GUACAMOLE
 async def list_of_users():
+    """Start `ListOfGuacoUsersWorkflow` — lists all of Guacamole's users. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -507,8 +549,9 @@ async def list_of_users():
     result =  await handle.result()
     logger.info("Successfully retrieved list of guaco users.")
     return result
-# get user paricular user  
+# get user paricular user
 async def get_user_details(username):
+    """Fetch a Guacamole user's details (GET `/users/{username}`). Returns the HTTP status code (the response body is discarded)."""
     token = await login_with_guacamole()
     gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
     url = gucamole_create_user_url+"/"+username+"?token="+ token
@@ -524,6 +567,11 @@ async def get_user_details(username):
 
 # Create a user in guacamole
 async def create_user(username):
+    """
+    Create a new user in Guacamole (empty password, empty attributes — POST `/users`).
+    Returns: HTTP status code (int).
+    Raises: HTTPException 500 on error.
+    """
     try:
         token = await login_with_guacamole()
         gucamole_create_user_url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/{os.getenv('GUCAMOLE_DATASOURCE')}/users"
@@ -552,7 +600,11 @@ async def create_user(username):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-async def delete_user(username):    
+async def delete_user(username):
+    """
+    Delete a user in Guacamole (DELETE `/users/{username}`, hardcoded "postgresql" datasource).
+    Returns: HTTP status code (int) on success, or the exception object itself (not raised) on error.
+    """
     try:
         token = await login_with_guacamole()
         url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/session/data/postgresql/users/{username}?token={token}"
@@ -564,6 +616,7 @@ async def delete_user(username):
         return e 
 #   Get List of from Keyclaok --------------------------------
 async def get_userList_from_keycloak(first: int, limit: int, search: str):
+    """Start `GetUserlistFromKeycloakWorkflow` — paginated/search list of Keycloak users. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -581,6 +634,11 @@ async def get_userList_from_keycloak(first: int, limit: int, search: str):
 
 #-------------------------------------------------------------------------------------------------------
 async def get_users_connection_history(token):
+    """
+    Fetch Guacamole's recent connection-usage history directly from the REST API
+    (GET `/history/connections`, order=-startDate, limit=1000) — no Temporal involved.
+    Returns: list of history entries (Guacamole's raw JSON), or [] if the token is missing / the API fails.
+    """
     if not token:
         return []
     # f"{baseurl}/guacamole/api/session/data/postgresql/history/users"
@@ -597,6 +655,7 @@ async def get_users_connection_history(token):
         return []
 
 async def get_session_reports(start_date_range: datetime, end_date_range: datetime):
+    """Start `GetSessionReportWorkflow` — Guacamole session records for a date range. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -614,6 +673,7 @@ async def get_session_reports(start_date_range: datetime, end_date_range: dateti
     logger.info("Task created for get session report")
     return result
 async def get_users_in_timerange(session_reports):
+    """Start `GetAllUsersVamanitWorkflow` — extracts distinct users from session_reports. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -629,6 +689,7 @@ async def get_users_in_timerange(session_reports):
     return result
 
 async def get_perticular_user_sessionreports(session_reports, username):
+    """Start `GetPerticularUserSessionReportWorkflow` — filters session_reports for one user. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -644,6 +705,7 @@ async def get_perticular_user_sessionreports(session_reports, username):
     return result
 
 async def get_daily_reports(session_reports):
+    """Start `GetDailyReportsWorkflow` — groups session_reports by day. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -659,6 +721,7 @@ async def get_daily_reports(session_reports):
     return result
 
 async def get_perticular_user_daily_reports(daily_reports, username):
+    """Start `getPerticularUserDailyReportWorkflow` — filters daily_reports for one user. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -678,6 +741,7 @@ async def get_perticular_user_daily_reports(daily_reports, username):
 
 # Database connection function
 def get_db_connection():
+    """Build a raw psycopg2 connection to the "thinkclouddb" DB (for report-template CRUD, outside the ORM)."""
     connection = psycopg2.connect(
         user=os.getenv('USER_NAME'),
         password=os.getenv('PASSWORD'),
@@ -690,6 +754,7 @@ def get_db_connection():
 # Function to insert company data
 
 async def insert_report(company_name: str, company_logo: bytes, report_type: str):
+    """Start `InsertReportWorkflow` — inserts a new company/logo record into the reporttemplate table. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -703,6 +768,11 @@ async def insert_report(company_name: str, company_logo: bytes, report_type: str
 
 # Function to fetch all companies
 async def get_companies():
+    """
+    Fetch all report-template companies directly from the DB (reporttemplate table).
+    Returns: list of {"company_name","company_logo": base64-or-None,"report_type"},
+             or a {"msg","error"} dict on a DB error.
+    """
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -726,6 +796,11 @@ async def get_companies():
         db.close()
 
 async def get_companies_by_report_type(report_type :str):
+    """
+    Fetch report-template companies from the DB filtered to a specific report_type.
+    Returns: list of {"company_name","company_logo": base64-or-None,"report_type"},
+             or a {"msg","error"} dict on a DB error.
+    """
     db = get_db_connection()
     try:
         with db.cursor() as cursor:
@@ -753,6 +828,7 @@ async def get_companies_by_report_type(report_type :str):
 
 
 async def update_report(company_name: str, company_logo: str, report_type: str):
+    """Start `UpdateReportWorkflow` — updates a company/logo record. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -769,6 +845,7 @@ async def update_report(company_name: str, company_logo: str, report_type: str):
 
 # Function to delete company data
 async def delete_report(report_type: str):
+    """Start `DeleteReportWorkflow` — deletes the company/logo record for a report_type. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -783,6 +860,11 @@ async def delete_report(report_type: str):
     return result
  
 async def get_auth_headers():
+    """
+    Get a password-grant token as the Keycloak admin (env `KEYCLOAK_ADMIN`/`KEYCLOAK_PASSWORD`).
+    Returns: {"Authorization": "Bearer <token>", "Content-Type": "application/json"}.
+    Raises: Exception if KEYCLOAK_ROOT_URL is unset; requests.HTTPError on auth failure.
+    """
     # Get and sanitize environment variables
     root_url = os.getenv('KEYCLOAK_ROOT_URL', '').strip().rstrip('/')
     admin_user = os.getenv('KEYCLOAK_ADMIN', 'admin').strip()
@@ -813,6 +895,7 @@ async def get_auth_headers():
         "Content-Type": "application/json"
     }
 async def get_client():
+    """Start `GetClientWorkflow` — details of the Keycloak client (used for RBAC). Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -827,6 +910,7 @@ async def get_client():
 
  
 async def get_client_roles():
+    """Start `GetClientRolesWorkflow` — lists the Keycloak client's roles. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -840,6 +924,10 @@ async def get_client_roles():
     return result
  
 async def create_client_role(client_id, role_name):
+    """
+    Create a Keycloak client-scoped role (POST `/clients/{client_id}/roles`).
+    Returns: Keycloak's JSON response, or None on request failure.
+    """
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -847,15 +935,16 @@ async def create_client_role(client_id, role_name):
         realm_url = keycloak_url
         payload = {
             "name": role_name
-           
+
         }
         realm_response = requests.post(realm_url, headers=headers, json=payload)
         realm_response.raise_for_status()
         return realm_response.json()
     except requests.RequestException as e:
         return None
- 
+
 async def role_exists(client_id, role_name):
+    """Check whether a client-scoped role exists in Keycloak. Returns bool (False on an API error too)."""
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -871,6 +960,7 @@ async def role_exists(client_id, role_name):
 
 
 async def role_exists_keycloak(client_id, role_name):
+    """Check whether a realm-level role exists in Keycloak. Returns bool (False on an API error too)."""
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -884,22 +974,29 @@ async def role_exists_keycloak(client_id, role_name):
         return False
 
 async def get_keycloak_roles():
+    """List all Keycloak realm-level roles (GET `/realms/{realm}/roles`). Returns a list, or None on error."""
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
-        # Wahi Realm roles wala endpoint jahan se poori list milegi
+        # The realm-roles endpoint that returns the full list
         keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles"
-        
-        # GET request maari list nikalne ke liye
+
+        # GET request to retrieve the list
         response = requests.get(keycloak_url, headers=headers, verify=False)
         response.raise_for_status()
-        
-        return response.json()  # Yeh Keycloak ke saare realm roles ki list array/list me dega
+
+        return response.json()  # returns an array/list of all Keycloak realm roles
     except requests.RequestException as e:
         logger.error(f"Failed to fetch realm roles from Keycloak: {e}")
         return None
     
 async def create__keycloak_client_role(client_id, role_name):
+    """
+    Create a new realm-level role in Keycloak (POST `/realms/{realm}/roles`).
+    Note: despite the name, this creates a realm role, not a client-scoped role (the `client_id`
+    param is unused here).
+    Returns: Keycloak's JSON response, or None on failure.
+    """
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -914,6 +1011,7 @@ async def create__keycloak_client_role(client_id, role_name):
 
 
 async def delete_client_role(client_id, role_name):
+    """Delete a client-scoped role from Keycloak (DELETE `/clients/{client_id}/roles/{role_name}`). Returns the JSON response, or None on failure."""
     try:
         headers = await get_auth_headers()
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -925,6 +1023,7 @@ async def delete_client_role(client_id, role_name):
     except requests.RequestException as e:
         return None
 def get_user_roles(auth_headers, user_id):
+    """Fetch a Keycloak user's role-mappings (GET `/users/{user_id}/role-mappings`). Returns Keycloak's JSON, or None on error."""
     try:
         headers = auth_headers
         realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
@@ -938,6 +1037,7 @@ def get_user_roles(auth_headers, user_id):
  
         return None
 async def assign_role(user_id, role_id, role_name):
+    """Assign a realm role to a Keycloak user (POST role-mappings/realm). Returns {"status": "assigned"}."""
     headers = await get_auth_headers()
     realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
     keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
@@ -970,6 +1070,7 @@ async def get_service_account_token():
     return resp.json()["access_token"]
 
 async def get_role_by_name(role_name):
+    """Fetch a realm role's details by name (GET `/roles/{role_name}`). Returns Keycloak's JSON role object."""
     headers = await get_auth_headers()
     realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
     keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/roles/{role_name}"
@@ -978,6 +1079,7 @@ async def get_role_by_name(role_name):
     return response.json()
 
 async def remove_role(user_id, role_id, role_name):
+    """Remove a realm role from a Keycloak user (DELETE role-mappings/realm). Returns {"status": "removed"}."""
     headers = await get_auth_headers()
     realm = os.getenv('KEYCLOAK_REALM') or os.getenv('KEYCLOAK_RELAM')
     keycloak_url = f"{os.getenv('KEYCLOAK_ROOT_URL')}/admin/realms/{realm}/users/{user_id}/role-mappings/realm"
@@ -990,6 +1092,11 @@ async def remove_role(user_id, role_id, role_name):
     return {"status": "removed"}
     
 async def posting_role(role_name: str, authorization: str):
+    """
+    Start `CreatingRoleWorkflow` — creates a new RBAC role.
+    Returns: {"msg": "..."} if the workflow result code==200, otherwise the workflow result as-is.
+    Raises: HTTPException with the workflow's own status_code/detail if result status=="Error".
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1010,6 +1117,11 @@ async def posting_role(role_name: str, authorization: str):
 
 
 async def deleting_role(role_name: str, authorization: str):
+    """
+    Start `DeletingRoleWorkflow` — deletes an RBAC role.
+    Returns: {"msg": "..."} if result code==200, otherwise the result as-is.
+    Raises: HTTPException if result code==500.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1029,6 +1141,11 @@ async def deleting_role(role_name: str, authorization: str):
     return result
 
 async def updating_role_component(request: RoleComponentSubmitRequest, authorization):
+    """
+    Start `UpdateRoleComponentWorkflow` — updates a role's component/permissions.
+    Returns: {"msg": "..."} if result status=="Ok", otherwise the result as-is.
+    Raises: HTTPException if result status=="Error".
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1049,6 +1166,7 @@ async def updating_role_component(request: RoleComponentSubmitRequest, authoriza
 
 
 async def getting_role_component(role: str):
+    """Start `GetRoleComponentWorkflow` — fetches a role's components/permissions. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1064,6 +1182,7 @@ async def getting_role_component(role: str):
     return result
 
 async def assignning_user_role(request: RBACRequest):
+    """Start `AssignUserRoleworkflow` — assigns an RBAC role to a user. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1079,6 +1198,11 @@ async def assignning_user_role(request: RBACRequest):
 
 
 async def get_user_permissions(request, username: str):
+    """
+    Start `GetUserPermissionsWorkflow` — fetches a user's effective RBAC permissions
+    (extracts the auth header from the request's authorization state and forwards it to the workflow).
+    Returns: workflow result.
+    """
     uniqueId = unique_id()
     auth_header = request.state._state
     # if not auth_header:
@@ -1105,6 +1229,11 @@ async def get_user_permissions(request, username: str):
 
 
 async def delete_role_from_user(request: RBACRequest):
+    """
+    Start `DeleteRoleFromUserWorkflow` — removes an RBAC role from a user.
+    Returns: workflow result.
+    Raises: HTTPException with the workflow's own status_code/msg if result code != 200.
+    """
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1124,6 +1253,7 @@ async def delete_role_from_user(request: RBACRequest):
 # --------------------------------------------------------------------------------------------------------------------
 
 async def generate_userbased_report(start_date: str, end_date: str, report_type: str,username:str):
+    """Start `GenerateUserBasedReportWorkflow` — generates a session report for a specific user. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1139,6 +1269,7 @@ async def generate_userbased_report(start_date: str, end_date: str, report_type:
     return result 
  
 def format_datetime(datetime_str):
+    """Reformat a datetime string ('YYYY-MM-DD HH:MM:SS') to 'DD/MM/YYYY HH:MM:SS'. Returns 'Not Applicable' if empty, or as-is (jsonable_encoder) if the parse fails."""
     if not datetime_str:
         return "Not Applicable"
     try:
@@ -1149,6 +1280,7 @@ def format_datetime(datetime_str):
  
  
 def calculate_duration(duration):
+    """Convert seconds (a number) into an 'HH:MM:SS' string. Returns '00:00:00' on invalid/'Not Applicable' input."""
     if duration == "Not Applicable":
         return "00:00:00"
     try:
@@ -1164,6 +1296,7 @@ def calculate_duration(duration):
 
 
 async def get_users_total_duration_within_timerange(day_duration: List[Dict]):
+    """Start `GetUsersTotalDurationWithinTimerangeWorkflow` — computes per-user total session duration. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1178,6 +1311,7 @@ async def get_users_total_duration_within_timerange(day_duration: List[Dict]):
     logger.info("Report Generated Successfully.")                                                                                                  
     return result
 async def consolidate_report_perticular_user(user_total_duration, user):
+    """Start `ConsolidateReportPerticularUserWorkflow` — builds a consolidated report for one user. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1193,6 +1327,7 @@ async def consolidate_report_perticular_user(user_total_duration, user):
     return result
 
 async def generate_report(start_date: str, end_date: str, report_type: str) :
+    """Start `GenerateReportWorkflow` — generates the full session report for a date range. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     logger.info("Successfully established connection with the client.")
@@ -1209,6 +1344,7 @@ async def generate_report(start_date: str, end_date: str, report_type: str) :
 
 
 async def get_guacamole_history():
+    """Start `GetGuacamoleHistoryWorkflow` — fetches the Guacamole connection history. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -1223,6 +1359,7 @@ async def get_guacamole_history():
 
 
 async def get_guacamole_ActiveSessions():
+    """Start `GetGuacamoleActiveSessionsWorkflow` — lists the currently active Guacamole sessions. Returns the workflow result."""
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
     handle = await client.start_workflow(
@@ -1240,6 +1377,18 @@ async def get_guacamole_ActiveSessions():
 
 
 async def generate_guacamole_session_url(session_uuid, datasource=None):
+    """
+    Build a direct-access URL to the Guacamole client view (from a base64-encoded fragment of
+    session_uuid + datasource) and return a 302 redirect response, setting the GUAC_AUTH cookie.
+
+    BUG (found during the doc pass, not fixed — out of scope): this function uses `Response(...)`
+    but `Response` is never imported in this file (only `StreamingResponse` is imported from
+    starlette) — calling this function raises `NameError: name 'Response' is not defined` at
+    runtime. To fix, add `from starlette.responses import Response` (or use
+    `fastapi.responses.RedirectResponse`).
+
+    Returns (intended): a 302 redirect Response object with a Location header + GUAC_AUTH cookie.
+    """
     guac_token = await login_with_guacamole()
     base_url = os.getenv('GUCAMOLE_BASE_URL')
     if not datasource or datasource == "undefined":
@@ -1269,7 +1418,15 @@ async def generate_guacamole_session_url(session_uuid, datasource=None):
 
  
 async def get_recording_log(identifier: str, log_uuid: str):
- 
+    """
+    Stream a Guacamole session-recording file (.guac format) from Guacamole and forward it to
+    the client (proxy pattern — the whole file is not loaded into memory).
+
+    Returns: StreamingResponse (media_type="application/octet-stream", Content-Disposition
+             inline filename="recording-{identifier}-{log_uuid}.guac").
+    Raises: HTTPException 500 if the Guacamole config is missing, or Guacamole's own status
+            code if the fetch fails.
+    """
     token = await login_with_guacamole()
  
     base_url = os.getenv("GUCAMOLE_BASE_URL")

@@ -4,10 +4,10 @@ from controllers.ssl_controller import ssl_controller, SSLController, RenewPaylo
 
 ssl_router = APIRouter(prefix="/v1/ssl", tags=["ssl"])
 
-# NOTE: is router ke saare endpoints raw dict return karte hain — koi bhi
-# standard {status, code, msg, data} envelope wrap nahi hota (baaki app se
-# alag), aur koi response_model bhi declare nahi hai. Errors HTTPException
-# (4xx/5xx) ke through aate hain, {"error": ...} field ke through nahi.
+# NOTE: every endpoint in this router returns a raw dict — none of them are
+# wrapped in the standard {status, code, msg, data} envelope (unlike the
+# rest of the app), and no response_model is declared either. Errors come
+# through as HTTPException (4xx/5xx), not through an {"error": ...} field.
 
 
 @ssl_router.post("/ssl_upload")
@@ -17,15 +17,15 @@ async def upload_ssl_certificates(
     controller: SSLController = Depends(lambda: ssl_controller)
 ):
     """
-    SSL certificate + private key upload karo (K8s Secret ke roop mein
-    cluster mein store hote hain, ingress/TLS ke liye use hote hain).
+    Upload an SSL certificate + private key (stored as a K8s Secret in the
+    cluster, used for ingress/TLS).
 
     Request: multipart/form-data — `cert_file` (.crt/.pem), `key_file` (.key).
 
     Response 200 (raw dict, no envelope):
         {"status": "success", "message": str, "certificate_details": {...cert info...}}
 
-    Errors: 400 agar cert/key invalid format ho, 500 K8s API error pe.
+    Errors: 400 if the cert/key format is invalid, 500 on a K8s API error.
     """
     return await controller.upload_ssl_certificates(cert_file, key_file)
 
@@ -35,10 +35,10 @@ async def delete_ssl_certificate(
     controller: SSLController = Depends(lambda: ssl_controller)
 ):
     """
-    Currently-installed SSL certificate delete karo (K8s Secret remove).
+    Delete the currently-installed SSL certificate (removes the K8s Secret).
 
     Response 200 (raw dict): {"status": "success", "message": str}
-    Errors: 404 agar koi certificate installed hi na ho.
+    Errors: 404 if no certificate is installed.
     """
     return await controller.delete_ssl_certificate()
 
@@ -50,13 +50,13 @@ async def renew_ssl_certificate_on_server(
     controller: SSLController = Depends(lambda: ssl_controller)
 ):
     """
-    SSL certificate renew karo (Let's Encrypt/ACME jaisi flow ke through) —
-    domain diya na ho to request ke hostname se auto-detect hota hai.
+    Renew the SSL certificate (via a Let's Encrypt/ACME-style flow) — if no
+    domain is given, it's auto-detected from the request's hostname.
 
     Request body (optional): RenewPayload = {"common_name": str | None}
 
     Response 200 (raw dict): {"status": "success", "message": str, "domain": str}
-    Errors: 400 invalid domain, 500 renewal process fail.
+    Errors: 400 invalid domain, 500 if the renewal process fails.
     """
     return await controller.renew_ssl_certificate(request, payload)
 
@@ -66,12 +66,12 @@ async def get_ssl_certificate_status(
     controller: SSLController = Depends(lambda: ssl_controller)
 ):
     """
-    Currently-installed SSL certificate ki detail/expiry status dekho.
+    View the currently-installed SSL certificate's detail/expiry status.
 
     Response 200 (raw dict): certificate details (issuer, domain(s),
-    valid_from, valid_until, ...) — exact keys `service.get_certificate_status()`
-    se aati hain.
+    valid_from, valid_until, ...) — the exact keys come from
+    `service.get_certificate_status()`.
 
-    Errors: 404 agar koi certificate installed na ho.
+    Errors: 404 if no certificate is installed.
     """
     return await controller.get_ssl_certificate_status()

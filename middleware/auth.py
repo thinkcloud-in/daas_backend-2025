@@ -14,15 +14,15 @@ security = HTTPBearer()
 # 🛠️ Fixed Configuration & Fallback Logic
 # ============================================
 
-# 1. Env variables nikaalna (Typo handle karte hue)
+# 1. Read env variables (handling the typo)
 raw_root_url = os.getenv("KEYCLOAK_ROOT_URL")
 raw_realm = os.getenv("KEYCLOAK_REALM") or os.getenv("KEYCLOAK_RELAM")
 
-# 2. Agar env variables nahi hain, toh pehle hi default set kar dena
+# 2. If the env variables are missing, set defaults up front
 KEYCLOAK_BASE_URL = raw_root_url.strip().rstrip('/') if raw_root_url else "https://devraq.rcvdev.team/devraqauth"
 KEYCLOAK_REALM = raw_realm.strip() if raw_realm else "guacamole"
 
-# 3. Final Absolute URLs banana
+# 3. Build the final absolute URLs
 JWKS_URL = f"{KEYCLOAK_BASE_URL}/realms/{KEYCLOAK_REALM}/protocol/openid-connect/certs"
 
 IGNORED_SYSTEM_ROLES: Set[str] = {"offline_access", "default-roles-guacamole", "uma_authorization", "account"}
@@ -59,7 +59,7 @@ async def get_jwks() -> Dict[str, Any]:
 async def verify_token_locally(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
     token = credentials.credentials
     try:
-        # 1. Token ko bina verify kiye uske header se 'kid' (Key ID) nikaalna
+        # 1. Extract the 'kid' (Key ID) from the token header without verifying it
         unverified_header = jwt.get_unverified_header(token)
         token_kid = unverified_header.get("kid")
         if not token_kid:
@@ -68,10 +68,10 @@ async def verify_token_locally(credentials: HTTPAuthorizationCredentials = Depen
                 detail="Invalid token: Missing 'kid' in token header."
             )
 
-        # 2. Keycloak se saari public keys (JWKS) lekar aana
+        # 2. Fetch all the public keys (JWKS) from Keycloak
         jwks = await get_jwks()
         
-        # 3. JWKS ke andar se wahi ek key dhoondna jo token ke 'kid' se match kare
+        # 3. Find the one key inside the JWKS that matches the token's 'kid'
         target_rsa_key = None
         for key in jwks.get("keys", []):
             if key.get("kid") == token_kid:
@@ -84,7 +84,7 @@ async def verify_token_locally(credentials: HTTPAuthorizationCredentials = Depen
                 detail="Invalid token: Key ID not found in Keycloak JWKS."
             )
             
-        # 4. Ab poore dict ki jagah sirf us SPECIFIC single key ko paas karna
+        # 4. Now pass only that SPECIFIC single key instead of the whole dict
         return jwt.decode(token, target_rsa_key, algorithms=["RS256"], options={"verify_aud": False})
         
     except JWTError as e:

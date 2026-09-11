@@ -1,11 +1,11 @@
 """
-SSL certificate controller — router/ssl_router.py ("/v1/ssl") is class ke
-methods ko singleton `ssl_controller` instance ke through call karta hai.
-Actual cert-generation/K8s-Secret logic service/ssl_service.py mein hai.
+SSL certificate controller — router/ssl_router.py ("/v1/ssl") calls this
+class's methods through the singleton `ssl_controller` instance. The actual
+cert-generation/K8s-Secret logic is in service/ssl_service.py.
 
-NOTE: is poore controller ke methods raw dict return karte hain — koi
-{status, code, msg, data} envelope wrap nahi hota (baaki app se alag),
-aur errors HTTPException (4xx/5xx) ke through aate hain.
+NOTE: every method in this controller returns a raw dict — none of them are
+wrapped in the {status, code, msg, data} envelope (unlike the rest of the
+app), and errors come through as HTTPException (4xx/5xx).
 """
 from fastapi import UploadFile, HTTPException, Request
 from kubernetes.client.rest import ApiException
@@ -22,8 +22,7 @@ class SSLController:
 
     async def upload_ssl_certificates(self, cert_file: UploadFile, key_file: UploadFile):
         """
-        SSL certificate + private key upload karo (K8s Secret ke roop mein
-        store hote hain).
+        Upload an SSL certificate + private key (stored as a K8s Secret).
 
         Used by: POST /v1/ssl/ssl_upload
         Returns: {"status": "success", "message": str, "certificate_details": {...}}
@@ -48,11 +47,11 @@ class SSLController:
 
     async def delete_ssl_certificate(self):
         """
-        Currently-installed SSL certificate delete karo (K8s Secret remove).
+        Delete the currently-installed SSL certificate (removes the K8s Secret).
 
         Used by: DELETE /v1/ssl/ssl_delete
         Returns: {"status": "success", "message": str}
-        Raises: 404 agar koi certificate installed hi na ho, 500 K8s API error.
+        Raises: 404 if no certificate is installed, 500 K8s API error.
         """
         try:
             msg = await self.service.delete_certificate()
@@ -66,11 +65,11 @@ class SSLController:
 
     async def renew_ssl_certificate(self, request: Request, payload: Optional[RenewPayload] = None):
         """
-        SSL certificate renew karo (ACME/Let's-Encrypt-style flow).
+        Renew the SSL certificate (an ACME/Let's-Encrypt-style flow).
 
         Used by: POST /v1/ssl/ssl_renew
-        Args: payload.common_name — na diya ho to request.url.hostname se
-        domain auto-detect hota hai.
+        Args: payload.common_name — if not given, the domain is auto-detected
+        from request.url.hostname.
         Returns: {"status": "success", "message": str, "domain": str}
         Raises: 400 invalid domain, 500 Kubernetes/renewal error.
         """
@@ -93,12 +92,12 @@ class SSLController:
 
     async def get_ssl_certificate_status(self):
         """
-        Currently-installed SSL certificate ki expiry/detail status dekho.
+        View the currently-installed SSL certificate's expiry/detail status.
 
         Used by: GET /v1/ssl/ssl_status
-        Returns: certificate details dict (issuer, domain(s), valid_from,
-        valid_until, ...) — exact keys service se aati hain.
-        Raises: 404 agar koi certificate installed na ho, 500 read/API error.
+        Returns: a certificate details dict (issuer, domain(s), valid_from,
+        valid_until, ...) — the exact keys come from the service.
+        Raises: 404 if no certificate is installed, 500 read/API error.
         """
         try:
             details = await self.service.get_certificate_status()

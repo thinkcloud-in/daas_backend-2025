@@ -22,7 +22,7 @@ class KubernetesClusterBody(BaseModel):
 
 
 class KubernetesTestBody(BaseModel):
-    control_ip:  Optional[str] = None   # kubeconfig me IP ho to optional
+    control_ip:  Optional[str] = None   # optional if the IP is embedded in the kubeconfig
     port:        Optional[int] = 6443
     username:    Optional[str] = None
     password:    Optional[str] = None
@@ -31,7 +31,7 @@ class KubernetesTestBody(BaseModel):
 
 
 class KubernetesClusterUpdateBody(BaseModel):
-    """Update ke liye — sab optional, sirf jo change karna ho wo do."""
+    """For updates — everything optional, only send what you want to change."""
     name:        Optional[str] = None
     control_ip:  Optional[str] = None
     port:        Optional[int] = None
@@ -41,31 +41,31 @@ class KubernetesClusterUpdateBody(BaseModel):
     kubeconfig:  Optional[str] = None
 
 
-# Ek cluster record ka common shape (list/get/add/update responses mein embed hota hai):
+# The common shape of a cluster record (embedded in list/get/add/update responses):
 #   {
 #     "id": int, "name": str, "control_ip": str, "port": int, "username": str|None,
-#     "auth_token": "***"|None,      # kabhi raw value nahi, sirf masked indicator
-#     "kubeconfig": "***"|None,      # kabhi raw value nahi, sirf masked indicator
+#     "auth_token": "***"|None,      # never the raw value, just a masked indicator
+#     "kubeconfig": "***"|None,      # never the raw value, just a masked indicator
 #     "has_kubeconfig": bool,
 #     "status": "connected"|"failed"|str, "last_tested": iso-datetime|None,
 #     "created_at": iso-datetime, "updated_at": iso-datetime
 #   }
-# `password` field yahan kabhi nahi aata (response se hamesha excluded).
+# The `password` field never appears here (always excluded from the response).
 
 
-# NOTE: /test route pehle register karo warna /{cluster_id} usse match kar leta
+# NOTE: register /test before /{cluster_id}, or /{cluster_id} would match it first
 @kubernetes_router.post("/test", response_model=APIResponse[Any])
 async def test_cluster_pre_save(body: KubernetesTestBody):
     """
-    DB me save kiye bina connection test karo.
-    Frontend se pehle ye call karo, agar connected aaye toh add karo.
+    Test the connection without saving to the DB.
+    Call this from the frontend first — only add the cluster if it comes back connected.
 
     Response 200 — `data` (status="connected"):
-        {"status": "connected", ...cluster-info jo test se mila...}
+        {"status": "connected", ...cluster-info from the test...}
     Response 400 (error_response, status="Failed") — `data`:
         {"status": "failed", "error": str}
 
-    Errors: 400 agar control_ip na diya ho aur kubeconfig se bhi na nikal paaye.
+    Errors: 400 if control_ip isn't given and can't be derived from the kubeconfig either.
     """
     return await kubernetes_controller.test_k8s_connection_direct(body.model_dump())
 
@@ -73,12 +73,12 @@ async def test_cluster_pre_save(body: KubernetesTestBody):
 @kubernetes_router.post("", response_model=APIResponse[Any])
 async def add_cluster(body: KubernetesClusterBody, db: Session = Depends(get_db)):
     """
-    Pehle connection test karo, connected hua toh DB me save karo.
+    Test the connection first, and save to the DB only if it connects.
 
-    Response 201 — `data`: cluster record (upar wala common shape) + `test_result`.
-    Response 400 (error_response) agar connection test fail ho — `data`: {"error": str}.
+    Response 201 — `data`: the cluster record (common shape above) + `test_result`.
+    Response 400 (error_response) if the connection test fails — `data`: {"error": str}.
 
-    Errors: 409 agar isi `name` ka cluster already exist karta ho.
+    Errors: 409 if a cluster with this `name` already exists.
     """
     return await kubernetes_controller.add_k8s_cluster(body.model_dump(), db)
 
@@ -86,10 +86,10 @@ async def add_cluster(body: KubernetesClusterBody, db: Session = Depends(get_db)
 @kubernetes_router.post("/{cluster_id}/test", response_model=APIResponse[Any])
 async def test_saved_cluster(cluster_id: int, db: Session = Depends(get_db)):
     """
-    Already saved cluster ka connection re-test karo (status update hoga DB me).
+    Re-test the connection for an already-saved cluster (updates its status in the DB).
 
     Response 200/400 — `data`: {..test-result.., "cluster_id": int}
-    Errors: 404 agar cluster_id na mile.
+    Errors: 404 if cluster_id is not found.
     """
     return await kubernetes_controller.test_k8s_cluster(cluster_id, db)
 
@@ -101,13 +101,13 @@ def list_clusters(
     db:        Session = Depends(get_db),
 ):
     """
-    Saare saved Kubernetes clusters list karo (paginated).
+    List all saved Kubernetes clusters (paginated).
 
     Response 200 — `data`:
         {
           "total": int, "page": int, "page_size": int, "total_pages": int,
           "has_next": bool, "has_prev": bool,
-          "clusters": [ <cluster record>, ... ]   # upar wala common shape
+          "clusters": [ <cluster record>, ... ]   # common shape above
         }
     """
     return kubernetes_controller.list_k8s_clusters(db, page=page, page_size=page_size)
@@ -116,15 +116,15 @@ def list_clusters(
 @kubernetes_router.put("/{cluster_id}", response_model=APIResponse[Any])
 async def update_cluster(cluster_id: int, body: KubernetesClusterUpdateBody, db: Session = Depends(get_db)):
     """
-    Cluster credentials update karo (auth_token, kubeconfig, password, etc.) + connection re-test.
-    Sirf jo fields change karni hain wo do, baaki same rahengi. Agar
-    `auth_token`/`kubeconfig` mein masked value `"***"` ya `""` bhej do, wo
-    field untouched rehta hai (GET response se copy-paste karne par safe hai).
+    Update cluster credentials (auth_token, kubeconfig, password, etc.) + re-test the connection.
+    Only send the fields you want to change, the rest stay the same. If you
+    send back the masked value `"***"` or `""` for `auth_token`/`kubeconfig`,
+    that field is left untouched (safe to copy-paste straight from a GET response).
 
-    Response 200 — `data`: updated cluster record + `test_result`.
-    Response 400 (error_response) agar re-test fail ho jaaye (update phir bhi save ho chuka hota hai).
+    Response 200 — `data`: the updated cluster record + `test_result`.
+    Response 400 (error_response) if the re-test fails (the update is still saved either way).
 
-    Errors: 404 agar cluster_id na mile.
+    Errors: 404 if cluster_id is not found.
     """
     return await kubernetes_controller.update_k8s_cluster(cluster_id, body.model_dump(exclude_none=True), db)
 
@@ -132,18 +132,18 @@ async def update_cluster(cluster_id: int, body: KubernetesClusterUpdateBody, db:
 @kubernetes_router.get("/{cluster_id}", response_model=APIResponse[Any])
 async def get_cluster(cluster_id: int, db: Session = Depends(get_db)):
     """
-    Single Kubernetes cluster detail + saare nodes (master/worker) + machine specs.
+    A single Kubernetes cluster's detail + all its nodes (master/worker) + machine specs.
 
-    Response 200 — `data`: cluster record (upar wala common shape) +
+    Response 200 — `data`: the cluster record (common shape above) +
         {
           "cluster_summary": {...} | {"error": str},
           "nodes": {...} | {"error": str},
           "system_components": [...]
         }
-    Live cluster query fail ho jaaye to bhi 200 hi aata hai, bas upar wale 3
-    keys mein error string aa jaata hai (cluster record delete nahi hota).
+    Even if the live cluster query fails, this still returns 200 — the error
+    just shows up as a string in those 3 keys (the cluster record itself is not deleted).
 
-    Errors: 404 agar cluster_id na mile.
+    Errors: 404 if cluster_id is not found.
     """
     return await kubernetes_controller.get_k8s_cluster(cluster_id, db)
 
@@ -151,11 +151,11 @@ async def get_cluster(cluster_id: int, db: Session = Depends(get_db)):
 @kubernetes_router.delete("/{cluster_id}", response_model=APIResponse[Any])
 def delete_cluster(cluster_id: int, db: Session = Depends(get_db)):
     """
-    Kubernetes cluster record delete karo (sirf DB record — actual cluster
-    ko touch nahi karta).
+    Delete a Kubernetes cluster record (DB record only — doesn't touch the
+    actual cluster).
 
-    Response 200 — `data`: null (msg mein confirmation).
-    Errors: 404 agar cluster_id na mile.
+    Response 200 — `data`: null (confirmation is in msg).
+    Errors: 404 if cluster_id is not found.
     """
     return kubernetes_controller.delete_k8s_cluster(cluster_id, db)
 
@@ -165,14 +165,14 @@ def delete_cluster(cluster_id: int, db: Session = Depends(get_db)):
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HarborDeployBody(BaseModel):
-    library_item_id: int            # Library me upload hua Harbor zip ka ID
-    name:            str            # Deployment ka naam
+    library_item_id: int            # ID of the Harbor zip uploaded to the Library
+    name:            str            # Deployment name
     namespace:       Optional[str] = "harbor"   # K8s namespace (default: harbor)
     http_port:       Optional[int] = 80          # Harbor HTTP port (default: 80)
 
 
-# NOTE: static paths (deployments) pehle register karo /{cluster_id} se pehle nahi
-#       pero ye /{cluster_id}/deployments hai isliye ok hai
+# NOTE: register static paths (deployments) before /{cluster_id} — but this
+#       is /{cluster_id}/deployments, so it's fine as-is
 @kubernetes_router.post("/{cluster_id}/deployments", response_model=APIResponse[Any])
 async def deploy_harbor(
     cluster_id: int,
@@ -180,14 +180,14 @@ async def deploy_harbor(
     db:         Session = Depends(get_db),
 ):
     """
-    Library me uploaded Harbor zip ko K8s cluster pe deploy karo (Temporal
-    workflow ke through, async).
+    Deploy a Harbor zip uploaded to the Library onto a K8s cluster (via a
+    Temporal workflow, asynchronously).
 
-    Flow: library item fetch (zip path) → K8s API se manifests apply →
-    Harbor pods ready hone ka wait → harbor_url set.
+    Flow: fetch the library item (zip path) → apply manifests via the K8s API →
+    wait for Harbor pods to become ready → set harbor_url.
 
-    Async hai — deploy_id + status milega turant.
-    GET /{cluster_id}/deployments/{deploy_id} se status + harbor_url poll karo.
+    This is async — you get back deploy_id + status right away.
+    Poll GET /{cluster_id}/deployments/{deploy_id} for status + harbor_url.
 
     Response 201 — `data`:
         {
@@ -196,8 +196,8 @@ async def deploy_harbor(
           "harbor_url": null, "message": str
         }
 
-    Errors: 404 agar cluster_id/library_item_id na mile, 400 agar cluster ka
-    kubeconfig set na ho.
+    Errors: 404 if cluster_id/library_item_id is not found, 400 if the
+    cluster's kubeconfig isn't set.
     """
     return await kubernetes_controller.deploy_harbor_to_k8s(cluster_id, body.model_dump(), db)
 
@@ -205,10 +205,10 @@ async def deploy_harbor(
 @kubernetes_router.get("/{cluster_id}/deployments", response_model=APIResponse[Any])
 def list_deployments(cluster_id: int, db: Session = Depends(get_db)):
     """
-    Cluster ke saare Harbor deployments list karo.
+    List all Harbor deployments for a cluster.
 
     Response 200 — `data`: {"deployments": [ <deployment record>, ... ]}
-    Har `<deployment record>`: id, cluster_id, name, node_ip, namespace,
+    Each `<deployment record>`: id, cluster_id, name, node_ip, namespace,
     status (deploying|running|failed), workflow_id, harbor_url, error_message,
     created_at, updated_at.
     """
@@ -218,9 +218,9 @@ def list_deployments(cluster_id: int, db: Session = Depends(get_db)):
 @kubernetes_router.get("/{cluster_id}/deployments/{deploy_id}", response_model=APIResponse[Any])
 def get_deployment(cluster_id: int, deploy_id: int, db: Session = Depends(get_db)):
     """
-    Single deployment ka status + harbor_url fetch karo (poll karne ke liye).
+    Fetch a single deployment's status + harbor_url (for polling).
 
-    Response 200 — `data`: ek `<deployment record>` (dekho `list_deployments` docstring).
-    Errors: 404 agar deploy_id (is cluster_id ke saath) na mile.
+    Response 200 — `data`: one `<deployment record>` (see `list_deployments` docstring).
+    Errors: 404 if deploy_id (under this cluster_id) is not found.
     """
     return kubernetes_controller.get_k8s_deployment(cluster_id, deploy_id, db)

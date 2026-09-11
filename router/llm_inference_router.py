@@ -18,16 +18,16 @@ class DeleteRequest(BaseModel):
 @llm_inference_router.post("/create-private-llm", response_model=APIResponse[Any])
 async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session = Depends(get_db)):
     """
-    Naya multi-node "private LLM" inference pool banao — ek ya zyada Proxmox
-    VMs provision karke, GPU-passthrough karke, unpe vLLM (ya similar) server
-    cluster ke roop mein deploy karta hai (Temporal workflow, async).
+    Create a new multi-node "private LLM" inference pool — provisions one or
+    more Proxmox VMs, sets up GPU passthrough, and deploys a vLLM (or
+    similar) server cluster on them (Temporal workflow, async).
 
     Request body: LLMInferenceJobCreate — clusterName, poolName, ipPools[],
     template, nodes[] ({node, gpu: [...]}), model/model_path, modelType, etc.
 
     Response 200 — `data`: {"job_id": int, "workflow_id": str, "status": "provisioning", ...}
-    Errors: 400 agar nodes/ipPools empty ya template missing, 404 agar
-    clusterName/ipPool na mile, 409 agar poolName already exist kare.
+    Errors: 400 if nodes/ipPools are empty or template is missing, 404 if
+    clusterName/ipPool is not found, 409 if poolName already exists.
     """
     return await llm_inference_controller.create_llm_inference_job(data, db)
 
@@ -39,7 +39,7 @@ def list_llm_inferences(
     db: Session = Depends(get_db),
 ):
     """
-    Saare LLM inference jobs (pools) list karo (paginated).
+    List all LLM inference jobs (pools) (paginated).
 
     Response 200 — `data`:
         {
@@ -81,11 +81,11 @@ def list_deployed_llm_jobs(
 @llm_inference_router.get("/list-private-llm/{job_id}", response_model=APIResponse[Any])
 def get_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
     """
-    Ek LLM inference job ki poori detail lo (per-machine enrichment ke saath).
+    Get the full detail of one LLM inference job (with per-machine enrichment).
 
-    Response 200 — `data`: `list_llm_inferences` jaisa poora record, plus
+    Response 200 — `data`: the same full record as `list_llm_inferences`, plus
     per-node machine details.
-    Errors: 404 agar job_id na mile.
+    Errors: 404 if job_id is not found.
     """
     return llm_inference_controller.get_llm_inference_job(job_id, db)
 
@@ -93,12 +93,12 @@ def get_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
 @llm_inference_router.put("/update-private-llm/{job_id}", response_model=APIResponse[Any])
 def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Session = Depends(get_db)):
     """
-    Job ki `model` aur/ya `status` field update karo (halki metadata-update
-    — VMs/deployment ko touch nahi karta).
+    Update a job's `model` and/or `status` field (a lightweight metadata
+    update — doesn't touch the VMs/deployment).
 
     Request body: LLMInferenceJobUpdate = {"model": str|None, "status": str|None}
-    Response 200 — `data`: updated record.
-    Errors: 404 agar job_id na mile.
+    Response 200 — `data`: the updated record.
+    Errors: 404 if job_id is not found.
     """
     return llm_inference_controller.update_llm_inference_job(job_id, data, db)
 
@@ -114,16 +114,16 @@ async def delete_llm_inference_job(
     Delete an LLM inference job (VMs destroy + DB record remove).
 
     TOTP logic:
-    - Admin ne Keycloak mein OTP disabled kiya hai → directly delete, no OTP needed.
-    - Admin ne OTP enabled kiya hai AND user ne last 5 min mein verify kiya → directly delete.
-    - Admin ne OTP enabled kiya hai AND user ne verify nahi kiya → totp_code body mein do.
+    - If the admin disabled OTP in Keycloak → delete directly, no OTP needed.
+    - If the admin enabled OTP AND the user verified within the last 5 min → delete directly.
+    - If the admin enabled OTP AND the user hasn't verified → pass totp_code in the body.
 
     Request body (conditional): DeleteRequest = {"totp_code": str}
-    Header: Authorization (Bearer — user pehchanne ke liye zaroori).
+    Header: Authorization (Bearer — required to identify the user).
 
-    Response 200 — `data`: deletion result.
-    Errors: 401 missing/invalid token, 400 OTP required (totp_code nahi diya),
-    401 invalid TOTP, 404 job_id na mile.
+    Response 200 — `data`: the deletion result.
+    Errors: 401 missing/invalid token, 400 OTP required (totp_code not given),
+    401 invalid TOTP, 404 job_id not found.
     """
     import jwt as _pyjwt
     from keycloak_configration import keycloak_config as key_config
@@ -162,11 +162,11 @@ async def delete_llm_inference_job(
 @llm_inference_router.post("/pool-action/{job_id}", response_model=APIResponse[Any])
 async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session = Depends(get_db)):
     """
-    Poore pool (saari nodes/VMs) pe ek power-action perform karo (Temporal
-    workflow, async — job.status turant "<action>ing" ban jaata hai).
+    Perform a power action on the whole pool (all nodes/VMs) (Temporal
+    workflow, async — job.status immediately becomes "<action>ing").
 
     Request body: PoolActionRequest = {"action": "start"|"stop"|"shutdown"|"restart"}
     Response 200 — `data`: {"workflow_id": str, "status": str}
-    Errors: 404 agar job_id na mile, 400 agar pool mein koi VM hi na ho.
+    Errors: 404 if job_id is not found, 400 if the pool has no VMs at all.
     """
     return await llm_inference_controller.pool_vm_action(job_id, data, db)
