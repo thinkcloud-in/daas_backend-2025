@@ -110,6 +110,85 @@ async def get_proxmox_storages(payload, db):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+async def get_proxmox_networks(payload, db):
+    """
+    Bridges on the given node(s) -- what a VM's NIC can attach to.
+    Only bridges are attachable; bonds/vlans/physical ports are the plumbing
+    beneath them, so type=bridge filters at the source.
+    """
+    try:
+        cluster_data = await get_cluster_details(db, payload.cluster_id)
+        api_token = get_api_token(db, cluster_data.name)
+        headers = {
+            "Authorization": f"PVEAPIToken={api_token}",
+            "Content-Type": "application/json"
+        }
+
+        if isinstance(cluster_data.ip, str):
+            ip_list = [ip.strip() for ip in cluster_data.ip.split(",") if is_valid_ip(ip.strip())]
+        else:
+            ip_list = [ip for ip in cluster_data.ip if is_valid_ip(ip)]
+
+        if not ip_list:
+            raise RuntimeError("No valid IPs found for cluster.")
+
+        nodes = list({
+            n.strip()
+            for n in (payload.nodes or [])
+            if n and n.strip()
+        })
+
+        if not nodes:
+            raise HTTPException(status_code=400, detail="No nodes provided")
+
+        result = {}
+
+        # For each node, try every cluster IP until one responds.
+        for node in nodes:
+            node_done = False
+            last_error = None
+            for ip in ip_list:
+                url = f"https://{ip}:{cluster_data.port}/api2/json/nodes/{node}/network?type=bridge"
+                try:
+                    response = requests.get(
+                        url, headers=headers, verify=False, timeout=10
+                    )
+                    if response.status_code == 200:
+                        for iface in response.json().get("data", []):
+                            if not iface or not isinstance(iface, dict):
+                                continue
+                            name = iface.get("iface")
+                            if name and name not in result:
+                                result[name] = {
+                                    "iface":    name,
+                                    "type":     iface.get("type"),
+                                    "active":   iface.get("active"),
+                                    "address":  iface.get("address"),
+                                    "cidr":     iface.get("cidr"),
+                                    "comments": (iface.get("comments") or "").strip(),
+                                }
+                        node_done = True
+                        break  # success — no need to try remaining IPs for this node
+                    else:
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                except Exception as exc:
+                    last_error = str(exc)
+                    continue  # try next IP
+
+            if not node_done:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"All cluster IPs unreachable for node '{node}': {last_error}"
+                )
+
+        return list(result.values())
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 async def create_pool(pool_data: dict, db) -> dict:
     uniqueId = unique_id()
     client = await TemporalClientManager.get_temporal_client()
