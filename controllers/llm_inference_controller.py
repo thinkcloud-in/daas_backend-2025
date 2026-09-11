@@ -12,6 +12,7 @@ import logging
 import os
 import secrets
 import pytz
+import requests
 import yaml
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
@@ -25,8 +26,56 @@ from utils.temporal_client import TemporalClientManager
 from service.temporalResource.workers.workers_llm_inference import TASK_QUEUE
 from service.temporalResource.workflows.workflows_llm_inference import CreateMultiNodeLLMWorkflow, DeleteLLMPoolWorkflow
 from service.temporalResource.activity.activities_llm_inference import _netmask_to_cidr
+from service.clusterService import get_api_token, getting_Proxmox_host
 from service import proxmoxService
 from utils import response_format
+
+# Content types a storage must have BOTH of to be usable for staging a
+# Harbor template upload: "import" (Proxmox requires this to accept the
+# uploaded qcow2) and "iso" (this org's own convention for which storages
+# are meant for this kind of temporary staging file).
+_TEMPLATE_STAGING_CONTENT = ("import", "iso")
+
+
+def _get_node_storages(db: Session, cluster: Cluster, node: str) -> list:
+    api_token = get_api_token(db, cluster.name)
+    headers = {"Authorization": f"PVEAPIToken={api_token}"}
+    host = getting_Proxmox_host(cluster)
+    if not host:
+        raise HTTPException(status_code=502, detail=f"No reachable Proxmox host for cluster '{cluster.name}'")
+    resp = requests.get(f"{host}/api2/json/nodes/{node}/storage", headers=headers, verify=False, timeout=15)
+    if resp.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"Failed to list storages on node '{node}': {resp.text}")
+    return resp.json().get("data", [])
+
+
+def _pick_import_storage(db: Session, cluster: Cluster, node: str) -> str:
+    """Auto mode: first storage on `node` with both 'import' and 'iso' content enabled."""
+    for s in _get_node_storages(db, cluster, node):
+        content = (s.get("content") or "").split(",")
+        if all(c in content for c in _TEMPLATE_STAGING_CONTENT):
+            return s["storage"]
+    raise HTTPException(
+        status_code=400,
+        detail=f"No storage on node '{node}' has both 'import' and 'iso' content enabled -- "
+               f"required to stage a Harbor template upload. Enable both on a storage for this "
+               f"node in Proxmox, or select one manually.",
+    )
+
+
+def _validate_import_storage(db: Session, cluster: Cluster, node: str, storage: str) -> None:
+    """Manual mode: confirm the user's chosen storage actually qualifies."""
+    for s in _get_node_storages(db, cluster, node):
+        if s.get("storage") == storage:
+            content = (s.get("content") or "").split(",")
+            if all(c in content for c in _TEMPLATE_STAGING_CONTENT):
+                return
+            raise HTTPException(
+                status_code=400,
+                detail=f"Storage '{storage}' on node '{node}' does not have both 'import' and "
+                       f"'iso' content enabled -- cannot be used for template staging.",
+            )
+    raise HTTPException(status_code=404, detail=f"Storage '{storage}' not found on node '{node}'")
 
 _IST = pytz.timezone("Asia/Kolkata")
 _TIME_FMT = "%Y-%m-%d %H:%M:%S"
@@ -35,9 +84,13 @@ _VLLM_SERVE_PORT = 8000  # matches --port 8000 in launch_vllm_from_template_acti
 _ACTIVITY_DISPLAY = {
     # LLM inference
     "reserve_vmids_activity":             "Reserve VM IDs",
+    "pull_harbor_template_to_pv_activity": "Pull Template from Harbor",
+    "push_template_to_proxmox_activity":   "Push Template to Proxmox",
+    "create_vm_from_import_activity":      "Create VM from Template",
+    "convert_to_template_activity":        "Convert VM to Template",
     "clone_and_configure_vm_activity":    "VM Clone & Configure",
     "update_llm_inference_job_activity":  "Update Job Status",
-    "install_ray_vllm_activity":          "Install Ray + vLLM",
+    "configure_llm_node_activity":        "Configure LLM Node",
     "add_affinity_rule_activity":         "Set Affinity Rules",
     "configure_ray_activity":             "Configure Ray",
     "launch_vllm_from_template_activity": "Launch vLLM",
@@ -130,8 +183,11 @@ async def _fetch_steps(handle) -> list:
 
 logger = logging.getLogger(__name__)
 
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
-_SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
+# ssh_user/ssh_pass are NOT sourced from the environment -- at creation they
+# must come from the request (data.ssh_user/data.ssh_pass), and at
+# restart/power-action they're read back from LLMInferenceJob.ssh_user/
+# ssh_pass, persisted per-pool at creation time. See the validators below
+# and pool_vm_action for where each is enforced.
 
 
 async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
@@ -165,8 +221,62 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             raise HTTPException(status_code=400, detail="At least one node is required")
         if len(data.ipPools) == 0:
             raise HTTPException(status_code=400, detail="At least one IP pool is required")
-        if not data.template or not data.template.strip():
+
+        is_harbor_source = data.templateSource == "harbor"
+        if not is_harbor_source and (not data.template or not data.template.strip()):
             raise HTTPException(status_code=400, detail="Template VM is required. Provide a valid Proxmox template VMID or name.")
+
+        harbor_conn = None
+        harbor_model_repo = harbor_model_tag = None
+        template_conn = None
+        vm_config = None
+        if is_harbor_source:
+            from models.kubernetes_deploy_model import KubernetesDeployment
+            harbor_dep = db.query(KubernetesDeployment).filter(
+                KubernetesDeployment.id == data.harborRegistryId
+            ).first()
+            if not harbor_dep:
+                raise HTTPException(status_code=404, detail=f"Harbor registry id={data.harborRegistryId} not found")
+            if not harbor_dep.harbor_url:
+                raise HTTPException(status_code=409, detail=f"Harbor id={data.harborRegistryId} has no harbor_url configured")
+            # No hardcoded fallback -- a missing credential here means this
+            # Harbor registry record is misconfigured; better to fail loudly
+            # now than silently authenticate as a guessed "admin" user with
+            # an empty password against the real registry.
+            if not harbor_dep.harbor_user or not harbor_dep.harbor_pass:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Harbor id={data.harborRegistryId} has no harbor_user/harbor_pass configured",
+                )
+            harbor_conn = {
+                "harbor_url":  harbor_dep.harbor_url,
+                "harbor_user": harbor_dep.harbor_user,
+                "harbor_pass": harbor_dep.harbor_pass,
+                "project":     "library",
+            }
+            harbor_model_repo, _, harbor_model_tag = data.harborArtifact.rpartition(":")
+
+            # Template uses the SAME Harbor connection as the model -- whichever
+            # registry the user picked in "Select Harbor" is the single source
+            # of truth for url/user/pass, for both dropdowns.
+            if not data.harborTemplate:
+                raise HTTPException(status_code=400, detail="'harborTemplate' is required when templateSource is 'harbor'.")
+            template_repo, _, template_tag = data.harborTemplate.rpartition(":")
+            template_conn = {
+                **harbor_conn,
+                "repository": template_repo,
+                "tag":        template_tag,
+            }
+
+            # The VM spec the user supplied. The model volume isn't described
+            # here -- it's sized from the artifact's own metadata inside
+            # provision_model_volume_activity, where a slow or unreachable
+            # Harbor is retried rather than failing this request.
+            vm_config = {
+                "cores":   data.cores,
+                "memory":  data.memory,
+                "network": data.network,
+            }
 
         # ── Prevent duplicate job name ────────────────────────────────────────
         existing = db.query(LLMInferenceJob).filter(LLMInferenceJob.name == data.poolName).first()
@@ -177,6 +287,24 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
         cluster = db.query(Cluster).filter(Cluster.name == data.clusterName).first()
         if not cluster:
             raise HTTPException(status_code=404, detail=f"Cluster '{data.clusterName}' not found")
+
+        # ── Resolve where the Harbor template gets staged+built ────────────────
+        # Always resolved to explicit node+storage here, regardless of mode --
+        # the activity just trusts these, no auto/manual branching downstream.
+        template_storage = None
+        if is_harbor_source:
+            if data.templateStorageMode == "manual":
+                if not data.templateStorageNode or not data.templateStorageStorage:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="templateStorageNode and templateStorageStorage are required when templateStorageMode is 'manual'.",
+                    )
+                _validate_import_storage(db, cluster, data.templateStorageNode, data.templateStorageStorage)
+                template_storage = {"node": data.templateStorageNode, "storage": data.templateStorageStorage}
+            else:
+                ts_node = data.nodes[0].node
+                ts_storage = _pick_import_storage(db, cluster, ts_node)
+                template_storage = {"node": ts_node, "storage": ts_storage}
 
         # ── Resolve ipPools → IPSModel list ───────────────────────────────────
         ip_pool_objects = []
@@ -239,13 +367,32 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             name=data.poolName,
             cluster_id=cluster.id,
             ip_pool_ids=ip_pool_ids,
-            template=data.template,
+            template=data.template or "",
+            template_source=data.templateSource or "proxmox",
+            harbor_registry_id=int(data.harborRegistryId) if is_harbor_source else None,
+            harbor_template=(f"{template_conn['repository']}:{template_conn['tag']}" if is_harbor_source else None),
+            harbor_model=data.harborArtifact if is_harbor_source else None,
+            # Null for proxmox-source pools -- they take cores/memory/network
+            # from their template, and have no model volume of their own.
+            vm_config=vm_config,
             nodes=[n.dict() for n in data.nodes],
             # machines_name (actual resolved per-VM names) isn't known yet at
             # creation time -- only the naming pattern (data.machine_name,
             # passed to the workflow below as name_template) is. It gets
             # filled in by the workflow's Phase 2 DB update once cloning
             # resolves the real names.
+            #
+            # ip_addresses IS set here, at creation, from the IPs just
+            # reserved above -- deliberately not left to Phase 2 like
+            # machines_name. If the workflow fails before Phase 2 ever runs
+            # (e.g. during Harbor template creation), delete_llm_pool_activity
+            # still needs to know which IPs to release; leaving this null
+            # until Phase 2 meant a pool that failed before cloning could
+            # never release its reserved IPs on delete -- they were marked
+            # "used" here at creation but nothing downstream ever pointed
+            # back to them. Phase 2 still re-sets this later (harmless,
+            # same values) once the real per-VM order is confirmed.
+            ip_addresses=[r["ip"] for r in reserved_ips],
             storage=data.storage or "local-lvm",
             model=data.model,
             model_type=data.modelType,
@@ -253,6 +400,10 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             max_images_per_request=data.maxImagesPerRequest,
             vllm_extra_params=vllm_extra_params,
             api_key=api_key,
+            # Persisted so a later restart/power-action reads back THIS
+            # pool's actual credential instead of a shared global default.
+            ssh_user=data.ssh_user,
+            ssh_pass=data.ssh_pass,
             status="provisioning",
         )
         db.add(record)
@@ -266,6 +417,14 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "cluster_id":   cluster.id,
             "ip_pool_ids":  ip_pool_ids,
             "template":     data.template,
+            "template_source": data.templateSource or "proxmox",
+            "harbor": ({
+                **harbor_conn,
+                "model_repository": harbor_model_repo,
+                "model_tag":        harbor_model_tag,
+                "template_conn":    template_conn,
+            } if is_harbor_source else None),
+            "vm_config":    vm_config,
             "nodes":        [n.dict() for n in data.nodes],
             "reserved_ips": reserved_ips,
             "subnet":       cluster_subnet,
@@ -278,8 +437,11 @@ async def create_llm_inference_job(data: LLMInferenceJobCreate, db: Session):
             "max_images_per_request": data.maxImagesPerRequest,
             "vllm_extra_params":      vllm_extra_params,
             "api_key":       api_key,
-            "ssh_user":      data.ssh_user or _SSH_USER,
-            "ssh_pass":      data.ssh_pass or _SSH_PASS,
+            "ssh_user":      data.ssh_user,
+            "ssh_pass":      data.ssh_pass,
+            # Explicit node+storage resolved above -- auto or manual, the
+            # activity always receives a concrete pair, no branching there.
+            "template_storage": template_storage,
         }
 
         # ── Start Temporal workflow ───────────────────────────────────────────
@@ -598,6 +760,10 @@ def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Sessi
             raise HTTPException(status_code=404, detail="LLM inference job not found")
         if data.status is not None:
             record.status = data.status
+        if data.ssh_user is not None:
+            record.ssh_user = data.ssh_user
+        if data.ssh_pass is not None:
+            record.ssh_pass = data.ssh_pass
         db.commit()
         return response_format.success_response(200, "LLM inference job updated successfully", {"id": record.id})
     except HTTPException:
@@ -689,6 +855,15 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
         nodes = record.nodes or []
         if not vmids:
             raise HTTPException(status_code=400, detail="No VMs found in this pool")
+        # No env fallback -- a pool created before ssh_user/ssh_pass were
+        # persisted per-pool has no credential to restart its services with.
+        # Surface that clearly (editable via the update endpoint) rather
+        # than silently trying some other shared credential.
+        if not record.ssh_user or not record.ssh_pass:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Pool '{record.name}' has no SSH credentials saved -- set them via the edit/update endpoint before performing this action.",
+            )
 
         # Mark pool as in-progress immediately
         record.status = _POOL_ACTION_PENDING_STATUS[data.action]
@@ -705,8 +880,8 @@ async def pool_vm_action(job_id: int, data: PoolActionRequest, db: Session):
             "cluster_id":             record.cluster_id,
             "head_ip":                record.head_ip,
             "ip_addresses":           record.ip_addresses or [],
-            "ssh_user":               _SSH_USER,
-            "ssh_pass":               _SSH_PASS,
+            "ssh_user":               record.ssh_user,
+            "ssh_pass":               record.ssh_pass,
             # tensor_parallel_size = GPUs per node (within-node), pipeline_parallel_size
             # = number of nodes (cross-node) -- must match the convention used at
             # pool-creation time (see CreateMultiNodeLLMWorkflow._provision). These were

@@ -200,11 +200,11 @@ def download_library_item(item_id: int, db: Session = Depends(get_db)):
 @library_router.get("/harbor/{registry_id}/artifacts", response_model=APIResponse[Any])
 def get_harbor_artifacts(
     registry_id:   int,
-    project:       Optional[str] = Query(None, description="Harbor project name — specify to get the repositories list"),
-    repository:    Optional[str] = Query(None, description="Repository name — specify with project to get the artifacts (tags) list"),
-    owner:         Optional[str] = Query(None, description="Owner prefix filter — only show repositories for this owner (e.g. raqsoft)"),
-    type_filter:   Optional[str] = Query(None, alias="type", description="Filter by ai.artifact.type (e.g. template, backup)"),
-    hypervisor:    Optional[str] = Query(None, description="Filter by ai.artifact.hypervisor (e.g. proxmox, vmware, hyper-v)"),
+    project:       Optional[str] = Query(None, description="Harbor project name — specify karo to repositories list mile"),
+    repository:    Optional[str] = Query(None, description="Repository name — project ke saath specify karo to artifacts (tags) list mile"),
+    owner:         Optional[str] = Query(None, description="Owner prefix filter — sirf is owner ki repositories dikhao (e.g. raqsoft)"),
+    type_filter:   Optional[str] = Query(None, alias="type", description="Filter by type (e.g. template, backup)"),
+    hypervisor:    Optional[str] = Query(None, description="Filter by hypervisor (e.g. proxmox, vmware, hyper-v)"),
     os_type:       Optional[str] = Query(None, description="Filter by os_type field in vm_template_details (e.g. linux, windows)"),
     os_name:       Optional[str] = Query(None, description="Filter by os_name field in vm_template_details (e.g. ubuntu, centos)"),
     page:          int           = Query(1,  ge=1),

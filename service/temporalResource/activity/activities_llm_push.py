@@ -394,7 +394,7 @@ def _build_oci_annotations_from_raw(raw_data: dict) -> dict:
             # Key → DNS-label safe format
             clean = re.sub(r"[^a-zA-Z0-9._-]", "_", str(key)).lower().strip("_.-")
             if clean:
-                ann[f"ai.artifact.{clean}"] = val_str
+                ann[f"{clean}"] = val_str
 
     # display_name → highest priority for the title (overrides name)
     if raw_data.get("display_name"):
@@ -703,8 +703,15 @@ def llm_push_activity(params: dict) -> dict:
 
         parsed      = urlparse(harbor_dep.harbor_url)
         harbor_host = parsed.netloc or parsed.path.strip("/")
-        harbor_user = harbor_dep.harbor_user or item.harbor_user or "admin"
-        harbor_pass = harbor_dep.harbor_pass or item.harbor_pass or "Harbor12345"
+        harbor_user = harbor_dep.harbor_user or item.harbor_user
+        harbor_pass = harbor_dep.harbor_pass or item.harbor_pass
+        # No hardcoded fallback -- a missing credential here means this
+        # Harbor registry record is misconfigured; fail loudly instead of
+        # silently authenticating as a guessed "admin"/"Harbor12345".
+        if not harbor_user or not harbor_pass:
+            raise RuntimeError(
+                f"Harbor registry id={item.harbor_registry_id} has no harbor_user/harbor_pass configured"
+            )
         project = (item.harbor_project or "library").strip("/")
 
         logger.info(f"[LLMPush] harbor_host={harbor_host} project={project}")

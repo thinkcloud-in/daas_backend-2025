@@ -2,8 +2,10 @@ import os
 import re
 import json
 import base64
+import math
 import shlex
 import time
+import threading
 import ipaddress
 import requests
 import paramiko
@@ -24,9 +26,23 @@ import dotenv
 dotenv.load_dotenv()
 
 logger = activity.logger
-_SSH_USER = os.getenv("LLM_VM_SSH_USER", "root")
-_SSH_PASS  = os.getenv("LLM_VM_SSH_PASS", "Teamw0rk@1")
+# ssh_user/ssh_pass are NOT sourced from the environment anywhere in this
+# file -- every activity requires them as a real key in its own payload
+# (payload["ssh_user"]/payload["ssh_pass"]), threaded through from the
+# per-pool value persisted on LLMInferenceJob.ssh_user/ssh_pass (see
+# llm_inference_controller.py). A missing key raises KeyError immediately
+# rather than silently falling back to a shared credential.
 _VLLM_LOG_FILE = "vllm_provisioning.log"  # kept on the head node across launches/restarts
+# Room on the model volume beyond the weights themselves -- vLLM writes
+# compiled kernels, torch caches and tokenizer artifacts alongside them.
+_MODEL_VOLUME_HEADROOM_GB = 100
+# In-cluster Service DNS name for the artifacts-controller pod (devraq-oras-skopeo-api),
+# which does the actual Harbor pull + Proxmox push -- this backend's own network
+# position cannot complete that upload reliably (confirmed extensively).
+ARTIFACTS_CONTROLLER_URL = os.getenv(
+    "ARTIFACTS_CONTROLLER_URL",
+    "http://devraq-oras-skopeo-api-svc.thinkcloud.svc.cluster.local:8009",
+)
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -132,6 +148,48 @@ def _run_commands_with_key(host: str, username: str, pkey, commands: list):
         client.close()
 
 
+def _post_with_heartbeat(url: str, json_body: dict, timeout: int, heartbeat_msg: str,
+                          heartbeat_interval: int = 20) -> requests.Response:
+    """
+    Runs a blocking requests.post() in a background thread while the main
+    thread keeps calling activity.heartbeat() every heartbeat_interval
+    seconds. A single blocking HTTP call has no opportunity to heartbeat
+    while it's waiting on a response -- for a long-running call (the pod
+    pulling/pushing a multi-GB file can easily take minutes), that silence
+    exceeds Temporal's heartbeat_timeout and the activity gets killed as
+    presumed-dead even though it's still working fine.
+    """
+    return _request_with_heartbeat("POST", url, timeout, heartbeat_msg, heartbeat_interval, json=json_body, verify=False)
+
+
+def _request_with_heartbeat(method: str, url: str, timeout: int, heartbeat_msg: str,
+                             heartbeat_interval: int = 20, **kwargs) -> requests.Response:
+    """
+    Same as _post_with_heartbeat but for any requests.request() call (e.g. a
+    form-encoded POST with headers/verify) -- e.g. Proxmox's own VM-create
+    call, which imports the disk synchronously and can block for minutes,
+    missing every heartbeat during that window otherwise.
+    """
+    result = {}
+
+    def _do_request():
+        try:
+            result["response"] = requests.request(method, url, timeout=timeout, **kwargs)
+        except Exception as e:
+            result["error"] = e
+
+    thread = threading.Thread(target=_do_request, daemon=True)
+    thread.start()
+
+    while thread.is_alive():
+        thread.join(timeout=heartbeat_interval)
+        activity.heartbeat(heartbeat_msg)
+
+    if "error" in result:
+        raise result["error"]
+    return result["response"]
+
+
 # ── Activities ────────────────────────────────────────────────────────────────
 
 @activity.defn
@@ -202,6 +260,685 @@ def reserve_vmids_activity(payload: dict) -> dict:
         db.close()
 
 
+def _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag):
+    """
+    OCI manifest fetch -> (digest, layer_size, annotations) (see list_harbor_artifacts).
+
+    Annotations come back from the same response the digest does, so anything
+    needing artifact metadata (e.g. size_bytes for volume sizing)
+    reads it from here rather than fetching the manifest a second time.
+
+    Note layer_size is the COMPRESSED transfer size -- for provisioning against
+    what the artifact occupies on disk, use the size_bytes
+    annotation instead (see _model_volume_gb).
+    """
+    full_name = f"{project}/{repository}"
+    resp = requests.get(
+        f"{harbor_url.rstrip('/')}/v2/{full_name}/manifests/{tag}",
+        auth=(harbor_user, harbor_pass), verify=False, timeout=30,
+        headers={"Accept": "application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json"},
+    )
+    if not resp.ok:
+        raise RuntimeError(f"Harbor manifest fetch failed ({resp.status_code}): {resp.text[:300]}")
+    manifest = resp.json()
+    layers = manifest.get("layers") or []
+    if not layers:
+        raise RuntimeError(f"No layers found in manifest for {full_name}:{tag}")
+    return layers[0]["digest"], layers[0]["size"], (manifest.get("annotations") or {})
+
+
+def _model_volume_gb(annotations, repository, tag, headroom_gb=_MODEL_VOLUME_HEADROOM_GB):
+    """
+    Volume size for a model artifact: its on-disk size plus room to work in.
+
+    Sized from size_bytes, not the manifest's layer size -- that one
+    is the compressed transfer size and can be several times smaller than what
+    lands on disk, which would undersize the volume.
+    """
+    raw = (annotations or {}).get("size_bytes")
+    if not raw:
+        raise RuntimeError(
+            f"Model '{repository}:{tag}' has no size_bytes annotation -- "
+            f"its volume cannot be sized without it."
+        )
+    model_gb = math.ceil(int(str(raw).strip()) / (1024 ** 3))
+    return model_gb + headroom_gb
+
+
+def _node_api_host(hosts, headers, node_name, fallback):
+    """
+    The node's OWN API URL, resolved via /cluster/status.
+
+    Uploads must go straight to the node that will hold the file. Sending them
+    to another node makes its pveproxy relay the entire body onward, and that
+    relay hop is where every large upload stalled during testing.
+    """
+    for host in hosts:
+        try:
+            resp = requests.get(f"{host}/api2/json/cluster/status",
+                                headers=headers, verify=False, timeout=10)
+            if not resp.ok:
+                continue
+            for entry in resp.json().get("data", []):
+                if entry.get("type") == "node" and entry.get("name") == node_name and entry.get("ip"):
+                    port = fallback.rsplit(":", 1)[-1]
+                    return f"https://{entry['ip']}:{port}"
+        except Exception:
+            continue
+    return fallback
+
+
+def _assert_storage_space(host, headers, node, storage, needed_bytes, margin=1.05):
+    """
+    Refuse a doomed upload up front. Running out of space 20 minutes into a
+    multi-GB transfer costs the whole transfer; checking first costs a second.
+    Unreadable status is not treated as failure -- we only block on a definite no.
+    """
+    try:
+        resp = requests.get(f"{host}/api2/json/nodes/{node}/storage/{storage}/status",
+                            headers=headers, verify=False, timeout=15)
+        if not resp.ok:
+            return
+        avail = resp.json().get("data", {}).get("avail")
+        if avail is None:
+            return
+        required = int(needed_bytes * margin)
+        if avail < required:
+            raise RuntimeError(
+                f"Not enough space on {node}:{storage} -- need ~{required:,} bytes, "
+                f"only {avail:,} available. Free space or pick a different node."
+            )
+    except RuntimeError:
+        raise
+    except Exception:
+        return
+
+
+@activity.defn
+def pull_harbor_template_to_pv_activity(payload: dict) -> dict:
+    """
+    Harbor -> artifacts-controller pod's PV only. Deliberately split from
+    the push/VM-create steps (see push_and_create_template_activity) so a
+    failure on the Proxmox side (chunked-encoding quirks, space issues,
+    VMID collisions) retries just the push -- not a full re-pull of a
+    40-50GB+ file from Harbor, which is what happened when this was one
+    combined activity.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id     = payload["cluster_id"]
+        template_storage = payload["template_storage"]
+        target_node    = template_storage["node"]
+        import_storage = template_storage["storage"]
+        harbor_url     = payload["harbor_url"]
+        harbor_user    = payload["harbor_user"]
+        harbor_pass    = payload["harbor_pass"]
+        project        = payload["project"]
+        repository     = payload["repository"]
+        tag            = payload["tag"]
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+
+        api_token    = get_api_token(db, cluster_data.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        if not PROXMOX_HOST:
+            raise RuntimeError("No reachable Proxmox host")
+        ALL_HOSTS = _all_hosts(cluster_data) or [PROXMOX_HOST]
+        node_host = _node_api_host(ALL_HOSTS, headers, target_node, PROXMOX_HOST)
+
+        digest, blob_size, _ann = _resolve_harbor_blob(harbor_url, harbor_user, harbor_pass, project, repository, tag)
+        _assert_storage_space(node_host, headers, target_node, import_storage, blob_size)
+
+        resp = requests.get(f"{node_host}/api2/json/cluster/nextid", headers=headers, verify=False, timeout=10)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Failed to get next VMID: {resp.text}")
+        new_vmid = int(resp.json()["data"])
+
+        filename = f"llm-template-{new_vmid}-{int(time.time())}.qcow2"
+        activity.heartbeat(f"Pulling {repository}:{tag} -> PV")
+
+        harbor_plain_http = harbor_url.startswith("http://")
+        harbor_host = harbor_url.split("://", 1)[-1].rstrip("/")
+
+        pull_resp = _post_with_heartbeat(
+            f"{ARTIFACTS_CONTROLLER_URL}/pull/artifact",
+            json_body={
+                "harbor_url": harbor_host,
+                "username": harbor_user,
+                "password": harbor_pass,
+                "project": project,
+                "artifact_name": repository,
+                "tag": tag,
+                "plain_http": harbor_plain_http,
+                # Unique per pull so concurrent pool creations (multi-node)
+                # can't collide on the same staged file.
+                "dest_dir": f"/library/harbor/pull_artifacts/{new_vmid}",
+            },
+            timeout=7200,
+            heartbeat_msg=f"Pulling {repository}:{tag} -> PV",
+        )
+        if pull_resp.status_code >= 400:
+            raise RuntimeError(f"Artifact pull failed ({pull_resp.status_code}): {pull_resp.text[:500]}")
+        pull_data = pull_resp.json()
+        pulled_files = pull_data.get("files") or []
+        if not pulled_files:
+            raise RuntimeError(f"Artifact pull returned no files: {pull_data}")
+        staged_path = f"{pull_data['dest_dir']}/{pulled_files[0]}"
+        logger.info(f"[cluster {cluster_id}] Pulled {repository}:{tag} to {staged_path}")
+
+        return {"staged_path": staged_path, "new_vmid": new_vmid, "filename": filename}
+    finally:
+        db.close()
+
+
+def _resolve_node_host(db, cluster_id, target_node):
+    """Shared setup for the push/create/convert activities below."""
+    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster_data:
+        raise RuntimeError(f"Cluster {cluster_id} not found")
+    api_token    = get_api_token(db, cluster_data.name)
+    headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not PROXMOX_HOST:
+        raise RuntimeError("No reachable Proxmox host")
+    ALL_HOSTS = _all_hosts(cluster_data) or [PROXMOX_HOST]
+    node_host = _node_api_host(ALL_HOSTS, headers, target_node, PROXMOX_HOST)
+    return headers, api_token, node_host, ALL_HOSTS
+
+
+@activity.defn
+def push_template_to_proxmox_activity(payload: dict) -> dict:
+    """
+    PV -> Proxmox storage only (upload, no VM involved yet). Split out on
+    its own -- and given a more generous retry policy in the workflow --
+    because this is specifically the step that hit the chunked-encoding/
+    HTTP1.0 quirks during testing; retrying it never re-touches Harbor NOR
+    re-runs VM creation once this step itself succeeds.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id  = payload["cluster_id"]
+        staged_path = payload["staged_path"]
+        filename    = payload["filename"]
+        template_storage = payload["template_storage"]
+        target_node    = template_storage["node"]
+        import_storage = template_storage["storage"]
+
+        headers, api_token, node_host, _ = _resolve_node_host(db, cluster_id, target_node)
+        node_ip = node_host.split("://", 1)[-1].split(":", 1)[0]
+
+        push_resp = _post_with_heartbeat(
+            f"{ARTIFACTS_CONTROLLER_URL}/push/artifact/proxmox",
+            json_body={
+                "file_path": staged_path,
+                "node_host": node_ip,
+                "node_name": target_node,
+                "filename": filename,
+                "proxmox_token": api_token,
+                "storage": import_storage,
+                "tls_verify": False,
+                "poll_timeout": 3600,
+            },
+            timeout=7500,
+            heartbeat_msg=f"Pushing {filename} -> {target_node}:{import_storage}",
+        )
+        if push_resp.status_code >= 400:
+            raise RuntimeError(f"Proxmox push failed ({push_resp.status_code}): {push_resp.text[:500]}")
+        logger.info(f"[cluster {cluster_id}] Push to {target_node}:{import_storage} completed")
+
+        return {"import_volid": f"{import_storage}:import/{filename}"}
+    finally:
+        db.close()
+
+
+@activity.defn
+def create_vm_from_import_activity(payload: dict) -> dict:
+    """
+    Creates the VM, importing the already-uploaded disk. Split from the
+    push above and the template-conversion below so a failure here doesn't
+    re-upload (push already succeeded) and a failure in conversion doesn't
+    redo this (VM-create is itself the expensive Proxmox-side step, and
+    already has its own internal collision-retry loop).
+    """
+    db: Session = SessionLocal()
+    new_vmid = payload["new_vmid"]
+    node_host = None
+    headers = None
+    template_storage = payload["template_storage"]
+    target_node = template_storage["node"]
+    import_storage = template_storage["storage"]
+    import_volid = payload["import_volid"]
+    try:
+        cluster_id = payload["cluster_id"]
+        storage    = payload.get("storage", "local-lvm")
+        cores      = int(payload.get("cores") or 4)
+        memory     = int(payload.get("memory") or 8192)
+        bridge     = payload.get("network") or "vmbr0"
+
+        headers, api_token, node_host, ALL_HOSTS = _resolve_node_host(db, cluster_id, target_node)
+
+        # ── One call: create the VM and pull the disk into real storage ────
+        # Proxmox's /cluster/nextid has no locking -- another workflow
+        # (a different pool's template, or its own reserve_vmids_activity)
+        # can independently be handed the same "next free" id if neither
+        # VM has actually been created yet at the moment each call happens.
+        # Rather than trying to prevent that race upfront (not fully
+        # possible against an unlocked counter), retry specifically on the
+        # collision it produces: the push already happened and doesn't need
+        # repeating, so on a "config file already exists" failure this just
+        # grabs a fresh id and retries the create call alone.
+        max_create_attempts = 5
+        for create_attempt in range(1, max_create_attempts + 1):
+            activity.heartbeat(f"Creating vmid {new_vmid} from {import_volid}")
+            logger.info(f"[cluster {cluster_id}] Creating vmid={new_vmid} import-from={import_volid} "
+                        f"(attempt {create_attempt}/{max_create_attempts})")
+            create_resp = _request_with_heartbeat(
+                "POST", f"{node_host}/api2/json/nodes/{target_node}/qemu",
+                timeout=1800, heartbeat_msg=f"Creating vmid {new_vmid} from {import_volid}",
+                headers=headers, verify=False,
+                data={
+                    "vmid":   new_vmid,
+                    "name":   f"llm-template-{new_vmid}",
+                    "cores":  cores,
+                    "memory": memory,
+                    "sockets": 1,
+                    "cpu":    "host",
+                    "numa":   0,
+                    "ostype": "l26",
+                    "scsihw": "virtio-scsi-single",
+                    "agent":  1,
+                    "net0":   f"virtio,bridge={bridge},firewall=1",
+                    "scsi0":  f"{storage}:0,import-from={import_volid},iothread=1",
+                    "ide0":   f"{storage}:cloudinit",
+                    "ide2":   "none,media=cdrom",
+                    "boot":   "order=scsi0;ide2;net0",
+                },
+            )
+            logger.info(f"[cluster {cluster_id}] Create returned {create_resp.status_code} for vmid={new_vmid}")
+            if create_resp.status_code >= 400:
+                is_collision = "already exists" in create_resp.text.lower()
+                if is_collision and create_attempt < max_create_attempts:
+                    logger.warning(f"[cluster {cluster_id}] vmid {new_vmid} collided with another "
+                                    f"concurrently-created VM, picking a new one and retrying")
+                    resp = requests.get(f"{node_host}/api2/json/cluster/nextid", headers=headers, verify=False, timeout=10)
+                    if resp.status_code >= 400:
+                        raise RuntimeError(f"Failed to get next VMID after collision: {resp.text}")
+                    new_vmid = int(resp.json()["data"])
+                    continue
+                raise RuntimeError(f"VM create/import failed for vmid {new_vmid}: {create_resp.text}")
+            break
+
+        create_upid = create_resp.json().get("data")
+        if create_upid:
+            _wait_for_task(ALL_HOSTS, headers, target_node, create_upid, timeout=10800)
+
+        logger.info(f"[cluster {cluster_id}] VM created: vmid={new_vmid} node={target_node}")
+        return {"vmid": new_vmid}
+    except Exception:
+        # The VM either doesn't exist yet or import failed part way --
+        # either way this attempt made no completed progress worth keeping,
+        # so it's safe to clean up and let the retry start fresh. (Unlike
+        # the old combined activity, there's no "leave it, it's expensive
+        # work" case here -- that case is now template-conversion's
+        # problem, once this activity has actually returned successfully.)
+        if new_vmid and node_host:
+            try:
+                requests.delete(
+                    f"{node_host}/api2/json/nodes/{target_node}/qemu/{new_vmid}",
+                    headers=headers, verify=False, timeout=30,
+                )
+            except Exception:
+                pass
+        # Matches the original combined activity's behavior: on any failure
+        # after the push succeeded, also remove the staged upload -- it's
+        # otherwise orphaned on Proxmox's import storage with nothing left
+        # to reference or clean it up later.
+        if import_volid and node_host:
+            try:
+                requests.delete(
+                    f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/content/{quote(import_volid, safe='')}",
+                    headers=headers, verify=False, timeout=30,
+                )
+            except Exception:
+                pass
+        raise
+    finally:
+        db.close()
+
+
+@activity.defn
+def convert_to_template_activity(payload: dict) -> dict:
+    """
+    Cleans up the now-redundant staged import file, then converts the
+    created VM into a Proxmox template. Split out so a failure here (cheap,
+    fast call) never redoes the upload or the VM-create/import, which are
+    the two expensive steps.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id = payload["cluster_id"]
+        new_vmid   = payload["vmid"]
+        template_storage = payload["template_storage"]
+        target_node    = template_storage["node"]
+        import_storage = template_storage["storage"]
+        import_volid   = payload["import_volid"]
+
+        headers, api_token, node_host, ALL_HOSTS = _resolve_node_host(db, cluster_id, target_node)
+
+        # ── The staged file is dead weight the moment the disk is imported ─
+        # Freeing it here rather than at pool-completion keeps node-local space
+        # occupied for minutes instead of the hour of driver/Ray/vLLM setup
+        # that follows -- that space is what the next pull needs.
+        try:
+            requests.delete(
+                f"{node_host}/api2/json/nodes/{target_node}/storage/{import_storage}/content/{quote(import_volid, safe='')}",
+                headers=headers, verify=False, timeout=60,
+            )
+        except Exception as cleanup_err:
+            logger.warning(f"Could not remove staged disk {import_volid} (non-fatal): {cleanup_err}")
+
+        tmpl_resp = requests.post(
+            f"{node_host}/api2/json/nodes/{target_node}/qemu/{new_vmid}/template",
+            headers=headers, verify=False, timeout=60,
+        )
+        if tmpl_resp.status_code >= 400:
+            raise RuntimeError(f"qm template failed for vmid {new_vmid}: {tmpl_resp.text}")
+        upid = tmpl_resp.json().get("data")
+        if upid:
+            _wait_for_task(ALL_HOSTS, headers, target_node, upid, timeout=300)
+
+        logger.info(f"[cluster {cluster_id}] Harbor template ready: vmid={new_vmid} node={target_node}")
+        return {"template_vmid": new_vmid, "template_node": target_node}
+    finally:
+        db.close()
+
+
+def _delete_proxmox_vm(db: Session, cluster_id: int, vmid: int) -> bool:
+    """Find and permanently purge a Proxmox VM/template by vmid. True if removed or already absent."""
+    cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+    if not cluster_data:
+        logger.warning(f"[template-cleanup] Cluster {cluster_id} not found — cannot clean up vmid {vmid}")
+        return False
+    api_token    = get_api_token(db, cluster_data.name)
+    headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+    PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+    if not PROXMOX_HOST:
+        return False
+    node = next(
+        (vm.get("node") for vm in proxmoxService.get_all_cluster_vms(db, cluster_data)
+         if str(vm.get("vmid")) == str(vmid)),
+        None,
+    )
+    if not node:
+        logger.info(f"[template-cleanup] vmid {vmid} already absent")
+        return True
+    resp = requests.delete(
+        f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}",
+        headers=headers, params={"purge": 1, "destroy-unreferenced-disks": 1},
+        verify=False, timeout=60,
+    )
+    if resp.status_code >= 400 and resp.status_code != 404:
+        logger.error(f"[template-cleanup] Could not remove vmid {vmid} on {node}: {resp.text}")
+        return False
+    logger.info(f"[template-cleanup] vmid {vmid} removed from {node}")
+    return True
+
+
+@activity.defn
+def delete_harbor_template_activity(payload: dict) -> dict:
+    """
+    Removes the intermediate Proxmox template restored from Harbor, right
+    after every node has finished cloning from it -- clones are full
+    (independent-disk) clones, so nothing depends on the template staying
+    around. Runs at the end of a successful clone phase rather than waiting
+    for pool deletion, so a Harbor-sourced template never sits around as
+    standing storage.
+    """
+    db: Session = SessionLocal()
+    try:
+        ok = _delete_proxmox_vm(db, payload["cluster_id"], int(payload["template_vmid"]))
+        return {"ok": ok, "template_vmid": payload["template_vmid"]}
+    finally:
+        db.close()
+
+
+@activity.defn
+def provision_model_volume_activity(payload: dict) -> dict:
+    """
+    Give the Ray head VM a dedicated volume for the model, mounted at the path
+    the model pull already writes to.
+
+    Sized model + headroom so the OS disk never has to grow to fit a model --
+    which matters because the OS disk arrives as a fixed-size qcow2 from Harbor
+    and enlarging it would mean growing the guest filesystem too.
+
+    Attaches to the head VM only; workers reach the same files over NFS.
+    """
+    db: Session = SessionLocal()
+    try:
+        cluster_id = payload["cluster_id"]
+        node       = payload["node"]
+        vmid       = int(payload["vmid"])
+        ip         = payload["ip_address"]
+        storage    = payload.get("storage", "local-lvm")
+        slot       = payload.get("slot", "scsi1")
+        mount_path = payload.get("mount_path", "/vllm_data/hf_cache")
+        ssh_user   = payload["ssh_user"]
+        ssh_pass   = payload["ssh_pass"]
+
+        # Sized here rather than at create time so a slow or briefly unreachable
+        # Harbor is retried by Temporal instead of failing the API request.
+        _d, _s, annotations = _resolve_harbor_blob(
+            payload["harbor_url"], payload["harbor_user"], payload["harbor_pass"],
+            payload["project"], payload["repository"], payload["tag"],
+        )
+        size_gb = _model_volume_gb(annotations, payload["repository"], payload["tag"])
+
+        cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
+        if not cluster_data:
+            raise RuntimeError(f"Cluster {cluster_id} not found")
+        api_token    = get_api_token(db, cluster_data.name)
+        headers      = {"Authorization": f"PVEAPIToken={api_token}"}
+        PROXMOX_HOST = getting_Proxmox_host(cluster_data)
+        ALL_HOSTS    = _all_hosts(cluster_data) or [PROXMOX_HOST]
+
+        # ── Attach the volume ────────────────────────────────────────────
+        activity.heartbeat(f"Attaching {size_gb}GB model volume to vmid {vmid}")
+        resp = requests.put(
+            f"{PROXMOX_HOST}/api2/json/nodes/{node}/qemu/{vmid}/config",
+            headers=headers, verify=False, timeout=120,
+            data={slot: f"{storage}:{size_gb}"},
+        )
+        if resp.status_code >= 400:
+            raise RuntimeError(f"Could not attach model volume to vmid {vmid}: {resp.text}")
+        upid = resp.json().get("data")
+        if upid:
+            _wait_for_task(ALL_HOSTS, headers, node, upid, timeout=600)
+
+        # ── Format and mount it in the guest ─────────────────────────────
+        # The device letter isn't predictable (it depends on how many disks
+        # the guest already sees), so find the one disk that has no partitions
+        # and no filesystem signature rather than assuming /dev/sdb.
+        activity.heartbeat(f"Formatting model volume on {ip}")
+        find_dev = (
+            "for d in $(lsblk -dnpo NAME,TYPE | awk '$2==\"disk\"{print $1}'); do "
+            "  if [ -z \"$(lsblk -no NAME \"$d\" | tail -n +2)\" ] && "
+            "     [ -z \"$(sudo blkid -o value -s TYPE \"$d\" 2>/dev/null)\" ]; then "
+            "    echo \"$d\"; break; "
+            "  fi; "
+            "done"
+        )
+        results = run_commands(ip, ssh_user, ssh_pass, [
+            "sudo partprobe >/dev/null 2>&1 || true",
+            find_dev,
+        ], timeout=120)
+        device = results[-1]["stdout"].strip().split("\n")[-1].strip()
+        if not device.startswith("/dev/"):
+            raise RuntimeError(
+                f"No unformatted disk found on {ip} after attaching {slot} "
+                f"-- got {device!r}. The volume may not have been picked up by the guest."
+            )
+        logger.info(f"[{ip}] Model volume detected as {device}")
+
+        # fstab entry keyed on UUID, not the device name -- device letters can
+        # shift across reboots once the GPU or other disks change.
+        run_commands(ip, ssh_user, ssh_pass, [
+            f"sudo mkfs.ext4 -F -L llm-models {device}",
+            f"sudo mkdir -p {mount_path}",
+            f"sudo mount {device} {mount_path}",
+            (
+                f"UUID=$(sudo blkid -o value -s UUID {device}); "
+                f"grep -q \"$UUID\" /etc/fstab || "
+                f"echo \"UUID=$UUID {mount_path} ext4 defaults,nofail 0 2\" | sudo tee -a /etc/fstab > /dev/null"
+            ),
+            f"df -h {mount_path}",
+        ], timeout=900)
+
+        logger.info(f"[{ip}] Model volume ready: {device} ({size_gb}GB) -> {mount_path}")
+        return {"slot": slot, "device": device, "size_gb": size_gb,
+                "storage": storage, "mount_path": mount_path}
+    finally:
+        db.close()
+
+
+@activity.defn
+def pull_harbor_model_to_vm_activity(payload: dict) -> dict:
+    """
+    Pull a full HuggingFace-format model artifact (a folder: config.json,
+    tokenizer files, safetensors shards) from Harbor onto one VM. Returns
+    (model_dir, model_file) shaped exactly for configure_llm_node_activity's
+    existing LLM_MODEL_PATH + LLM_MODEL_NAME combination logic -- model_dir
+    is the BASE directory, model_file is the model's own folder name inside
+    it, so LLM_MODEL_PATH/LLM_MODEL_NAME combined lands on the folder that
+    actually contains config.json.
+
+    Same relay pattern as pull_harbor_template_to_pv_activity: this
+    backend's own network position can't move a multi-GB transfer reliably,
+    so the artifacts-controller pod does the actual work -- pulling Harbor ->
+    its own PV, then transferring PV -> the VM over SFTP (the whole folder,
+    not a single file). This activity just triggers each step and waits.
+    """
+    ip          = payload["ip_address"]
+    ssh_user    = payload["ssh_user"]
+    ssh_pass    = payload["ssh_pass"]
+    harbor_url  = payload["harbor_url"]
+    harbor_user = payload["harbor_user"]
+    harbor_pass = payload["harbor_pass"]
+    project     = payload["project"]
+    repository  = payload["repository"]
+    tag         = payload["tag"]
+    # Base dir only -- the model's own folder name comes from what Harbor
+    # actually returns below, not assumed/constructed here.
+    model_base_dir = payload.get("model_dir", "/vllm_data/hf_cache")
+
+    harbor_plain_http = harbor_url.startswith("http://")
+    harbor_host = harbor_url.split("://", 1)[-1].rstrip("/")
+
+    activity.heartbeat(f"Pulling model {repository}:{tag} -> PV")
+    pull_resp = _post_with_heartbeat(
+        f"{ARTIFACTS_CONTROLLER_URL}/pull/artifact",
+        json_body={
+            "harbor_url": harbor_host,
+            "username": harbor_user,
+            "password": harbor_pass,
+            "project": project,
+            "artifact_name": repository,
+            "tag": tag,
+            "plain_http": harbor_plain_http,
+            # Unique per pull so concurrent model pulls can't collide on
+            # the same staged folder.
+            "dest_dir": f"/library/harbor/pull_artifacts/model-{ip.replace('.', '-')}-{int(time.time())}",
+        },
+        timeout=7200,
+        heartbeat_msg=f"Pulling model {repository}:{tag} -> PV",
+    )
+    if pull_resp.status_code >= 400:
+        raise RuntimeError(f"Model pull failed ({pull_resp.status_code}): {pull_resp.text[:500]}")
+    pull_data = pull_resp.json()
+    pulled_files = pull_data.get("files") or []
+    if not pulled_files:
+        raise RuntimeError(f"Model pull returned no files: {pull_data}")
+    # The artifact is expected to be one folder (e.g. "qwen2.5-0.5b-instruct")
+    # containing everything -- oras pull recreates that structure under
+    # dest_dir, so dest_dir's one top-level entry IS that folder.
+    model_name = pulled_files[0]
+    staged_path = f"{pull_data['dest_dir']}/{model_name}"
+    logger.info(f"[{ip}] Pulled model {repository}:{tag} to {staged_path}")
+
+    run_commands(ip, ssh_user, ssh_pass, [f"sudo mkdir -p {model_base_dir}", f"sudo chmod 777 {model_base_dir}"], timeout=60)
+
+    remote_path = f"{model_base_dir}/{model_name}"
+    push_resp = _post_with_heartbeat(
+        f"{ARTIFACTS_CONTROLLER_URL}/push/artifact/vm",
+        json_body={
+            "file_path": staged_path,
+            "vm_host": ip,
+            "vm_ssh_user": ssh_user,
+            "vm_ssh_pass": ssh_pass,
+            "dest_path": remote_path,
+        },
+        timeout=7500,
+        heartbeat_msg=f"Pushing model {model_name} -> {ip}:{model_base_dir}",
+    )
+    if push_resp.status_code >= 400:
+        raise RuntimeError(f"Model push to VM failed ({push_resp.status_code}): {push_resp.text[:500]}")
+
+    # Files land root:root from the sudo mkdir above; readable/traversable
+    # for everyone (a+rX: read on files, execute-only on dirs -- doesn't
+    # accidentally make a regular file executable) rather than a single
+    # 644 chmod, since this is now a whole directory tree.
+    run_commands(ip, ssh_user, ssh_pass, [f"sudo chmod -R a+rX {remote_path}"], timeout=60)
+
+    logger.info(f"[{ip}] Harbor model pulled: {model_base_dir}/{model_name}")
+    return {"model_dir": model_base_dir, "model_file": model_name}
+
+
+@activity.defn
+def share_model_nfs_activity(payload: dict) -> dict:
+    """Export the head node's pulled-model folder over NFS, scoped to the pool subnet."""
+    ip        = payload["ip_address"]
+    ssh_user  = payload["ssh_user"]
+    ssh_pass  = payload["ssh_pass"]
+    model_dir = payload["model_dir"]
+    subnet    = payload["subnet"]
+
+    run_commands(ip, ssh_user, ssh_pass, [
+        "sudo dnf install -y nfs-utils",
+        f"sudo mkdir -p {model_dir}",
+        f"grep -qF '{model_dir} ' /etc/exports || "
+        f"echo '{model_dir} {subnet}(ro,sync,no_subtree_check,no_root_squash)' | sudo tee -a /etc/exports > /dev/null",
+        "sudo exportfs -ra",
+        "sudo systemctl enable --now nfs-server",
+    ], timeout=120)
+
+    logger.info(f"[{ip}] NFS export ready: {model_dir} -> {subnet}")
+    return {"exported_path": model_dir}
+
+
+@activity.defn
+def mount_model_nfs_activity(payload: dict) -> dict:
+    """Mount the head node's exported model folder on a worker, at the same local path."""
+    ip        = payload["ip_address"]
+    ssh_user  = payload["ssh_user"]
+    ssh_pass  = payload["ssh_pass"]
+    head_ip   = payload["head_ip"]
+    model_dir = payload["model_dir"]
+
+    run_commands(ip, ssh_user, ssh_pass, [
+        "sudo dnf install -y nfs-utils",
+        f"sudo mkdir -p {model_dir}",
+        f"grep -qF '{head_ip}:{model_dir}' /etc/fstab || "
+        f"echo '{head_ip}:{model_dir} {model_dir} nfs defaults 0 0' | sudo tee -a /etc/fstab > /dev/null",
+        f"mountpoint -q {model_dir} || sudo mount {model_dir}",
+    ], timeout=120)
+
+    logger.info(f"[{ip}] Mounted model share from {head_ip}:{model_dir}")
+    return {"mounted_path": model_dir}
+
+
 @activity.defn
 def clone_and_configure_vm_activity(payload: dict) -> dict:
     """
@@ -223,8 +960,8 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         template    = str(payload["template"])
         datastore    = payload.get("storage", os.getenv("PROXMOX_STORAGE", "local-lvm"))
         pool_name    = payload["pool_name"]
-        ssh_user     = payload.get("ssh_user", _SSH_USER)
-        ssh_pass     = payload.get("ssh_pass", _SSH_PASS)
+        ssh_user     = payload["ssh_user"]
+        ssh_pass     = payload["ssh_pass"]
 
         # ── Resolve cluster ───────────────────────────────────────────────
         cluster_data = db.query(Cluster).filter(Cluster.id == cluster_id).first()
@@ -281,12 +1018,22 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
         dns          = ip_pool.DNS[0] if ip_pool.DNS else "8.8.8.8"
 
         # ── Find template VM node ─────────────────────────────────────────
+        # Proxmox's /cluster/resources is backed by pvestatd, which refreshes
+        # its cached view on its own ~10s cycle -- immediately after a VM is
+        # converted to a template (in the prior activity), this can briefly
+        # still show the pre-conversion state. Retry a few times instead of
+        # failing on what's usually just propagation lag, not a real absence.
         template_node = None
-        for vm in all_vms:
-            if str(vm.get("vmid")) == template:
-                if int(vm.get("template", 0)) == 1:
-                    template_node = vm.get("node")
-                    break
+        for lookup_attempt in range(6):
+            for vm in all_vms:
+                if str(vm.get("vmid")) == template:
+                    if int(vm.get("template", 0)) == 1:
+                        template_node = vm.get("node")
+                        break
+            if template_node:
+                break
+            time.sleep(5)
+            all_vms = proxmoxService.get_all_cluster_vms(db, cluster_data)
 
         if not template_node:
             all_vmids = [str(vm.get("vmid")) for vm in all_vms if vm.get("vmid")]
@@ -524,8 +1271,8 @@ def verify_gpu_health_activity(payload: dict) -> dict:
     would reach for first (reboot), before giving up with a clear message.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
 
     _check = "nvidia-smi 2>&1"
 
@@ -566,8 +1313,8 @@ def verify_ray_cluster_gpu_activity(payload: dict) -> dict:
     unhelpful "Log not found".
     """
     ip            = payload["ip_address"]  # head node
-    ssh_user      = payload.get("ssh_user", _SSH_USER)
-    ssh_pass      = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user      = payload["ssh_user"]
+    ssh_pass      = payload["ssh_pass"]
     expected_gpus = int(payload["expected_gpus"])
     home_dir = "/root" if ssh_user == "root" else f"/home/{ssh_user}"
     venv_bin = f"{home_dir}/vllm-ray-env/bin"
@@ -881,13 +1628,13 @@ def lunch_configure_influxdb_activity(payload: dict) -> dict:
     InfluxDB by rewriting the [[outputs.influxdb_v2]] stanza in
     /etc/telegraf/telegraf.conf, then restarts telegraf.service to pick it
     up. Runs once per VM -- the workflow fans this out over every node in
-    the pool (head + workers), same pattern as install_ray_vllm_activity, so
+    the pool (head + workers), same pattern as configure_llm_node_activity, so
     Task Manager's CPU/process monitoring works for all machines, not just
     the head node.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
 
     influxdb_url    = payload.get("influxdb_url")
     influxdb_token  = payload.get("influxdb_token")
@@ -945,8 +1692,8 @@ def launch_vllm_from_template_activity(payload: dict) -> dict:
     try:
         import time
         ip       = payload["ip_address"]
-        ssh_user = payload.get("ssh_user", _SSH_USER)
-        ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+        ssh_user = payload["ssh_user"]
+        ssh_pass = payload["ssh_pass"]
         tp_size  = payload.get("tensor_parallel_size", 1)
         pp_size  = payload.get("pipeline_parallel_size", 1)
         model_type             = payload.get("model_type")
@@ -1117,8 +1864,8 @@ def restore_llm_services_activity(payload: dict) -> dict:
     3. Kills any stale vLLM process, then relaunches vLLM from /etc/environment config.
     """
     ip       = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     role     = payload.get("role", "head")   # "head" | "worker"
     tp_size  = payload.get("tensor_parallel_size", 1)
     pp_size  = payload.get("pipeline_parallel_size", 1)
@@ -1245,7 +1992,7 @@ def update_llm_inference_job_activity(payload: dict) -> dict:
         if not record:
             raise RuntimeError(f"LLMInferenceJob {job_id} not found")
 
-        for field in ("status", "vmids", "ip_addresses", "head_ip", "endpoint_url", "workflow_id", "machines_name"):
+        for field in ("status", "vmids", "ip_addresses", "head_ip", "endpoint_url", "workflow_id", "machines_name", "template"):
             if field in payload:
                 setattr(record, field, payload[field])
 
@@ -1403,6 +2150,19 @@ def delete_llm_pool_activity(payload: dict) -> dict:
                 "failed_vmids": failed_vmids,
             }
 
+        # ── Safety net: remove the Harbor-restored template if it's somehow
+        # still around (normally delete_harbor_template_activity already
+        # removed it right after cloning finished). A "proxmox" source means
+        # the user picked a pre-existing cluster template that may back other
+        # pools -- deleting it would break them, so only ever touch "harbor".
+        # Best-effort: an orphan template is untidy, but not a reason to hold
+        # the pool's IPs and DB record hostage the way an undeleted VM is.
+        if record.template_source == "harbor" and str(record.template or "").isdigit():
+            try:
+                _delete_proxmox_vm(db, cluster_id, int(record.template))
+            except Exception as tmpl_err:
+                logger.error(f"[delete] Harbor template {record.template} cleanup failed: {tmpl_err}")
+
         # ── Release IPs (only reached if every VM was confirmed deleted) ──
         from models.IPs_model import IPEntry
         for ip in ip_addresses:
@@ -1425,7 +2185,7 @@ def delete_llm_pool_activity(payload: dict) -> dict:
 
 # ── Ray/host-setup helpers ──────────────────────────────────────────────────
 # Moved here from the retired single-VM "v1" activities file -- these three
-# activities (install_ray_vllm_activity, add_affinity_rule_activity,
+# activities (configure_llm_node_activity, add_affinity_rule_activity,
 # configure_ray_activity) are the same ones the multi-node workflow above has
 # always called; they just used to live in a separate module alongside dead
 # v1-only code. Kept byte-for-byte identical to avoid changing behavior.
@@ -1523,22 +2283,26 @@ def add_affinity_rule_activity(payload: dict) -> dict:
 
 
 @activity.defn
-def install_ray_vllm_activity(payload: dict) -> dict:
+def configure_llm_node_activity(payload: dict) -> dict:
     """
-    Idempotent setup: NVIDIA driver + CUDA + Ray + vLLM on Rocky Linux 9.
-    Each phase is skipped if already installed — safe to re-run on existing VMs.
-      Phase 1 (skipped if nvidia-smi works): NVIDIA driver install + reboot
-      Phase 2 (skipped if venv/ray/vllm exist): CUDA, Python venv, ray, vllm
-      Phase 3 (always runs): firewall rules + dirs (idempotent)
+    Idempotent node setup -- does NOT install anything (client sites may have
+    no internet access). The Harbor template is required to already carry
+    the NVIDIA driver + CUDA + the ~/vllm-ray-env venv (ray, vllm); this
+    activity fails fast if either is missing rather than falling back to a
+    dnf/pip install. What it actually does, every run:
+      - Verify NVIDIA driver present (fail if not)
+      - Verify Ray + vLLM venv present (fail if not)
+      - Hostname, /etc/hosts, SELinux permissive, env vars, firewall, dirs
     """
     ip = payload["ip_address"]
-    ssh_user = payload.get("ssh_user", _SSH_USER)
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     hostname = payload.get("name", "llm-node")
+    role = payload.get("role", "head")   # "head" | "worker"
     subnet = payload.get("subnet")
     if not subnet:
         raise RuntimeError(
-            "install_ray_vllm_activity requires 'subnet' (the real cluster subnet, "
+            "configure_llm_node_activity requires 'subnet' (the real cluster subnet, "
             "e.g. '172.16.4.0/24') to open the inter-node firewall rule. "
             "A wrong/default subnet here silently leaves node-to-node traffic "
             "(e.g. the PyTorch/NCCL rendezvous port) unprotected by the firewall's "
@@ -1582,58 +2346,37 @@ def install_ray_vllm_activity(payload: dict) -> dict:
         "sudo sed -i 's/^SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config 2>/dev/null || true",
     ], timeout=30)
 
-    # ── Check: NVIDIA driver already installed? ───────────────────────────────
+    # ── Require: NVIDIA driver already present ────────────────────────────────
+    # Deliberately NOT falling back to installing it here -- client sites may
+    # have no internet access, and dnf/pip installs would just hang or fail
+    # with a confusing network error deep inside a 900s+ block instead of
+    # failing fast with a clear cause. The Harbor template is expected to
+    # already carry the driver; if it doesn't, that's a template problem to
+    # fix at build time, not something this activity should paper over.
     try:
         run_commands(ip, ssh_user, ssh_pass, ["nvidia-smi"], timeout=30)
-        nvidia_installed = True
-        logger.info(f"[{ip}] NVIDIA driver already installed — skipping Phase 1 + reboot")
+        logger.info(f"[{ip}] NVIDIA driver present")
     except RuntimeError:
-        nvidia_installed = False
+        raise RuntimeError(
+            f"[{ip}] NVIDIA driver not found on this VM. This activity will not "
+            f"install it (client sites may have no internet access) -- rebuild "
+            f"the Harbor template with the NVIDIA driver pre-installed."
+        )
 
-    # ── Phase 1: NVIDIA driver (only if not already installed) ───────────────
-    if not nvidia_installed:
-        phase1 = [
-            # Deliberately NOT running "dnf update -y" here -- a full system
-            # update can pull in a newer kernel package without a reboot to
-            # match it, leaving the NVIDIA module built for the OLD kernel
-            # while the VM boots into the NEW one on its next restart. That
-            # exact drift (confirmed via `dkms status` showing two different
-            # kernel builds) was the root cause of "Driver/library version
-            # mismatch" on worker nodes. Only install what's actually needed.
-            "sudo dnf config-manager --set-enabled crb",
-            "sudo dnf install -y epel-release",
-            "sudo dnf install -y kernel-devel-$(uname -r) kernel-headers-$(uname -r) make gcc dkms",
-            "sudo dnf config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel9/x86_64/cuda-rhel9.repo",
-            "sudo dnf clean expire-cache",
-            "sudo dnf module install -y nvidia-driver:latest-dkms",
-        ]
-        run_commands(ip, ssh_user, ssh_pass, phase1, timeout=900)
-        reboot_and_wait(ip, ssh_user, ssh_pass, wait_before_retry=60)
-        logger.info(f"[{ip}] NVIDIA driver installed and VM rebooted")
-
-    # ── Check: Ray + vLLM venv already installed? ────────────────────────────
+    # ── Require: Ray + vLLM venv already present ───────────────────────────────
+    # Same reasoning as the driver check above -- no install fallback.
     try:
         run_commands(ip, ssh_user, ssh_pass, [
             "test -f ~/vllm-ray-env/bin/ray && test -f ~/vllm-ray-env/bin/vllm"
         ], timeout=15)
-        venv_installed = True
-        logger.info(f"[{ip}] Ray + vLLM venv already exists — skipping Phase 2 installs")
+        logger.info(f"[{ip}] Ray + vLLM venv present")
     except RuntimeError:
-        venv_installed = False
-
-    # ── Phase 2: CUDA + Python venv + Ray + vLLM (only if not installed) ─────
-    if not venv_installed:
-        phase2 = [
-            "nvidia-smi",
-            "sudo dnf install -y cuda-toolkit",
-            "sudo dnf install -y python3.11 python3.11-devel",
-            "python3.11 -m venv ~/vllm-ray-env",
-            "~/vllm-ray-env/bin/pip install --upgrade pip",
-            '~/vllm-ray-env/bin/pip install "ray[default]"',
-            "~/vllm-ray-env/bin/pip install vllm --upgrade",
-        ]
-        run_commands(ip, ssh_user, ssh_pass, phase2, timeout=1800)
-        logger.info(f"[{ip}] CUDA + Ray + vLLM installed")
+        raise RuntimeError(
+            f"[{ip}] Ray/vLLM venv (~/vllm-ray-env) not found on this VM. This "
+            f"activity will not install it (client sites may have no internet "
+            f"access) -- rebuild the Harbor template with CUDA + the "
+            f"~/vllm-ray-env venv (ray, vllm) pre-installed."
+        )
 
     # ── Phase 3: Env vars + firewall + dirs (always — all idempotent) ────────
     phase3 = [
@@ -1699,9 +2442,15 @@ def install_ray_vllm_activity(payload: dict) -> dict:
             f"sudo firewall-cmd --reload"
         ),
 
-        # Model cache dir
-        "sudo mkdir -p /vllm_data/hf_cache",
-        "sudo chmod 777 /vllm_data/hf_cache",
+        # Model cache dir -- head only. On a worker node this path is an NFS
+        # mount of the head's own directory, exported read-only
+        # (share_model_nfs_activity's "ro" export) -- there's nothing to
+        # create or chmod there; the head already set correct permissions
+        # on the files (chmod -R a+rX) before sharing them out, and NFS
+        # preserves that. Skipped entirely on workers rather than attempted
+        # and swallowed, since it's not a "might fail" case there -- it's
+        # simply not applicable.
+        *(["sudo mkdir -p /vllm_data/hf_cache", "sudo chmod 777 /vllm_data/hf_cache"] if role == "head" else []),
 
         # Confirm env + versions
         "cat /etc/environment",
@@ -1725,8 +2474,8 @@ def configure_ray_activity(payload: dict) -> dict:
       head_ip      : head node IP (only needed when role == "worker")
     """
     ip = payload["ip_address"]
-    ssh_user = payload.get("ssh_user") or _SSH_USER
-    ssh_pass = payload.get("ssh_pass", _SSH_PASS)
+    ssh_user = payload["ssh_user"]
+    ssh_pass = payload["ssh_pass"]
     role = payload.get("role", "head")
     head_ip = payload.get("head_ip", ip)
     num_gpus = payload.get("num_gpus", 1)
