@@ -1153,7 +1153,6 @@ def clone_and_configure_vm_activity(payload: dict) -> dict:
                 "sshkeys":      sshkeys_param,
                 "ipconfig0":    f"ip={ip_with_cidr},gw={gateway}",
                 "nameserver":   dns,
-                "searchdomain": vm_name,
                 "ciuser":       ssh_user,
                 "cipassword":   ssh_pass,
             },
