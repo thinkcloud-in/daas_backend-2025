@@ -9,7 +9,7 @@ from db_configuration.config import SessionLocal
 
 logger = structlog.get_logger("request_logger")
 
-class RequestLoggerMiddleware():
+class RequestLoggerMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         tracked_methods = ["POST", "PUT", "PATCH", "DELETE"]
 
