@@ -119,16 +119,23 @@ def setup_logging():
         ],
     )
 
+    # LOG_LEVEL lets prod turn down volume (e.g. "WARNING") without a code
+    # change -- unset/invalid falls back to INFO, same as before this existed.
+    level_name = os.getenv("LOG_LEVEL", "INFO").upper()
+    log_level = getattr(logging, level_name, logging.INFO)
+
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
+    console_handler.setLevel(log_level)
     console_handler.setFormatter(console_formatter)
 
     app_file_handler = logging.handlers.RotatingFileHandler(
         APP_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
     )
-    app_file_handler.setLevel(logging.INFO)
+    app_file_handler.setLevel(log_level)
     app_file_handler.setFormatter(json_formatter)
 
+    # errors.log always stays ERROR+ regardless of LOG_LEVEL -- turning down
+    # general noise should never also hide the one file meant for triage.
     error_file_handler = logging.handlers.RotatingFileHandler(
         ERROR_LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8",
     )
@@ -136,5 +143,5 @@ def setup_logging():
     error_file_handler.setFormatter(json_formatter)
 
     root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
+    root_logger.setLevel(log_level)
     root_logger.handlers = [console_handler, app_file_handler, error_file_handler]
