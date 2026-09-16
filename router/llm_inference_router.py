@@ -93,12 +93,14 @@ def get_llm_inference_job(job_id: int, db: Session = Depends(get_db)):
 @llm_inference_router.put("/update-private-llm/{job_id}", response_model=APIResponse[Any])
 def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Session = Depends(get_db)):
     """
-    Update a job's `model` and/or `status` field (a lightweight metadata
-    update — doesn't touch the VMs/deployment).
+    Update a job's editable metadata (model, ssh_user/ssh_pass, model_type(_other),
+    max_images_per_request, vllm_extra_params, api_key, status) — a lightweight
+    metadata update, doesn't touch the VMs/deployment. Fields baked into the
+    VMs at creation (template, nodes, vmids, storage, ...) aren't editable here.
 
-    Request body: LLMInferenceJobUpdate = {"model": str|None, "status": str|None}
-    Response 200 — `data`: the updated record.
-    Errors: 404 if job_id is not found.
+    Request body: LLMInferenceJobUpdate (all fields optional -- only provided ones are applied)
+    Response 200 — `data`: {"id": job_id}.
+    Errors: 404 if job_id is not found, 400 if vllm_extra_params isn't valid YAML/a flat mapping.
     """
     return llm_inference_controller.update_llm_inference_job(job_id, data, db)
 

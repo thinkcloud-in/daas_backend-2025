@@ -9,7 +9,7 @@ from db_configuration.config import SessionLocal
 
 logger = structlog.get_logger("request_logger")
 
-class RequestLoggerMiddleware(BaseHTTPMiddleware):
+class RequestLoggerMiddleware():
     async def dispatch(self, request: Request, call_next):
         tracked_methods = ["POST", "PUT", "PATCH", "DELETE"]
 
@@ -36,7 +36,7 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
                 # is genuinely streaming", and hasattr(response,
                 # "body_iterator") is always True as well. File-download
                 # responses (such as log-download) set the Content-Disposition
-                # header — identify them by that and never capture/consume
+                # header — identify them by that and never capture/consum44444466644446666e
                 # their body, otherwise the whole stream buffers here at once
                 # (the client gets nothing until ALL the data is fetched) —
                 # defeating the entire purpose of streaming.
