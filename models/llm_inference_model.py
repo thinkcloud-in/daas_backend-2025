@@ -166,6 +166,11 @@ class LLMInferenceJobUpdate(BaseModel):
     status: Optional[str] = None
     ssh_user: Optional[str] = None
     ssh_pass: Optional[str] = None
+    model_type: Optional[str] = None
+    model_type_other: Optional[str] = None
+    max_images_per_request: Optional[int] = None
+    vllm_extra_params: Optional[str] = None  # raw YAML/key:value text, same shape as create
+    api_key: Optional[str] = None
 
 
 class PoolActionRequest(BaseModel):

@@ -747,23 +747,45 @@ def get_llm_inference_job(job_id: int, db: Session):
 
 def update_llm_inference_job(job_id: int, data: LLMInferenceJobUpdate, db: Session):
     """
-    Update the job's `model` and/or `status` field (a light metadata update
-    — it touches no VM/deployment).
+    Update the job's editable metadata -- everything baked into the VMs at
+    creation (template, nodes, vmids, storage, vm_config, ...) is NOT here
+    and can't be changed without rebuilding the pool. Only fields a restart
+    can pick up fresh are editable: model, ssh_user/ssh_pass, model_type(_other),
+    max_images_per_request, vllm_extra_params, api_key. This touches no
+    VM/deployment itself -- a restart/power-action is what actually applies
+    these to the running pool.
 
     Used by: PUT /v1/llm-inference/update-private-llm/{job_id}
     Returns: success_response with {"id": job_id} in `data`.
-    Errors: 404 if job_id is not found.
+    Errors: 404 if job_id is not found, 400 if vllm_extra_params isn't valid YAML/a flat mapping.
     """
     try:
         record = db.query(LLMInferenceJob).filter(LLMInferenceJob.id == job_id).first()
         if not record:
             raise HTTPException(status_code=404, detail="LLM inference job not found")
+        if data.model is not None:
+            record.model = data.model
         if data.status is not None:
             record.status = data.status
         if data.ssh_user is not None:
             record.ssh_user = data.ssh_user
         if data.ssh_pass is not None:
             record.ssh_pass = data.ssh_pass
+        if data.model_type is not None:
+            record.model_type = data.model_type
+        if data.model_type_other is not None:
+            record.model_type_other = data.model_type_other
+        if data.max_images_per_request is not None:
+            record.max_images_per_request = data.max_images_per_request
+        if data.api_key is not None:
+            record.api_key = data.api_key
+        if data.vllm_extra_params is not None:
+            # Same textarea-YAML -> dict parsing as creation -- restart reads
+            # this same already-parsed dict back from the DB, never raw text.
+            parsed = yaml.safe_load(data.vllm_extra_params) if data.vllm_extra_params.strip() else None
+            if parsed is not None and not isinstance(parsed, dict):
+                raise HTTPException(status_code=400, detail="Extra vLLM params must be a flat mapping of key: value pairs.")
+            record.vllm_extra_params = parsed
         db.commit()
         return response_format.success_response(200, "LLM inference job updated successfully", {"id": record.id})
     except HTTPException:
