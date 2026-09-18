@@ -35,12 +35,13 @@ DATABASE_PORT = os.getenv('PORT')
 
 async def login_with_guacamole():
     """
-    Log in as the Guacamole admin (hardcoded "guacadmin"/"guacadmin") and get an auth token.
+    Log in as the Guacamole admin, using credentials from the
+    devraq-guacamole-secret (USER_GUACA/GUACA_PASS env vars), and get an auth token.
     Returns: authToken string, or None on failure.
     """
     url =  f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens"
-    username  = 'guacadmin'
-    password = 'guacadmin' 
+    username  = os.getenv('USER_GUACA')
+    password = os.getenv('GUACA_PASS')
     payload = {'username': username, 'password': password}
     
     async with httpx.AsyncClient(timeout=10.0) as client:
