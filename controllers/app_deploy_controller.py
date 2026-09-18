@@ -22,6 +22,7 @@ Fields like `admin_password`/`api_key` deliberately go into the response
 needs to copy — not a third-party secret leak).
 """
 import logging
+import os
 import uuid
 from urllib.parse import urlparse
 
@@ -32,6 +33,11 @@ from models.app_deploy_model import AppDeployment, VALID_DEPLOY_TYPES
 from models.kubernetes_model import KubernetesCluster
 from models.kubernetes_deploy_model import KubernetesDeployment
 from models.library_model import LibraryItem
+
+# Same shared value activities_app_deploy.py uses for the Postgres/VectorDB
+# containers this feature provisions — keep in sync via one env var/default
+# instead of repeating the literal.
+APP_POSTGRES_PASSWORD = os.getenv("APP_POSTGRES_PASSWORD", "postgres123")
 from utils import response_format
 
 logger = logging.getLogger(__name__)
@@ -558,7 +564,7 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
     rname_vdb = re.sub(r"[^a-z0-9-]", "-", vdb.name.lower())
     rname_vdb = re.sub(r"-+", "-", rname_vdb).strip("-")[:52]
     vdb_ns    = vdb.namespace or "default"
-    pgurl     = f"postgresql://postgres:postgres123@{rname_vdb}-vectordb.{vdb_ns}.svc.cluster.local:5432/vectordb"
+    pgurl     = f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@{rname_vdb}-vectordb.{vdb_ns}.svc.cluster.local:5432/vectordb"
 
     try:
         apps_v1    = _load_k8s_apps_client(cluster)
@@ -577,7 +583,7 @@ def connect_vectordb(openwebui_id: int, vectordb_deploy_id: int, db: Session) ->
                         _pg_rn   = re.sub(r"-+", "-", _pg_rn).strip("-")[:52]
                         _pg_ns   = _pg.namespace or "default"
                         _ow_db   = f"openwebui_{ow.id}"
-                        _dburl   = f"postgresql://postgres:postgres123@{_pg_rn}-postgresql.{_pg_ns}.svc.cluster.local:5432/{_ow_db}"
+                        _dburl   = f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@{_pg_rn}-postgresql.{_pg_ns}.svc.cluster.local:5432/{_ow_db}"
                         clean_env.append(V1EnvVar(name="DATABASE_URL", value=_dburl))
                         logger.info(f"[AppDeploy] DATABASE_URL auto-restored db={_ow_db} (postgresql_deploy_id={ow.postgresql_deploy_id})")
                 clean_env = _inject_llm_env_vars(ow, clean_env, db)
@@ -651,7 +657,7 @@ def disconnect_vectordb(openwebui_id: int, db: Session) -> dict:
                         _pg_rn   = re.sub(r"-+", "-", _pg_rn).strip("-")[:52]
                         _pg_ns   = _pg.namespace or "default"
                         _ow_db   = f"openwebui_{ow.id}"
-                        _dburl   = f"postgresql://postgres:postgres123@{_pg_rn}-postgresql.{_pg_ns}.svc.cluster.local:5432/{_ow_db}"
+                        _dburl   = f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@{_pg_rn}-postgresql.{_pg_ns}.svc.cluster.local:5432/{_ow_db}"
                         clean_env.append(V1EnvVar(name="DATABASE_URL", value=_dburl))
                         logger.info(f"[AppDeploy] DATABASE_URL auto-restored on disconnect db={_ow_db}")
                 # preserve the linked LLMs in the env vars across the pod restart
@@ -831,7 +837,7 @@ def _ow_pg_set_config(ow_id: int, postgresql_deploy_id, patch: dict, db_session:
             port=int(pg.node_port),
             dbname=_dbname,
             user="postgres",
-            password="postgres123",
+            password=APP_POSTGRES_PASSWORD,
             connect_timeout=10,
         )
         cur = conn.cursor()
@@ -1258,7 +1264,7 @@ def _ow_direct_pg_sync(ow: "AppDeployment", urls: list, db_session: "Session") -
             port=int(pg.node_port),
             dbname=_dbname,
             user="postgres",
-            password="postgres123",
+            password=APP_POSTGRES_PASSWORD,
             connect_timeout=10,
         )
         cur = conn.cursor()
@@ -1897,7 +1903,7 @@ def repair_database_url(openwebui_id: int, db: Session) -> dict:
     pg_rn   = re.sub(r"-+", "-", pg_rn).strip("-")[:52]
     pg_ns   = pg.namespace or "default"
     ow_db   = f"openwebui_{ow.id}"
-    db_url  = f"postgresql://postgres:postgres123@{pg_rn}-postgresql.{pg_ns}.svc.cluster.local:5432/{ow_db}"
+    db_url  = f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@{pg_rn}-postgresql.{pg_ns}.svc.cluster.local:5432/{ow_db}"
 
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == ow.k8s_cluster_id).first()
     if not cluster or not cluster.kubeconfig:

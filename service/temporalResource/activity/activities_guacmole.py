@@ -33,8 +33,8 @@ def get_db_connection():
 @activity.defn
 async def login_with_guacamole_activity():
     url = f"{os.getenv('GUCAMOLE_BASE_URL')}/api/tokens"
-    username = 'guacadmin'
-    password = 'guacadmin'
+    username = os.getenv('USER_GUACA')
+    password = os.getenv('GUACA_PASS')
     payload = 'username='+username+'&password='+password
     headers = {'Content-Type': 'application/x-www-form-urlencoded'}
    

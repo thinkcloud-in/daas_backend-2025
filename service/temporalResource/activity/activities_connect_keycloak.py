@@ -176,7 +176,7 @@ def _pg_set_config(ow_id: int, postgresql_deploy_id, patch: dict) -> str | None:
     _dbname = f"openwebui_{ow_id}"
     try:
         conn = psycopg2.connect(host=_host, port=_port, dbname=_dbname,
-                                user="postgres", password="postgres123", connect_timeout=10)
+                                user="postgres", password=os.getenv("APP_POSTGRES_PASSWORD", "postgres123"), connect_timeout=10)
         cur = conn.cursor()
         cur.execute(
             "SELECT table_name FROM information_schema.tables "

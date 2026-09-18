@@ -32,6 +32,11 @@ from models.library_model import LibraryItem
 
 logger = activity.logger
 _CONTAINERD_LABEL = "daas-patch=containerd"
+# Shared password for the Postgres/VectorDB containers this module provisions
+# for app deployments (OpenWebUI etc). Same value used both when the
+# container is created and by every later connection — keep them in sync
+# by reading from one place instead of repeating the literal everywhere.
+APP_POSTGRES_PASSWORD = os.getenv("APP_POSTGRES_PASSWORD", "postgres123")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -438,7 +443,7 @@ def _postgresql_manifest(rname: str, namespace: str, image: str,
                             "ports": [{"containerPort": 5432}],
                             "env": [
                                 {"name": "POSTGRES_USER",     "value": "postgres"},
-                                {"name": "POSTGRES_PASSWORD", "value": "postgres123"},
+                                {"name": "POSTGRES_PASSWORD", "value": APP_POSTGRES_PASSWORD},
                                 {"name": "POSTGRES_DB",       "value": "postgres"},
                                 {"name": "PGDATA",            "value": "/var/lib/postgresql/data/pgdata"},
                             ],
@@ -494,7 +499,7 @@ def _vectordb_manifest(rname: str, namespace: str, image: str) -> list[dict]:
                             "env": [
                                 {"name": "POSTGRES_DB",       "value": "vectordb"},
                                 {"name": "POSTGRES_USER",     "value": "postgres"},
-                                {"name": "POSTGRES_PASSWORD", "value": "postgres123"},
+                                {"name": "POSTGRES_PASSWORD", "value": APP_POSTGRES_PASSWORD},
                             ],
                             "resources": {
                                 "requests": {"memory": "256Mi", "cpu": "250m"},
@@ -678,7 +683,7 @@ def app_deploy_activity(payload: dict) -> dict:
                         _pg_svc_name  = f"{_pg_rname}-postgresql"
                         _pg_namespace = pg_dep.namespace
                         _database_url = (
-                            f"postgresql://postgres:postgres123@"
+                            f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@"
                             f"{_pg_svc_name}.{_pg_namespace}.svc.cluster.local:5432/{_ow_dbname}"
                         )
                         _log_step(deploy_id, f"PostgreSQL linked: {_pg_svc_name}.{_pg_namespace} db={_ow_dbname}")
@@ -798,7 +803,7 @@ def app_deploy_activity(payload: dict) -> dict:
         # PostgreSQL + VectorDB: ClusterIP — internal DNS URL, no LB wait
         if deployment_type == "postgresql":
             service_url = (
-                f"postgresql://postgres:postgres123@"
+                f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@"
                 f"{svc_name}.{namespace}.svc.cluster.local:5432/postgres"
             )
             lb_found = False
@@ -806,7 +811,7 @@ def app_deploy_activity(payload: dict) -> dict:
 
         elif deployment_type == "vectordb":
             service_url = (
-                f"postgresql://postgres:postgres123@"
+                f"postgresql://postgres:{APP_POSTGRES_PASSWORD}@"
                 f"{svc_name}.{namespace}.svc.cluster.local:5432/vectordb"
             )
             lb_found = False
