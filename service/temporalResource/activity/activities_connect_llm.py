@@ -130,7 +130,7 @@ def _try_pg_sync(deploy_id: int, postgresql_deploy_id: int | None, urls: list,
             port=int(pg.node_port),
             dbname=_dbname,
             user="postgres",
-            password="postgres123",
+            password=os.getenv("APP_POSTGRES_PASSWORD", "postgres123"),
             connect_timeout=10,
         )
         cur = conn.cursor()

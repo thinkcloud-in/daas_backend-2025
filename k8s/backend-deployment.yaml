@@ -8,7 +8,7 @@
 #                                   grafana-token, influxdb-org, influxdb-bucket,
 #                                   influxdb-linux-metrics-bucket, influxdb-token,
 #                                   influxdb-port, llm-vm-ssh-user, llm-vm-ssh-pass,
-#                                   cluster-secret-key
+#                                   cluster-secret-key, app-postgres-password
 #   devraq-keycloak-secret    keys: username, password
 #   devraq-postgres-secret    keys: username, password
 #   devraq-guacamole-secret   keys: guacadmin-username, guacadmin-password
@@ -189,6 +189,11 @@ spec:
 
             - name: LOG_LEVEL
               value: WARNING
+            - name: APP_POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: devraq-backend-secret
+                  key: app-postgres-password
           volumeMounts:
             - name: library-storage
               mountPath: /library
