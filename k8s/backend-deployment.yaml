@@ -160,7 +160,7 @@ spec:
                 secretKeyRef:
                   name: devraq-opensearch-secret
                   key: reader-password
-            # DAAS_HOST: synced into devraq-backend-secret by daas_deployment.sh
+            # DAAS_HOST: synced into devraq-backend-secret by devraq-deployment.sh
             # on every run (kubectl patch, not just first-create) so it always
             # reflects the current host. The three URLs below build off it via
             # Kubernetes' $(VAR_NAME) dependent-env-var substitution — a

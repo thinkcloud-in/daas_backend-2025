@@ -167,15 +167,17 @@ def get_deployment(
 
 
 @library_router.delete("/deployments/{job_id}", response_model=APIResponse[Any])
-def delete_deployment(job_id: int, db: Session = Depends(get_db)):
+async def delete_deployment(job_id: int, db: Session = Depends(get_db)):
     """
-    Delete a deployment job record (tracking record only — doesn't destroy
-    the deployed LXC/K8s resource itself).
+    Delete a deployment job. LXC: DB tracking record only. Kubernetes: the
+    real thing — deletes the actual namespace on the live cluster via the
+    K8s API first, then removes the DB record.
 
-    Response 200 — `data`: {"id": job_id}
-    Errors: 404 if job_id is not found.
+    Response 200 — `data`: {"id": job_id, "type": "lxc"|"kubernetes", ...}
+    Errors: 404 if job_id is not found, 400/500 if a Kubernetes namespace
+    delete fails (the DB record is kept in that case).
     """
-    return lxc_restore_controller.delete_deployment(job_id, db)
+    return await lxc_restore_controller.delete_deployment(job_id, db)
 
 
 # ── Download ──────────────────────────────────────────────────────────────────
@@ -314,8 +316,13 @@ class LibraryDeployBody(BaseModel):
     ip_pools:        Optional[List[str]] = None
     storage:         Optional[str]       = "local-lvm"
 
-    # For K8s (optional, has defaults)
-    namespace:       Optional[str] = "harbor"
+    # For K8s: namespace is required when deployment_type="kubernetes" — no
+    # default here (kept Optional at the Pydantic level only because this
+    # field is shared with the unrelated "lxc" path, which doesn't use it
+    # at all). `_deploy_library_k8s()` rejects a missing/empty namespace
+    # explicitly — Harbor's manifest uses fixed resource names, so two
+    # installs sharing a namespace would collide.
+    namespace:       Optional[str] = None
     http_port:       Optional[int] = 80
 
 
