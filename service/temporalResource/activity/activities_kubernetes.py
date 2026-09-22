@@ -12,8 +12,10 @@ logger = activity.logger
 @activity.defn(name="k8s-test-connection")
 def test_k8s_connection_activity(payload: dict) -> dict:
     """
-    Test the connection to a Kubernetes cluster:
-    Priority: kubeconfig > auth_token > username/password
+    Test the connection to a Kubernetes cluster via its kubeconfig — the
+    only supported auth method (username/password and a separate auth_token
+    field were removed entirely; see kubernetes_controller.py's
+    _build_request_kwargs for the full reasoning).
     Hits /healthz and /version.
     cluster_id is optional — if given, the DB status is updated;
     if None, just run the test and return the result (pre-save test).
@@ -21,9 +23,6 @@ def test_k8s_connection_activity(payload: dict) -> dict:
     cluster_id = payload.get("cluster_id")   # None = pre-save test
     control_ip = payload["control_ip"]
     port       = payload.get("port", 6443)
-    username   = payload.get("username")
-    password   = payload.get("password")
-    auth_token = payload.get("auth_token")
     kubeconfig = payload.get("kubeconfig")
 
     base_url = f"https://{control_ip}:{port}"
@@ -44,15 +43,10 @@ def test_k8s_connection_activity(payload: dict) -> dict:
             if users_cfg:
                 user_data = users_cfg[0].get("user", {})
                 if "token" in user_data and user_data["token"]:
-                    auth_token = user_data["token"]
+                    headers["Authorization"] = f"Bearer {user_data['token']}"
             logger.info(f"[K8s] kubeconfig parsed: server={base_url}")
         except Exception as e:
             logger.warning(f"[K8s] kubeconfig parse failed: {e}, falling back to IP/port")
-
-    if auth_token:
-        headers["Authorization"] = f"Bearer {auth_token}"
-    elif username and password:
-        auth = (username, password)
 
     activity.heartbeat(f"Testing connection to {base_url} ...")
 
