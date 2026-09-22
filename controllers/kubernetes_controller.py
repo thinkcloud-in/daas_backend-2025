@@ -105,12 +105,16 @@ def _calc_uptime(ts_str: str) -> str:
 # Auth builder
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _build_request_kwargs(control_ip: str, port: int,
-                           username=None, password=None,
-                           auth_token=None, kubeconfig=None):
+def _build_request_kwargs(control_ip: str, port: int, kubeconfig: str = None):
     """
     Returns (base_url, req_kwargs, cert_files_to_cleanup)
-    Auth priority: kubeconfig (token > client-cert) → auth_token → username/password
+    Kubeconfig is the only supported auth source — extracts a bearer token
+    or client cert from inside it. (username/password and a separate
+    auth_token field were removed entirely: Kubernetes dropped HTTP Basic
+    Auth from the API server in v1.19, so that path could never actually
+    work against any current cluster, and every real operation this backend
+    performs needs cluster-admin-equivalent access anyway, which a narrower
+    token never meaningfully granted either.)
     """
     base_url   = f"https://{control_ip}:{port}"
     headers    = {}
@@ -142,12 +146,6 @@ def _build_request_kwargs(control_ip: str, port: int,
         except Exception as e:
             logger.warning(f"[K8s] kubeconfig auth build error: {e}")
 
-    if not headers.get("Authorization") and cert is None:
-        if auth_token:
-            headers["Authorization"] = f"Bearer {auth_token}"
-        elif username and password:
-            auth = (username, password)
-
     return base_url, {"headers": headers, "auth": auth, "cert": cert, "verify": False}, cert_files
 
 
@@ -167,18 +165,14 @@ def _cleanup(cert_files: list):
 def _to_dict(c: KubernetesCluster) -> dict:
     """
     Convert a KubernetesCluster ORM row into an API-safe dict.
-    The `password` field is never included here; `auth_token`/`kubeconfig` are
-    masked with "***" (or None) — raw secrets never go into the response (this
-    controller is already safe from the credential-leak issues seen in
-    Cluster/Pool/IPMI).
+    `kubeconfig` is masked with "***" (or None) — the raw value never goes
+    into the response.
     """
     return {
         "id":             c.id,
         "name":           c.name,
         "control_ip":     c.control_ip,
         "port":           c.port,
-        "username":       c.username,
-        "auth_token":     "***" if c.auth_token else None,
         "kubeconfig":     "***" if c.kubeconfig else None,
         "has_kubeconfig": bool(c.kubeconfig),
         "status":         c.status,
@@ -490,9 +484,7 @@ def _fetch_all_cluster_data(cluster: KubernetesCluster) -> dict:
     cluster_summary + nodes (with uptime & pod count) + system_components
     """
     base_url, req_kw, cert_files = _build_request_kwargs(
-        cluster.control_ip, cluster.port,
-        cluster.username, cluster.password,
-        cluster.auth_token, cluster.kubeconfig,
+        cluster.control_ip, cluster.port, cluster.kubeconfig,
     )
     try:
         # ── 1. Nodes ────────────────────────────────────────────────────────
@@ -708,9 +700,7 @@ def _run_k8s_test(payload: dict) -> dict:
     port       = payload.get("port", 6443)
 
     base_url, req_kw, cert_files = _build_request_kwargs(
-        control_ip, port,
-        payload.get("username"), payload.get("password"),
-        payload.get("auth_token"), payload.get("kubeconfig"),
+        control_ip, port, payload.get("kubeconfig"),
     )
     try:
         resp = requests.get(f"{base_url}/healthz", timeout=15, **req_kw)
@@ -785,9 +775,6 @@ async def test_k8s_connection_direct(body: dict) -> dict:
 
     result = await asyncio.to_thread(_run_k8s_test, {
         "control_ip": control_ip, "port": port,
-        "username":   body.get("username"),
-        "password":   body.get("password"),
-        "auth_token": body.get("auth_token"),
         "kubeconfig": body.get("kubeconfig"),
     })
     if result["status"] == "connected":
@@ -827,9 +814,6 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
 
     test_result = await asyncio.to_thread(_run_k8s_test, {
         "control_ip": control_ip, "port": port,
-        "username":   body.get("username"),
-        "password":   body.get("password"),
-        "auth_token": body.get("auth_token"),
         "kubeconfig": body.get("kubeconfig"),
     })
 
@@ -843,9 +827,6 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
         name        = body["name"],
         control_ip  = control_ip,
         port        = port,
-        username    = body.get("username"),
-        password    = body.get("password"),
-        auth_token  = body.get("auth_token"),
         kubeconfig  = body.get("kubeconfig"),
         status      = "connected",
         last_tested = datetime.datetime.utcnow(),
@@ -862,8 +843,8 @@ async def add_k8s_cluster(body: dict, db: Session) -> dict:
 async def update_k8s_cluster(cluster_id: int, body: dict, db: Session) -> dict:
     """
     Update the cluster credentials/settings + re-test. Masked sentinel values
-    ("***" or "") for `kubeconfig`/`auth_token` are ignored (so copy-pasting
-    from the GET response leaves the existing value untouched).
+    ("***" or "") for `kubeconfig` is ignored (so copy-pasting from the GET
+    response leaves the existing value untouched).
 
     Used by: PUT /v1/kubernetes/clusters/{cluster_id}
     Returns: success_response(200) if the re-test is connected, otherwise
@@ -882,21 +863,18 @@ async def update_k8s_cluster(cluster_id: int, body: dict, db: Session) -> dict:
         if info.get("port") and not body.get("port"):
             body["port"] = info["port"]
 
-    for field in ["name", "control_ip", "port", "username", "password", "auth_token", "kubeconfig"]:
+    for field in ["name", "control_ip", "port", "kubeconfig"]:
         val = body.get(field)
         if val is None:
             continue
         # "***" / "" = masked sentinel from GET response → skip, don't overwrite real value
-        if field in ("kubeconfig", "auth_token") and val in ("***", ""):
+        if field == "kubeconfig" and val in ("***", ""):
             continue
         setattr(cluster, field, val)
 
     test_result = await asyncio.to_thread(_run_k8s_test, {
         "control_ip": cluster.control_ip,
         "port":       cluster.port,
-        "username":   cluster.username,
-        "password":   cluster.password,
-        "auth_token": cluster.auth_token,
         "kubeconfig": cluster.kubeconfig,
     })
 
@@ -929,9 +907,6 @@ async def test_k8s_cluster(cluster_id: int, db: Session) -> dict:
     result = await asyncio.to_thread(_run_k8s_test, {
         "control_ip": cluster.control_ip,
         "port":       cluster.port,
-        "username":   cluster.username,
-        "password":   cluster.password,
-        "auth_token": cluster.auth_token,
         "kubeconfig": cluster.kubeconfig,
     })
     cluster.status      = result["status"]
@@ -1159,7 +1134,7 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
         _sa = TypedSearchAttributes([
             SearchAttributePair(SearchAttributeKey.for_keyword("Entity"),   deploy.name),
             SearchAttributePair(SearchAttributeKey.for_keyword("Action"),   "K8s-Harbor-Deploy"),
-            SearchAttributePair(SearchAttributeKey.for_keyword("UserName"), cluster.username or "system"),
+            SearchAttributePair(SearchAttributeKey.for_keyword("UserName"), cluster.name or "system"),
         ])
         handle = await client.start_workflow(
             K8sHarborDeployWorkflow.run,

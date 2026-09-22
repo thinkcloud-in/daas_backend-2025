@@ -11,23 +11,29 @@ from models.API_Response_model import APIResponse
 kubernetes_router = APIRouter(prefix="/v1/kubernetes/clusters", tags=["kubernetes"])
 
 
+# Kubeconfig is the ONLY supported way to authenticate to a cluster —
+# username/password and auth_token were removed entirely (2026-09). Reasons:
+# 1. Kubernetes removed HTTP Basic Auth from the API server in v1.19 — the
+#    username/password fields could never actually work against any current
+#    cluster, only ones running an EOL Kubernetes version.
+# 2. Every real Kubernetes operation this backend performs (creating/
+#    deleting namespaces, creating PersistentVolumes, applying arbitrary
+#    manifests) needs cluster-admin-equivalent access — an auth token tied
+#    to a narrower account would fail partway through most operations
+#    anyway, so there was no meaningful "lighter-weight" option to offer.
+# Keeping only one supported method removes a confusing choice that could
+# never reliably deliver on either alternative.
 class KubernetesClusterBody(BaseModel):
     name:        str
     control_ip:  str
     port:        Optional[int] = 6443
-    username:    Optional[str] = None
-    password:    Optional[str] = None
-    auth_token:  Optional[str] = None   # Bearer token (optional)
-    kubeconfig:  Optional[str] = None   # Full kubeconfig YAML string (optional)
+    kubeconfig:  str
 
 
 class KubernetesTestBody(BaseModel):
     control_ip:  Optional[str] = None   # optional if the IP is embedded in the kubeconfig
     port:        Optional[int] = 6443
-    username:    Optional[str] = None
-    password:    Optional[str] = None
-    auth_token:  Optional[str] = None
-    kubeconfig:  Optional[str] = None
+    kubeconfig:  str
 
 
 class KubernetesClusterUpdateBody(BaseModel):
@@ -35,22 +41,17 @@ class KubernetesClusterUpdateBody(BaseModel):
     name:        Optional[str] = None
     control_ip:  Optional[str] = None
     port:        Optional[int] = None
-    username:    Optional[str] = None
-    password:    Optional[str] = None
-    auth_token:  Optional[str] = None
     kubeconfig:  Optional[str] = None
 
 
 # The common shape of a cluster record (embedded in list/get/add/update responses):
 #   {
-#     "id": int, "name": str, "control_ip": str, "port": int, "username": str|None,
-#     "auth_token": "***"|None,      # never the raw value, just a masked indicator
+#     "id": int, "name": str, "control_ip": str, "port": int,
 #     "kubeconfig": "***"|None,      # never the raw value, just a masked indicator
 #     "has_kubeconfig": bool,
 #     "status": "connected"|"failed"|str, "last_tested": iso-datetime|None,
 #     "created_at": iso-datetime, "updated_at": iso-datetime
 #   }
-# The `password` field never appears here (always excluded from the response).
 
 
 # NOTE: register /test before /{cluster_id}, or /{cluster_id} would match it first
@@ -116,10 +117,10 @@ def list_clusters(
 @kubernetes_router.put("/{cluster_id}", response_model=APIResponse[Any])
 async def update_cluster(cluster_id: int, body: KubernetesClusterUpdateBody, db: Session = Depends(get_db)):
     """
-    Update cluster credentials (auth_token, kubeconfig, password, etc.) + re-test the connection.
+    Update the cluster's control_ip/kubeconfig + re-test the connection.
     Only send the fields you want to change, the rest stay the same. If you
-    send back the masked value `"***"` or `""` for `auth_token`/`kubeconfig`,
-    that field is left untouched (safe to copy-paste straight from a GET response).
+    send back the masked value `"***"` or `""` for `kubeconfig`, that field
+    is left untouched (safe to copy-paste straight from a GET response).
 
     Response 200 — `data`: the updated cluster record + `test_result`.
     Response 400 (error_response) if the re-test fails (the update is still saved either way).
