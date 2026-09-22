@@ -6,9 +6,11 @@ from temporalio.worker import Worker
 
 from service.temporalResource.activity.activities_kubernetes_deploy import (
     k8s_harbor_deploy_activity,
+    k8s_harbor_delete_activity,
 )
 from service.temporalResource.workflows.workflows_kubernetes_deploy import (
     K8sHarborDeployWorkflow,
+    K8sHarborDeleteWorkflow,
 )
 from utils.temporal_client import TemporalClientManager
 
@@ -21,8 +23,8 @@ async def k8s_deploy_worker():
     worker = Worker(
         client,
         task_queue                = TASK_QUEUE,
-        workflows                 = [K8sHarborDeployWorkflow],
-        activities                = [k8s_harbor_deploy_activity],
+        workflows                 = [K8sHarborDeployWorkflow, K8sHarborDeleteWorkflow],
+        activities                = [k8s_harbor_deploy_activity, k8s_harbor_delete_activity],
         activity_executor         = ThreadPoolExecutor(max_workers=3),
         max_concurrent_activities = 3,
     )

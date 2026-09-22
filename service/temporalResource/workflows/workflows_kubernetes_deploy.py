@@ -6,6 +6,7 @@ from temporalio.common import RetryPolicy
 with workflow.unsafe.imports_passed_through():
     from service.temporalResource.activity.activities_kubernetes_deploy import (
         k8s_harbor_deploy_activity,
+        k8s_harbor_delete_activity,
     )
 
 logger = workflow.logger
@@ -25,4 +26,23 @@ class K8sHarborDeployWorkflow:
             retry_policy = RetryPolicy(maximum_attempts=1),
         )
         workflow.logger.info(f"[K8sHarborDeploy] Done: {result.get('status')}")
+        return result
+
+
+@workflow.defn(name="K8sHarborDeleteWorkflow")
+class K8sHarborDeleteWorkflow:
+
+    @workflow.run
+    async def run(self, payload: dict) -> dict:
+        workflow.logger.info(
+            f"[K8sHarborDelete] Starting for deploy_id={payload.get('deploy_id')} "
+            f"namespace={payload.get('namespace')}"
+        )
+        result = await workflow.execute_activity(
+            k8s_harbor_delete_activity,
+            payload,
+            start_to_close_timeout = timedelta(minutes=10),
+            retry_policy = RetryPolicy(maximum_attempts=1),
+        )
+        workflow.logger.info(f"[K8sHarborDelete] Done: {result.get('status')}")
         return result

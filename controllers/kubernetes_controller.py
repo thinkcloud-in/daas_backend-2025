@@ -1018,35 +1018,38 @@ def delete_k8s_cluster(cluster_id: int, db: Session) -> dict:
     return response_format.success_response(200, f"Cluster '{cluster.name}' deleted successfully")
 
 
+def check_k8s_namespace_exists(cluster_id: int, namespace: str, db: Session) -> dict:
+    """
+    Live check — does this namespace already exist on the cluster right
+    now? Reuses `check_namespace_exists()` (the same function the deploy
+    guard calls server-side), so the frontend's pre-submit check and the
+    backend's own safety check can never disagree.
+
+    Used by: GET /v1/kubernetes/clusters/{cluster_id}/namespaces/{namespace}/exists
+    Response 200 — `data`: {"namespace": str, "exists": bool}
+    Errors: 404 if cluster_id is not found, 400 if the cluster has no kubeconfig.
+    """
+    from service.temporalResource.activity.activities_kubernetes_deploy import check_namespace_exists
+
+    cluster = _get_cluster_with_kubeconfig(cluster_id, db)
+    exists = check_namespace_exists(cluster.kubeconfig, namespace, control_ip=cluster.control_ip)
+    return response_format.success_response(200, "Namespace checked", {
+        "namespace": namespace,
+        "exists":    exists,
+    })
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Harbor Deploy on K8s node
 # ─────────────────────────────────────────────────────────────────────────────
 
-async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict:
+def _get_cluster_with_kubeconfig(cluster_id: int, db: Session) -> "KubernetesCluster":
     """
-    Deploy a Library item (a Harbor offline-install zip) onto a K8s cluster
-    — create the DB record in "pending" status immediately, then start
-    K8sHarborDeployWorkflow (Temporal) which does the actual SSH-transfer +
-    extract + Harbor-install + readiness-wait (async).
-
-    Used by: POST /v1/kubernetes/clusters/{cluster_id}/deployments
-    Args: body = {"library_item_id", "name", "namespace"="harbor", "http_port"=80}.
-    Returns: success_response(201) with, in `data`, {"deploy_id", "cluster_id",
-    "name", "node_ip", "namespace", "status": "deploying", "workflow_id",
-    "harbor_url": null, "message"}. Poll GET .../deployments/{deploy_id}
-    for status/harbor_url.
-    Errors: 404 if cluster_id/library_item_id is not found, 400 if the cluster
-    has no kubeconfig set or the library item is not in "ready" status, 500 if
-    the workflow fails to start (the deployment record is marked "failed").
+    Fetch a cluster and confirm it has a kubeconfig — shared by every
+    Harbor operation that needs to actually reach the cluster (deploy,
+    delete, namespace-exists check), so this 404/400 logic exists in one
+    place instead of being copy-pasted into each one.
     """
-    from models.kubernetes_deploy_model import KubernetesDeployment
-    from models.library_model import LibraryItem
-    from service.temporalResource.workers.workers_kubernetes_deploy import TASK_QUEUE
-    from service.temporalResource.workflows.workflows_kubernetes_deploy import K8sHarborDeployWorkflow
-    from utils.temporal_client import TemporalClientManager
-    from temporalio.common import SearchAttributeKey, SearchAttributePair, TypedSearchAttributes
-
-    # ── Fetch the cluster from the DB ────────────────────────────────────────
     cluster = db.query(KubernetesCluster).filter(KubernetesCluster.id == cluster_id).first()
     if not cluster:
         raise HTTPException(status_code=404, detail=f"Cluster {cluster_id} not found")
@@ -1059,6 +1062,54 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
                 "kubeconfig missing for this cluster. "
                 f"Please update via PUT /v1/kubernetes/clusters/{cluster_id}"
             )
+        )
+    return cluster
+
+
+async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict:
+    """
+    Deploy a Library item (a Harbor offline-install zip) onto a K8s cluster
+    — create the DB record in "pending" status immediately, then start
+    K8sHarborDeployWorkflow (Temporal) which does the actual SSH-transfer +
+    extract + Harbor-install + readiness-wait (async).
+
+    Used by: POST /v1/kubernetes/clusters/{cluster_id}/deployments
+    Args: body = {"library_item_id", "name", "namespace" (required —
+    must not already exist on the cluster), "http_port"=80}.
+    Returns: success_response(201) with, in `data`, {"deploy_id", "cluster_id",
+    "name", "node_ip", "namespace", "status": "deploying", "workflow_id",
+    "harbor_url": null, "message"}. Poll GET .../deployments/{deploy_id}
+    for status/harbor_url.
+    Errors: 404 if cluster_id/library_item_id is not found, 400 if the cluster
+    has no kubeconfig set or the library item is not in "ready" status, 409 if
+    the namespace already exists on the cluster (Harbor's manifest uses fixed
+    resource names — two installs can never share a namespace), 500 if the
+    workflow fails to start (the deployment record is marked "failed").
+    """
+    from models.kubernetes_deploy_model import KubernetesDeployment
+    from models.library_model import LibraryItem
+    from service.temporalResource.activity.activities_kubernetes_deploy import check_namespace_exists
+    from service.temporalResource.workers.workers_kubernetes_deploy import TASK_QUEUE
+    from service.temporalResource.workflows.workflows_kubernetes_deploy import K8sHarborDeployWorkflow
+    from utils.temporal_client import TemporalClientManager
+    from temporalio.common import SearchAttributeKey, SearchAttributePair, TypedSearchAttributes
+
+    # ── Fetch the cluster from the DB ────────────────────────────────────────
+    cluster = _get_cluster_with_kubeconfig(cluster_id, db)
+
+    # ── Namespace collision guard — server-side, not just the frontend's
+    #    check, to close the race where two deploys happen at once. Checked
+    #    against the live cluster (not just our own DB), since a namespace
+    #    could already exist for a reason unrelated to a tracked deployment.
+    namespace = body.get("namespace", "harbor")
+    if check_namespace_exists(cluster.kubeconfig, namespace, control_ip=cluster.control_ip):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Namespace '{namespace}' already exists on this cluster. "
+                "Harbor's manifest uses fixed resource names, so two installs "
+                "can never share a namespace — choose a different one."
+            ),
         )
 
     # ── Library item verify ───────────────────────────────────────────────────
@@ -1073,7 +1124,6 @@ async def deploy_harbor_to_k8s(cluster_id: int, body: dict, db: Session) -> dict
         )
 
     # ── Create deployment record ──────────────────────────────────────────────
-    namespace = body.get("namespace", "harbor")
     http_port = body.get("http_port", 80)
 
     deploy = KubernetesDeployment(
@@ -1178,6 +1228,69 @@ def list_k8s_deployments(cluster_id: int, db: Session) -> dict:
     return response_format.success_response(
         200, "Deployments listed", [_deploy_to_dict(d) for d in deployments]
     )
+
+
+async def delete_k8s_deployment(cluster_id: int, deploy_id: int, db: Session) -> dict:
+    """
+    Actually tear down a Harbor-on-K8s deployment — deletes the namespace
+    (and everything in it: pods, PVCs, Services) on the real cluster via
+    K8sHarborDeleteWorkflow (Temporal), then removes the DB record only
+    after the namespace is confirmed gone. Unlike `delete_k8s_cluster()`,
+    this does NOT just forget about it in the database — leaving the real
+    namespace running untouched on a cluster this platform doesn't own is
+    a resource leak, and a later redeploy attempt would silently skip all
+    deployment logic (`_check_already_deployed()` sees the leftover pods
+    and assumes it's already installed).
+
+    Used by: DELETE /v1/kubernetes/clusters/{cluster_id}/deployments/{deploy_id}
+    Errors: 404 if deploy_id (with this cluster_id) is not found, 400 if the
+    cluster has no kubeconfig, 500 if the delete workflow fails (the DB
+    record is kept in that case, not deleted, so it isn't silently forgotten).
+    """
+    from models.kubernetes_deploy_model import KubernetesDeployment
+    from service.temporalResource.workers.workers_kubernetes_deploy import TASK_QUEUE
+    from service.temporalResource.workflows.workflows_kubernetes_deploy import K8sHarborDeleteWorkflow
+    from utils.temporal_client import TemporalClientManager
+
+    deploy = db.query(KubernetesDeployment).filter(
+        KubernetesDeployment.id         == deploy_id,
+        KubernetesDeployment.cluster_id == cluster_id,
+    ).first()
+    if not deploy:
+        raise HTTPException(status_code=404, detail=f"Deployment {deploy_id} not found")
+
+    cluster = _get_cluster_with_kubeconfig(cluster_id, db)
+
+    payload = {
+        "deploy_id":       deploy.id,
+        "namespace":       deploy.namespace,
+        "kubeconfig_yaml": cluster.kubeconfig,
+        "control_ip":      cluster.control_ip,
+    }
+
+    try:
+        client = await TemporalClientManager.get_temporal_client()
+        handle = await client.start_workflow(
+            K8sHarborDeleteWorkflow.run,
+            payload,
+            id         = f"k8s-harbor-delete-{deploy.id}-{cluster_id}",
+            task_queue = TASK_QUEUE,
+        )
+        result = await handle.result()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete namespace '{deploy.namespace}': {e}")
+
+    if result.get("status") not in ("deleted", "deleting"):
+        raise HTTPException(status_code=500, detail=f"Namespace delete did not complete: {result}")
+
+    db.delete(deploy)
+    db.commit()
+
+    return response_format.success_response(200, f"Harbor deployment '{deploy.name}' deleted", {
+        "deploy_id":  deploy_id,
+        "namespace":  deploy.namespace,
+        "k8s_status": result.get("status"),
+    })
 
 
 _DEPLOY_PROGRESS = {

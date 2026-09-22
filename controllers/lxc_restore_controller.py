@@ -293,18 +293,28 @@ def get_lxc_restore_job(job_id: int, db: Session, deployment_type: str | None = 
         return response_format.error_response(500, "Failed to get deployment", str(e))
 
 
-def delete_deployment(job_id: int, db: Session):
+async def delete_deployment(job_id: int, db: Session):
     """
-    Delete an LXC or Kubernetes deployment from the DB (tracking record
-    only — doesn't touch the actual deployed resource).
+    Delete an LXC or Kubernetes deployment. LXC: DB record only (tracking
+    record — doesn't touch the actual LXC container). Kubernetes: the real
+    thing — delegates to `kubernetes_controller.delete_k8s_deployment()`,
+    which deletes the actual namespace (and everything in it) on the live
+    cluster via the K8s API, and only removes the DB record after that's
+    confirmed. This used to be DB-only for Kubernetes too (`db.delete(k8s)`
+    with no cluster cleanup at all), which silently leaked every Harbor
+    namespace on delete — the UI would report success while the real
+    resources kept running untouched, and a later redeploy into the same
+    namespace would collide or wrongly detect "already deployed".
     Checks lxc_restore_jobs first, then kubernetes_deployments.
 
     Used by: DELETE /v1/library/deployments/{job_id}
     Returns: success_response's `data` has {"id": job_id, "type": "lxc"|"kubernetes"}
-    Errors: 404 if job_id is not found anywhere.
+    Errors: 404 if job_id is not found anywhere, 400/500 if the Kubernetes
+    delete fails (the DB record is kept in that case, not deleted).
     """
     try:
         from models.kubernetes_deploy_model import KubernetesDeployment
+        from controllers.kubernetes_controller import delete_k8s_deployment
 
         # LXC check
         lxc = db.query(LXCRestoreJob).filter(LXCRestoreJob.id == job_id).first()
@@ -317,10 +327,13 @@ def delete_deployment(job_id: int, db: Session):
         # Kubernetes check
         k8s = db.query(KubernetesDeployment).filter(KubernetesDeployment.id == job_id).first()
         if k8s:
-            db.delete(k8s)
-            db.commit()
-            logger.info(f"[Deploy] K8s deployment id={job_id} deleted from DB")
-            return response_format.success_response(200, "Kubernetes deployment deleted successfully", {"id": job_id, "type": "kubernetes"})
+            result = await delete_k8s_deployment(k8s.cluster_id, job_id, db)
+            logger.info(f"[Deploy] K8s deployment id={job_id} — namespace deleted, DB record removed")
+            extra = result.data if hasattr(result, "data") else {}
+            return response_format.success_response(
+                200, "Kubernetes deployment deleted successfully",
+                {"id": job_id, "type": "kubernetes", **(extra or {})},
+            )
 
         raise HTTPException(status_code=404, detail=f"Deployment id={job_id} not found in LXC or Kubernetes records")
 
