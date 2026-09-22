@@ -167,8 +167,27 @@ def delete_cluster(cluster_id: int, db: Session = Depends(get_db)):
 class HarborDeployBody(BaseModel):
     library_item_id: int            # ID of the Harbor zip uploaded to the Library
     name:            str            # Deployment name
-    namespace:       Optional[str] = "harbor"   # K8s namespace (default: harbor)
+    # Required, no default — Harbor's manifest uses fixed resource names, so
+    # every deployment on a cluster needs its own distinct namespace. A
+    # silent shared default here is exactly how two Harbors would collide;
+    # the frontend must ask the user and check GET .../namespaces/{ns}/exists
+    # before submitting.
+    namespace:       str
     http_port:       Optional[int] = 80          # Harbor HTTP port (default: 80)
+
+
+@kubernetes_router.get("/{cluster_id}/namespaces/{namespace}/exists", response_model=APIResponse[Any])
+def check_namespace_exists(cluster_id: int, namespace: str, db: Session = Depends(get_db)):
+    """
+    Live check against the actual cluster — does this namespace already
+    exist? Call this while a user is typing a namespace name for a new
+    Harbor deployment, before letting them submit — Harbor's manifest uses
+    fixed resource names, so two installs can never share a namespace.
+
+    Response 200 — `data`: {"namespace": str, "exists": bool}
+    Errors: 404 if cluster_id is not found, 400 if the cluster has no kubeconfig.
+    """
+    return kubernetes_controller.check_k8s_namespace_exists(cluster_id, namespace, db)
 
 
 # NOTE: register static paths (deployments) before /{cluster_id} — but this
@@ -197,7 +216,8 @@ async def deploy_harbor(
         }
 
     Errors: 404 if cluster_id/library_item_id is not found, 400 if the
-    cluster's kubeconfig isn't set.
+    cluster's kubeconfig isn't set, 409 if `namespace` already exists on
+    the cluster — check GET .../namespaces/{namespace}/exists first.
     """
     return await kubernetes_controller.deploy_harbor_to_k8s(cluster_id, body.model_dump(), db)
 
@@ -224,3 +244,22 @@ def get_deployment(cluster_id: int, deploy_id: int, db: Session = Depends(get_db
     Errors: 404 if deploy_id (under this cluster_id) is not found.
     """
     return kubernetes_controller.get_k8s_deployment(cluster_id, deploy_id, db)
+
+
+@kubernetes_router.delete("/{cluster_id}/deployments/{deploy_id}", response_model=APIResponse[Any])
+async def delete_deployment(cluster_id: int, deploy_id: int, db: Session = Depends(get_db)):
+    """
+    Actually tear down a Harbor deployment — deletes the real namespace (and
+    everything in it) on the cluster via the K8s API, then removes the DB
+    record. Unlike deleting a cluster registration, this does not just
+    forget about it — the namespace is deleted for real first.
+
+    This is synchronous (awaits the delete workflow) since a namespace
+    delete is much faster than a full Harbor install.
+
+    Response 200 — `data`: {"deploy_id": int, "namespace": str, "k8s_status": str}
+    Errors: 404 if deploy_id (under this cluster_id) is not found, 400 if
+    the cluster has no kubeconfig, 500 if the delete itself fails (the DB
+    record is kept in that case, not deleted).
+    """
+    return await kubernetes_controller.delete_k8s_deployment(cluster_id, deploy_id, db)

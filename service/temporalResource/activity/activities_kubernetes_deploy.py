@@ -43,7 +43,7 @@ logger = activity.logger
 _IMPORTER_DS_NAME = "harbor-img-importer"
 _IMPORT_DONE_MARKER = "HARBOR_IMPORT_DONE"
 
-_WEBDAV_BASE     = os.getenv("STORAGE_BASE_URL",     "https://devraq.dev.team/library").rstrip("/")
+_WEBDAV_BASE     = os.getenv("STORAGE_BASE_URL",     "https://demo.dev.local/library").rstrip("/")
 _WEBDAV_INTERNAL = os.getenv("STORAGE_INTERNAL_URL", _WEBDAV_BASE).rstrip("/")
 
 
@@ -264,18 +264,50 @@ def _check_already_deployed(v1, namespace: str) -> bool:
         return False if e.status == 404 else (_ for _ in ()).throw(e)
 
 
+def check_namespace_exists(kubeconfig_yaml: str, namespace: str, control_ip: str = None) -> bool:
+    """
+    Check whether a namespace already exists on a cluster — via the K8s API
+    only, no SSH. Reuses `_load_k8s_clients()`, the same connection helper
+    `k8s_harbor_deploy_activity`/`k8s_harbor_delete_activity` use, so there
+    is exactly one place that knows how to turn a kubeconfig into a live
+    client. Deliberately a plain function, not a Temporal activity — a
+    single namespace read is near-instant, not something that needs
+    workflow retries/timeouts the way a 30-minute Harbor install does.
+
+    Called from two places: the standalone namespace-exists check the
+    frontend uses while a user types a namespace name, and as a guard
+    inside `deploy_harbor_to_k8s` itself (never trust a check that only
+    happened in the browser — the deploy endpoint re-verifies right before
+    actually deploying, to close the race where two people deploy at once).
+    """
+    from kubernetes.client.exceptions import ApiException
+    v1, _apps_v1, _batch_v1, _dyn_client = _load_k8s_clients(kubeconfig_yaml, control_ip=control_ip)
+    try:
+        v1.read_namespace(name=namespace)
+        return True
+    except ApiException as e:
+        if e.status == 404:
+            return False
+        raise
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # DaemonSet image importer — sab nodes pe
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _create_import_daemonset(apps_v1, namespace: str, ds_name: str,
-                              images_webdav_url: str, images_filename: str):
+                              images_webdav_url: str = None, images_filename: str = None,
+                              mkdir_paths: list = None):
     """
     Create a DaemonSet that, on all nodes:
-    1. downloads the images tar.gz from WebDAV
-    2. runs ctr -n k8s.io images import
-    3. logs HARBOR_IMPORT_DONE
-    Uses alpine:3.18 (already available on all nodes)
+    1. creates any host directories listed in mkdir_paths (so hostPath PVs
+       have somewhere to point at, on every node — since a pod using one of
+       these PVs could get scheduled onto any node)
+    2. downloads the images tar.gz from WebDAV (if images_webdav_url given)
+    3. runs ctr -n k8s.io images import
+    4. logs HARBOR_IMPORT_DONE
+    Uses alpine:3.18 (already available on all nodes). Either mkdir_paths or
+    images_webdav_url (or both) may be given — at least one is required.
     """
     from kubernetes.client.exceptions import ApiException
 
@@ -289,14 +321,24 @@ def _create_import_daemonset(apps_v1, namespace: str, ds_name: str,
     # chroot /host: solves the alpine musl vs host glibc issue.
     # Host root, run (containerd socket), tmp — three separate mounts.
     # Download to /host/tmp/ (= host /tmp); /tmp is visible inside the chroot.
-    cmd = (
-        f"wget -q --no-check-certificate -O /host/tmp/{images_filename} '{images_webdav_url}' && "
-        f"echo 'Download complete, importing images...' && "
-        f"chroot /host ctr -a /run/containerd/containerd.sock -n k8s.io images import /tmp/{images_filename} && "
-        f"echo '{_IMPORT_DONE_MARKER}' && "
-        f"rm -f /host/tmp/{images_filename} && "
-        f"sleep 3600"
-    )
+    cmd_parts = []
+    if mkdir_paths:
+        quoted = " ".join(f"'{p}'" for p in mkdir_paths)
+        cmd_parts.append(f"chroot /host mkdir -p {quoted}")
+        cmd_parts.append(f"echo 'Host directories ready: {len(mkdir_paths)}'")
+    if images_webdav_url and images_filename:
+        cmd_parts.append(
+            f"wget -q --no-check-certificate -O /host/tmp/{images_filename} '{images_webdav_url}'"
+        )
+        cmd_parts.append("echo 'Download complete, importing images...'")
+        cmd_parts.append(
+            f"chroot /host ctr -a /run/containerd/containerd.sock -n k8s.io "
+            f"images import /tmp/{images_filename}"
+        )
+        cmd_parts.append(f"rm -f /host/tmp/{images_filename}")
+    cmd_parts.append(f"echo '{_IMPORT_DONE_MARKER}'")
+    cmd_parts.append("sleep 3600")
+    cmd = " && ".join(cmd_parts)
 
     ds_manifest = {
         "apiVersion": "apps/v1",
@@ -418,6 +460,66 @@ def _delete_import_daemonset(apps_v1, namespace: str, ds_name: str):
         logger.info(f"[K8sDeploy] DaemonSet '{ds_name}' deleted")
     except ApiException:
         pass
+
+
+def _derive_pvcs_storage_plan(yaml_docs, namespace: str, base_host_path: str = "/data/harbor"):
+    """
+    Scans the extracted manifest YAML for PersistentVolumeClaim definitions
+    (Harbor's bundled manifests are Kompose-converted from Docker Compose —
+    they define PVCs but never a matching PersistentVolume/StorageClass, and
+    assume the target cluster already has dynamic provisioning). Since a
+    user-registered cluster may not have that, build a static hostPath
+    PersistentVolume for each PVC found instead — one per node-independent
+    directory, so whichever node a PVC's pod lands on, the path already
+    exists (created on every node by the import DaemonSet before this).
+
+    Returns (mkdir_paths, pv_manifests):
+      mkdir_paths  — host directories that must exist before the PVs/PVCs
+                     are applied (one per PVC).
+      pv_manifests — matching PersistentVolume dicts, ready for _apply_manifest.
+    """
+    mkdir_paths, pv_manifests = [], []
+    seen = set()
+
+    for _filename, content in yaml_docs:
+        for manifest in yaml.safe_load_all(content):
+            if not manifest or manifest.get("kind") != "PersistentVolumeClaim":
+                continue
+            pvc_name = manifest.get("metadata", {}).get("name")
+            if not pvc_name or pvc_name in seen:
+                continue
+            seen.add(pvc_name)
+
+            spec = manifest.get("spec", {})
+            access_modes = spec.get("accessModes") or ["ReadWriteOnce"]
+            capacity = (
+                spec.get("resources", {}).get("requests", {}).get("storage")
+                or "1Gi"
+            )
+            host_path = f"{base_host_path}/{namespace}/{pvc_name}"
+            mkdir_paths.append(host_path)
+
+            pv_manifests.append({
+                "apiVersion": "v1",
+                "kind": "PersistentVolume",
+                "metadata": {"name": f"{namespace}-{pvc_name}-pv"},
+                "spec": {
+                    "capacity": {"storage": capacity},
+                    "accessModes": access_modes,
+                    "persistentVolumeReclaimPolicy": "Retain",
+                    "hostPath": {"path": host_path},
+                    # Empty storageClassName matches a PVC that doesn't set
+                    # one either (Harbor's Kompose-generated PVCs leave it
+                    # unset) — no cluster-wide default StorageClass needed.
+                    "storageClassName": "",
+                    "claimRef": {
+                        "name": pvc_name,
+                        "namespace": namespace,
+                    },
+                },
+            })
+
+    return mkdir_paths, pv_manifests
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -868,7 +970,24 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
             _ensure_namespace(v1, namespace)
             _ok(f"Namespace '{namespace}' ready")
 
-            # ── Step 7–11: Images import (DaemonSet + WebDAV) ─────────────────
+            # ── Step 6b: Load manifests early — needed to know which PVCs
+            #    require a matching hostPath PV before anything gets applied.
+            _step(f"Loading YAML manifests from '{manifest_path}' ...", "deploying")
+            yaml_docs = _extract_yaml_files(local_zip, manifest_path, apply_order)
+            _ok(f"Found {len(yaml_docs)} manifest files")
+
+            # Harbor's bundled manifests are Kompose-converted from Docker
+            # Compose — they define PersistentVolumeClaims but never a
+            # matching PersistentVolume/StorageClass, and assume the target
+            # cluster already has dynamic provisioning. A user-registered
+            # cluster may not have that (no default StorageClass), which
+            # leaves every PVC stuck "Pending" forever with no explanation.
+            # Build matching hostPath PVs ourselves instead.
+            mkdir_paths, pv_manifests = _derive_pvcs_storage_plan(yaml_docs, namespace)
+            if pv_manifests:
+                _ok(f"{len(pv_manifests)} PVC(s) need a matching hostPath PV — will provision")
+
+            # ── Step 7–11: Host directories + images import (DaemonSet + WebDAV) ──
             if images_archive:
                 # 7. Images archive extract locally
                 _step(f"Extracting images archive from ZIP ...", "deploying")
@@ -890,23 +1009,29 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
 
                 _webdav_upload(local_images_path, webdav_temp_url)
                 _ok(f"Images uploaded to WebDAV: {webdav_temp_url}")
+            else:
+                webdav_pub_url = images_filename = None
 
-                # 9. DaemonSet create
+            if images_archive or mkdir_paths:
+                # 9. DaemonSet create — imports images and/or creates the
+                #    host directories each hostPath PV above points at, on
+                #    every node (a PVC's pod could land on any of them).
                 _step(
                     f"Creating DaemonSet '{_IMPORTER_DS_NAME}' — "
-                    f"images will be imported on ALL nodes ...",
+                    f"preparing all nodes ...",
                     "deploying",
                 )
                 _create_import_daemonset(
                     apps_v1, namespace, _IMPORTER_DS_NAME,
                     webdav_pub_url, images_filename,
+                    mkdir_paths=mkdir_paths,
                 )
                 ds_created = True
                 _ok(f"DaemonSet created in ns={namespace}")
 
                 # 10. Wait for all pods
                 _step(
-                    "Waiting for image import on all nodes [max 30 min] ...",
+                    "Waiting for node preparation to finish [max 30 min] ...",
                     "deploying",
                 )
                 all_done = _wait_import_daemonset(
@@ -914,24 +1039,29 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
                 )
                 if not all_done:
                     raise RuntimeError(
-                        "Image import timeout (30 min) — "
+                        "Node preparation timeout (30 min) — "
                         f"check with kubectl logs -l app={_IMPORTER_DS_NAME} -n {namespace}"
                     )
-                _ok("Harbor images imported on all nodes ✓")
+                _ok("All nodes prepared ✓")
 
                 # 11. Cleanup
                 _step("Cleaning up DaemonSet and temp WebDAV file ...", "deploying")
                 _delete_import_daemonset(apps_v1, namespace, _IMPORTER_DS_NAME)
                 ds_created = False
-                _webdav_delete(webdav_temp_url)
-                webdav_temp_url = None
+                if webdav_temp_url:
+                    _webdav_delete(webdav_temp_url)
+                    webdav_temp_url = None
                 _ok("Cleanup done")
 
-            # ── Step 12: YAML manifests apply ─────────────────────────────────
-            _step(f"Loading YAML manifests from '{manifest_path}' ...", "deploying")
-            yaml_docs = _extract_yaml_files(local_zip, manifest_path, apply_order)
-            _ok(f"Found {len(yaml_docs)} manifest files")
+            # ── Step 11b: PersistentVolumes apply — must exist before the
+            #    manifest's PVCs are applied, or they'd sit Pending again.
+            if pv_manifests:
+                _step(f"Creating {len(pv_manifests)} PersistentVolume(s) ...", "deploying")
+                for pv in pv_manifests:
+                    _apply_manifest(dyn_client, pv, namespace)
+                _ok("PersistentVolumes ready")
 
+            # ── Step 12: YAML manifests apply ─────────────────────────────────
             _step(f"Applying {len(yaml_docs)} Kubernetes manifests ...", "deploying")
             applied = _apply_yaml_docs(dyn_client, yaml_docs, namespace)
             _ok(
@@ -1037,3 +1167,57 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
             _webdav_delete(webdav_temp_url)
         if tmp_dir:
             shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@activity.defn(name="k8s-harbor-delete")
+def k8s_harbor_delete_activity(payload: dict) -> dict:
+    """
+    Tear down a Harbor-on-K8s deployment for real — deletes the namespace
+    (and everything in it: pods, PVCs, Services, ConfigMaps) via the K8s API.
+    Does NOT delete the hostPath PVs' underlying directories on the node's
+    disk — deleting the namespace only removes the PV/PVC *objects*, not the
+    real files. The PVs use reclaimPolicy=Retain, so the actual data is
+    deliberately kept — a future redeploy reusing the same paths could, in
+    principle, recover a prior install instead of silently losing it.
+
+    Note: this does NOT delete the KubernetesDeployment DB row — the caller
+    (controller) does that separately, only after this activity confirms
+    the namespace is actually gone, so a failed delete doesn't silently
+    lose track of orphaned cluster resources.
+    """
+    deploy_id = payload["deploy_id"]
+    namespace = payload["namespace"]
+    kubeconfig_yaml = payload["kubeconfig_yaml"]
+    control_ip = payload.get("control_ip")
+
+    logger.info(f"[K8sDelete id={deploy_id}] Deleting namespace '{namespace}' ...")
+    v1, apps_v1, batch_v1, dyn_client = _load_k8s_clients(kubeconfig_yaml, control_ip=control_ip)
+
+    from kubernetes.client.exceptions import ApiException
+    try:
+        v1.delete_namespace(name=namespace)
+    except ApiException as e:
+        if e.status == 404:
+            logger.info(f"[K8sDelete id={deploy_id}] Namespace '{namespace}' already gone")
+            return {"status": "deleted", "namespace": namespace, "already_gone": True}
+        raise RuntimeError(f"Failed to delete namespace '{namespace}': {e}") from e
+
+    # Namespace deletion is async in Kubernetes (finalizers, terminating
+    # pods) — poll briefly so the caller gets a real "it's actually gone"
+    # answer instead of assuming success the instant the call returns.
+    for attempt in range(30):  # ~5 min max
+        try:
+            v1.read_namespace(name=namespace)
+        except ApiException as e:
+            if e.status == 404:
+                logger.info(f"[K8sDelete id={deploy_id}] Namespace '{namespace}' fully deleted")
+                return {"status": "deleted", "namespace": namespace, "already_gone": False}
+            raise
+        activity.heartbeat(f"Waiting for namespace deletion ({attempt+1}/30) ...")
+        time.sleep(10)
+
+    logger.warning(
+        f"[K8sDelete id={deploy_id}] Namespace '{namespace}' still terminating after 5 min "
+        "— it will finish in the background; not treated as a failure."
+    )
+    return {"status": "deleting", "namespace": namespace, "already_gone": False}

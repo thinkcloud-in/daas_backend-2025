@@ -1492,16 +1492,32 @@ async def deploy_library_item(
 
 
 async def _deploy_library_k8s(item_id: int, body: dict, db: Session):
-    """Deploy a library item onto a K8s cluster as Harbor."""
+    """
+    Deploy a library item onto a K8s cluster as Harbor.
+
+    `namespace` is required, no fallback default — Harbor's manifest uses
+    fixed resource names, so two Harbor installs can never share a
+    namespace. A silent shared default here is exactly how that would
+    happen; `deploy_harbor_to_k8s()` itself also re-checks it against the
+    live cluster before deploying, so this can't be bypassed even if some
+    other caller forgets to send one.
+    """
     from controllers.kubernetes_controller import deploy_harbor_to_k8s
 
     cluster_id = body["cluster_id"]
+    namespace  = body.get("namespace")
+    if not namespace:
+        raise HTTPException(
+            status_code=422,
+            detail="namespace is required for a Kubernetes deployment — "
+                   "check GET /v1/kubernetes/clusters/{cluster_id}/namespaces/{namespace}/exists first.",
+        )
     return await deploy_harbor_to_k8s(
         cluster_id = cluster_id,
         body       = {
             "library_item_id": item_id,
             "name":            body["name"],
-            "namespace":       body.get("namespace", "harbor"),
+            "namespace":       namespace,
             "http_port":       body.get("http_port", 80),
         },
         db = db,
