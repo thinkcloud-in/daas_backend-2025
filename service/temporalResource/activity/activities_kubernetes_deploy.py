@@ -43,7 +43,10 @@ logger = activity.logger
 _IMPORTER_DS_NAME = "harbor-img-importer"
 _IMPORT_DONE_MARKER = "HARBOR_IMPORT_DONE"
 
-_WEBDAV_BASE     = os.getenv("STORAGE_BASE_URL",     "https://demo.dev.local/library").rstrip("/")
+# Empty, not a placeholder domain — a fake fallback here would silently
+# fail the WebDAV upload with a fabricated, unreachable host instead of a
+# clear "not configured" error.
+_WEBDAV_BASE     = os.getenv("STORAGE_BASE_URL",     "").rstrip("/")
 _WEBDAV_INTERNAL = os.getenv("STORAGE_INTERNAL_URL", _WEBDAV_BASE).rstrip("/")
 
 
@@ -862,7 +865,10 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
     file_path   = payload["file_path"]
     file_name   = payload["file_name"]
     deploy_name = payload.get("name", "harbor")
-    namespace   = payload.get("namespace", "harbor-system")
+    # No silent fallback — a missing namespace here means something upstream
+    # built the payload wrong, and defaulting to a shared name would risk
+    # colliding with another deployment's namespace instead of failing loudly.
+    namespace   = payload["namespace"]
     http_port   = payload.get("http_port", 80)
     node_ip     = payload.get("node_ip")
 
@@ -989,6 +995,8 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
 
             # ── Step 7–11: Host directories + images import (DaemonSet + WebDAV) ──
             if images_archive:
+                if not _WEBDAV_BASE:
+                    raise RuntimeError("STORAGE_BASE_URL not configured — cannot stage images for import")
                 # 7. Images archive extract locally
                 _step(f"Extracting images archive from ZIP ...", "deploying")
                 img_dir           = os.path.join(tmp_dir, "images")
@@ -1198,8 +1206,11 @@ def k8s_harbor_delete_activity(payload: dict) -> dict:
         v1.delete_namespace(name=namespace)
     except ApiException as e:
         if e.status == 404:
+            # Distinct from "deleted" — nothing was actually torn down here,
+            # it simply never existed. Reporting this as "deleted" would
+            # falsely imply a real namespace was cleaned up.
             logger.info(f"[K8sDelete id={deploy_id}] Namespace '{namespace}' already gone")
-            return {"status": "deleted", "namespace": namespace, "already_gone": True}
+            return {"status": "not_found", "namespace": namespace, "already_gone": True}
         raise RuntimeError(f"Failed to delete namespace '{namespace}': {e}") from e
 
     # Namespace deletion is async in Kubernetes (finalizers, terminating
