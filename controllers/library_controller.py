@@ -553,7 +553,10 @@ async def upload_library_file(
 
     # ── All other types: temp file → WebDAV (internal URL) → PV ──────────────
     subdir       = TYPE_SUBDIR.get(record.type, "general")
-    storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+    _storage_base_env = os.getenv("STORAGE_BASE_URL")
+    if not _storage_base_env:
+        raise HTTPException(status_code=500, detail="STORAGE_BASE_URL not configured")
+    storage_base = _storage_base_env.rstrip("/")
     # both the PUT and file_path use STORAGE_BASE_URL — client_max_body_size is raised on APISIX
     public_url = f"{storage_base}/{subdir}/{record.file_name}"
 
@@ -775,7 +778,10 @@ async def upload_library_direct(request: Request, db: Session):
 
     # container → WebDAV (STORAGE_BASE_URL via APISIX), pod path
     if item_type == "container":
-        storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+        _storage_base_env = os.getenv("STORAGE_BASE_URL")
+        if not _storage_base_env:
+            raise HTTPException(status_code=500, detail="STORAGE_BASE_URL not configured")
+        storage_base = _storage_base_env.rstrip("/")
         pod_path   = f"/data/library/{subdir}/{file_name}"
         webdav_url = f"{storage_base}/{subdir}/{file_name}"
 
@@ -813,7 +819,10 @@ async def upload_library_direct(request: Request, db: Session):
         return response_format.success_response(200, "Direct upload completed and Harbor-Push started successfully", _item_to_dict(record))
 
     # ── Baki sab types: WebDAV (STORAGE_BASE_URL) ────────────────────────────
-    storage_base = os.getenv("STORAGE_BASE_URL", "https://devraq.dev.team/library").rstrip("/")
+    _storage_base_env = os.getenv("STORAGE_BASE_URL")
+    if not _storage_base_env:
+        raise HTTPException(status_code=500, detail="STORAGE_BASE_URL not configured")
+    storage_base = _storage_base_env.rstrip("/")
     public_url   = f"{storage_base}/{subdir}/{file_name}"
 
     try:
