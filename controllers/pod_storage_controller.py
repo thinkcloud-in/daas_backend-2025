@@ -18,7 +18,11 @@ from utils import response_format
 
 logger = logging.getLogger(__name__)
 
-_WEBDAV_BASE        = os.getenv("STORAGE_BASE_URL",     "https://devraq.dev.team/library").rstrip("/")
+# Empty, not a placeholder domain — a fake fallback here would silently
+# write broken URLs into permanent DB records (LibraryItem.file_path) if
+# these env vars are ever missing, instead of failing loudly at the point
+# of use. Callers must check for an empty value before using either.
+_WEBDAV_BASE        = os.getenv("STORAGE_BASE_URL",     "").rstrip("/")
 _WEBDAV_UPLOAD_BASE = os.getenv("STORAGE_INTERNAL_URL", _WEBDAV_BASE).rstrip("/")
 VALID_DIRS          = {"harbor", "os", "container", "llm_model", "llm_template", "podman", "general"}
 
@@ -30,6 +34,12 @@ def _validate_dir(directory: str):
             status_code=400,
             detail=f"Invalid directory '{directory}'. Must be one of: {', '.join(sorted(VALID_DIRS))}",
         )
+
+
+def _require_webdav_configured():
+    """Fail loudly if STORAGE_BASE_URL/STORAGE_INTERNAL_URL were never set."""
+    if not _WEBDAV_BASE:
+        raise HTTPException(status_code=500, detail="STORAGE_BASE_URL not configured")
 
 
 def _validate_filename(filename: str):
@@ -48,6 +58,7 @@ async def handle_upload(directory: str, filename: str, request) -> dict:
     Returns: success_response's `data` has {"filename", "directory", "size", "url"}
     Raises: 400 invalid directory/filename, 500 WebDAV upload failure.
     """
+    _require_webdav_configured()
     _validate_dir(directory)
     _validate_filename(filename)
 
@@ -103,6 +114,7 @@ def handle_delete(directory: str, filename: str) -> dict:
     Returns: success_response's `data` has {"filename", "directory"}
     Raises: 404 if the file is not found, 500 WebDAV delete failure.
     """
+    _require_webdav_configured()
     _validate_dir(directory)
     _validate_filename(filename)
 
@@ -147,6 +159,7 @@ def handle_list(directory: str | None = None) -> dict:
     If listing an individual directory fails, that directory just gets an
     empty list back (the whole request doesn't fail).
     """
+    _require_webdav_configured()
     if directory:
         _validate_dir(directory)
     dirs_to_list = [directory] if directory else sorted(VALID_DIRS)
@@ -184,6 +197,7 @@ def handle_download(directory: str, filename: str) -> RedirectResponse:
     Returns: RedirectResponse, 302 → the WebDAV file URL.
     Raises: 400 invalid directory/filename.
     """
+    _require_webdav_configured()
     _validate_dir(directory)
     _validate_filename(filename)
     url = f"{_WEBDAV_BASE}/{directory}/{filename}"

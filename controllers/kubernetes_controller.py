@@ -1280,7 +1280,7 @@ async def delete_k8s_deployment(cluster_id: int, deploy_id: int, db: Session) ->
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete namespace '{deploy.namespace}': {e}")
 
-    if result.get("status") not in ("deleted", "deleting"):
+    if result.get("status") not in ("deleted", "deleting", "not_found"):
         raise HTTPException(status_code=500, detail=f"Namespace delete did not complete: {result}")
 
     db.delete(deploy)
