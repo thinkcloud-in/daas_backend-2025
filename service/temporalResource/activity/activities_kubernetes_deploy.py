@@ -690,18 +690,25 @@ def _patch_harbor_deployments(apps_v1, namespace: str):
     except Exception as e:
         logger.warning(f"[K8sDeploy] registry cm2 merge patch failed: {e}")
 
-    # Fix 5: proxy service → LoadBalancer (Cilium LB-IPAM will assign an external IP)
+    # Fix 5: proxy service → LoadBalancer only, no NodePort at all.
+    # allocate_load_balancer_node_ports=False (Service API field, stable
+    # since k8s 1.24) tells Kubernetes not to open a NodePort for this
+    # Service — it's reachable only via whatever LB-IPAM controller
+    # (Cilium, MetalLB, kube-vip, cloud LB, ...) assigns an external IP.
+    # If none is configured on the target cluster, EXTERNAL-IP stays
+    # <pending> and Harbor's UI is unreachable via this service until one
+    # is set up — that trade-off (no NodePort exposure, ever) is intentional.
     try:
         from kubernetes import client as k8s_client
         _v1 = k8s_client.CoreV1Api()
         svc = _v1.read_namespaced_service(name="proxy", namespace=namespace)
-        if svc.spec.type != "LoadBalancer":
-            # clear the NodePort entries, set type to LoadBalancer
+        if svc.spec.type != "LoadBalancer" or svc.spec.allocate_load_balancer_node_ports is not False:
             for p in (svc.spec.ports or []):
                 p.node_port = None
             svc.spec.type = "LoadBalancer"
+            svc.spec.allocate_load_balancer_node_ports = False
             _v1.replace_namespaced_service(name="proxy", namespace=namespace, body=svc)
-            logger.info("[K8sDeploy] proxy service: type=LoadBalancer (Cilium LB-IPAM)")
+            logger.info("[K8sDeploy] proxy service: type=LoadBalancer, allocate_load_balancer_node_ports=False (no NodePort)")
     except Exception as e:
         logger.warning(f"[K8sDeploy] proxy LoadBalancer patch failed: {e}")
 
@@ -783,12 +790,15 @@ def _patch_harbor_env_configmap(v1, namespace: str):
 
 def _discover_harbor_url(v1, namespace: str, node_ip: str) -> Optional[str]:
     """
-    Discover the Harbor URL — priority order:
-    1. LoadBalancer external IP (Cilium LB-IPAM) → port 80 — no port in the URL
-    2. NodePort fallback → node_ip:nodePort
+    Discover the Harbor URL — LoadBalancer external IP only.
+    'proxy' is patched to allocate_load_balancer_node_ports=False (see Fix 5
+    in _patch_harbor_deployments), so it never has a NodePort to fall back
+    to — Harbor's UI is reachable only once some LB-IPAM controller (Cilium,
+    MetalLB, kube-vip, cloud LB, ...) assigns an external IP. No NodePort
+    fallback here is intentional, not an oversight: node_ip is accepted only
+    to keep this function's signature stable for callers.
     """
     from kubernetes.client.exceptions import ApiException
-    PROXY_KW = ("proxy", "nginx", "harbor-nginx", "harbor-portal", "harbor")
 
     try:
         services = v1.list_namespaced_service(namespace=namespace)
@@ -797,7 +807,6 @@ def _discover_harbor_url(v1, namespace: str, node_ip: str) -> Optional[str]:
 
     all_svcs = services.items
 
-    # Priority 1: LoadBalancer external IP (Cilium assigns this)
     for svc in all_svcs:
         svc_name = (svc.metadata.name or "").lower()
         if svc.spec.type != "LoadBalancer":
@@ -816,29 +825,6 @@ def _discover_harbor_url(v1, namespace: str, node_ip: str) -> Optional[str]:
         url = f"http://{ext_ip}"
         logger.info(f"[K8sDeploy] Harbor URL (LoadBalancer fallback): {url}  svc={svc_name}")
         return url
-
-    # Priority 2: NodePort fallback (proxy/nginx prefer)
-    for svc in all_svcs:
-        svc_name = (svc.metadata.name or "").lower()
-        if not any(k in svc_name for k in PROXY_KW):
-            continue
-        if svc.spec.type != "NodePort":
-            continue
-        for port in (svc.spec.ports or []):
-            if port.port in (80, 8080) and port.node_port:
-                url = f"http://{node_ip}:{port.node_port}"
-                logger.info(f"[K8sDeploy] Harbor URL (NodePort): {url}  svc={svc_name}")
-                return url
-
-    # Priority 3: any NodePort
-    for svc in all_svcs:
-        if svc.spec.type != "NodePort":
-            continue
-        for port in (svc.spec.ports or []):
-            if port.node_port:
-                url = f"http://{node_ip}:{port.node_port}"
-                logger.info(f"[K8sDeploy] Harbor URL (NodePort any): {url}")
-                return url
 
     return None
 
@@ -1104,31 +1090,49 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
             time.sleep(5)
 
         if not harbor_url:
-            harbor_url = f"http://{node_ip}:{http_port}" if node_ip else f"http://harbor:{http_port}"
-            logger.warning(f"[K8sDeploy] URL discover failed — fallback: {harbor_url}")
+            # No NodePort exists to fall back to (proxy is LoadBalancer-only,
+            # allocate_load_balancer_node_ports=False — see Fix 5). A guessed
+            # node_ip:port URL here would just be a dead address that looks
+            # legitimate but never responds, so report the real state instead:
+            # no LB-IPAM controller has assigned an external IP yet.
+            harbor_url = None
+            logger.warning(
+                f"[K8sDeploy id={deploy_id}] No LoadBalancer external IP assigned after "
+                f"90s — install/configure an LB-IPAM controller (Cilium LB-IPAM, MetalLB, "
+                f"kube-vip, ...) on this cluster for the 'proxy' service in ns={namespace} "
+                f"to become reachable."
+            )
 
         _db_update(deploy_id, harbor_url=harbor_url, status="waiting_ready")
-        _ok(f"Harbor URL: {harbor_url}")
+        _ok(f"Harbor URL: {harbor_url}" if harbor_url else "Harbor URL: not yet available (waiting on LoadBalancer IP)")
 
         # ── Step 14: Health check — max 5 min ────────────────────────────────
-        _step(f"Waiting for Harbor at {harbor_url} [max 5 min] ...", "waiting_ready",
-              harbor_url=harbor_url)
         harbor_ready = False
-        for attempt in range(30):
-            try:
-                r = requests.get(f"{harbor_url}/api/v2.0/systeminfo",
-                                 timeout=8, verify=False, allow_redirects=True)
-                if r.status_code in (200, 401, 403):
-                    harbor_ready = True
-                    _ok(f"Harbor is ready (HTTP {r.status_code})")
-                    break
-            except Exception as e:
-                logger.debug(f"[K8sDeploy] Health {attempt+1}/30: {e}")
-            activity.heartbeat(f"Harbor not ready ({attempt+1}/30) ...")
-            time.sleep(10)
+        if harbor_url:
+            _step(f"Waiting for Harbor at {harbor_url} [max 5 min] ...", "waiting_ready",
+                  harbor_url=harbor_url)
+            for attempt in range(30):
+                try:
+                    r = requests.get(f"{harbor_url}/api/v2.0/systeminfo",
+                                     timeout=8, verify=False, allow_redirects=True)
+                    if r.status_code in (200, 401, 403):
+                        harbor_ready = True
+                        _ok(f"Harbor is ready (HTTP {r.status_code})")
+                        break
+                except Exception as e:
+                    logger.debug(f"[K8sDeploy] Health {attempt+1}/30: {e}")
+                activity.heartbeat(f"Harbor not ready ({attempt+1}/30) ...")
+                time.sleep(10)
 
-        if not harbor_ready:
-            steps_log.append("[WARN] Harbor health check timeout — the pods will take time to start")
+            if not harbor_ready:
+                steps_log.append("[WARN] Harbor health check timeout — the pods will take time to start")
+                _db_update(deploy_id, steps_log=json.dumps(steps_log))
+        else:
+            steps_log.append(
+                "[WARN] No LoadBalancer IP assigned — skipping health check. Harbor's "
+                "pods are running, but its UI is unreachable until an LB-IPAM controller "
+                "assigns 'proxy' an external IP on this cluster."
+            )
             _db_update(deploy_id, steps_log=json.dumps(steps_log))
 
         # ── Step 15: harbor-jobservice restart ───────────────────────────────
