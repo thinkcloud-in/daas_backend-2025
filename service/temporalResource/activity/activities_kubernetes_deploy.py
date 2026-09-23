@@ -950,7 +950,14 @@ def k8s_harbor_deploy_activity(payload: dict) -> dict:
         meta = _read_version_metadata(local_zip)
         if meta:
             dm             = meta.get("deploy", {})
-            namespace      = dm.get("namespace", namespace)
+            # namespace is deliberately NOT read from the archive's metadata —
+            # it must stay whatever the user chose/validated in payload["namespace"]
+            # (see the note above where `namespace` is first assigned). The
+            # archive's version_metadata.json ships a fixed default namespace
+            # for its own template purposes; letting it override the user's
+            # choice here previously caused every deploy to land in
+            # "harbor-system" regardless of what namespace was requested/shown
+            # in the UI, risking silent collisions between separate deployments.
             manifest_path  = dm.get("manifest_path", "manifest/")
             apply_order    = dm.get("apply_order", ["*.yaml"])
             im             = meta.get("images", {})
